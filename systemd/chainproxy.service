@@ -1,0 +1,24 @@
+[Unit]
+Description=chainproxy - Linux Chained WireGuard VPN & Proxy Daemon
+After=network.target network-online.target
+Wants=network-online.target
+Documentation=https://github.com/chainproxy/chainproxy
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/lib/chainproxy
+ExecStart=/usr/local/bin/chainproxy --api 127.0.0.1:8880 --data-dir /var/lib/chainproxy --singbox /usr/local/bin/sing-box daemon
+ExecStop=/usr/local/bin/chainproxy stop
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=15s
+LimitNOFILE=1048576
+
+# Security sandbox flags compatible with network manipulation
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,29 @@
+{
+  "enabled": true,
+  "uplink_interface": "eth0",
+  "vpn1": {
+    "name": "VPN1",
+    "wireguard_config": "[Interface]\nPrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\nAddress = 10.2.0.2/32\nDNS = 10.2.0.1\n\n[Peer]\nPublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 198.51.100.1:51820\nPersistentKeepalive = 25\n"
+  },
+  "vpn2": {
+    "name": "Cloudflare WARP",
+    "wireguard_config": "[Interface]\nPrivateKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\nAddress = 172.16.0.2/32, 2606:4700:110:8f6f::2/128\n\n[Peer]\nPublicKey = AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 162.159.192.1:2408\nPersistentKeepalive = 25\n"
+  },
+  "routing": {
+    "proxy_host_outbound": true,
+    "proxy_forwarded_outbound": true,
+    "preserve_inbound_connections": true,
+    "connection_mark": "0x88",
+    "forwarded_subnets": [
+      "10.0.0.0/24"
+    ],
+    "exclude_destinations": [
+      "192.168.0.0/16"
+    ],
+    "ipv6": false
+  },
+  "dns": {
+    "mode": "chain",
+    "custom_servers": []
+  }
+}
