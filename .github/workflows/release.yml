@@ -17,18 +17,28 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Install musl-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-musl
 
-      - name: Build x86_64 Binary
+      - name: Build Static x86_64 Binary
         run: |
-          cargo build --release --target x86_64-unknown-linux-gnu
+          cargo build --release --target x86_64-unknown-linux-musl
           mkdir -p dist
-          cp target/x86_64-unknown-linux-gnu/release/chainproxy dist/chainproxy-linux-amd64
+          cp target/x86_64-unknown-linux-musl/release/chainproxy dist/chainproxy-linux-amd64
           chmod +x dist/chainproxy-linux-amd64
           tar -czvf dist/chainproxy-linux-amd64.tar.gz -C dist chainproxy-linux-amd64
+
+      - name: Verify Static Binary
+        run: |
+          file dist/chainproxy-linux-amd64
+          ldd dist/chainproxy-linux-amd64 || true
 
       - name: Generate Checksums
         run: |

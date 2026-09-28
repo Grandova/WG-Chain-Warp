@@ -133,16 +133,26 @@ elif command -v cargo >/dev/null 2>&1; then
     log_ok "编译并安装完成: $CHAINPROXY_BIN"
 else
     # 尝试从预编译 Release 获取
-    log_info "尝试拉取预编译 chainproxy 二进制..."
+    log_info "尝试拉取预编译 chainproxy 静态二进制..."
     TMP_DIR=$(mktemp -d)
-    if curl -sSL "https://github.com/Grandova/WG-Chain-Warp/releases/latest/download/chainproxy-linux-amd64" -o "${TMP_DIR}/chainproxy" 2>/dev/null; then
+    if curl -fsSL "https://github.com/Grandova/WG-Chain-Warp/releases/latest/download/chainproxy-linux-amd64" -o "${TMP_DIR}/chainproxy"; then
         install -m 755 "${TMP_DIR}/chainproxy" "$CHAINPROXY_BIN"
-        log_ok "下载预编译二进制完成: $CHAINPROXY_BIN"
+        log_ok "下载预编译静态二进制完成: $CHAINPROXY_BIN"
     else
-        log_warn "未拉取到预编译包，请确保在仓库目录下运行编译，或自行构建。"
+        log_err "拉取预编译程序失败，请检查网络或 GitHub 访问连接。"
+        rm -rf "$TMP_DIR"
+        exit 1
     fi
     rm -rf "$TMP_DIR"
 fi
+
+# 校验二进制程序可执行性
+if ! "$CHAINPROXY_BIN" --version >/dev/null 2>&1; then
+    log_err "chainproxy 运行自检失败，无法在当前系统执行: $CHAINPROXY_BIN"
+    "$CHAINPROXY_BIN" --version || true
+    exit 1
+fi
+log_ok "主程序自检通过: $("$CHAINPROXY_BIN" --version 2>&1)"
 
 ln -sf "$CHAINPROXY_BIN" /usr/bin/chainproxy
 
