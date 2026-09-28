@@ -2,7 +2,7 @@ use crate::engine::history::HistoryManager;
 use crate::engine::watchdog::Watchdog;
 use crate::error::{ChainError, Result};
 use crate::health::checker::HealthChecker;
-use crate::model::config::ChainProxyConfig;
+use crate::model::config::{ChainProxyConfig, ProxyMode};
 use crate::model::state::{
     ChainStatus, FinalHopStatus, ServiceState, TestReport, VpnHopStatus,
 };
@@ -58,12 +58,12 @@ impl ChainEngine {
 
     /// Transactional Apply with Rollback Protection
     pub async fn apply(&mut self, config: ChainProxyConfig) -> Result<TestReport> {
-        info!("Beginning transactional apply for chainproxy");
+        info!("Beginning transactional apply for chainproxy (Mode: {:?})", config.mode);
         *self.state.lock().unwrap() = ServiceState::Starting;
 
         // Stage 1: VALIDATE
         info!("Transaction [1/8]: VALIDATE");
-        let (vpn1_parsed, vpn2_parsed) = config.parse_and_validate()?;
+        let parsed = config.parse_and_validate()?;
 
         // Uplink physical detection
         let uplink = match &config.uplink_interface {
@@ -78,12 +78,27 @@ impl ChainEngine {
             .map(|u| u.gateway)
             .unwrap_or_default();
 
-        let vpn1_endpoint_ip = vpn1_parsed
-            .peers
-            .first()
-            .and_then(|p| p.endpoint.as_ref())
-            .map(|e| e.host.clone())
-            .unwrap_or_default();
+        let underlay_endpoint_ip = match config.mode {
+            ProxyMode::WgChainWarp | ProxyMode::StandaloneWg => {
+                parsed.vpn1.as_ref()
+                    .and_then(|p| p.peers.first())
+                    .and_then(|p| p.endpoint.as_ref())
+                    .map(|e| e.host.clone())
+                    .unwrap_or_default()
+            }
+            ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => {
+                parsed.socks5.as_ref()
+                    .map(|s| s.server.clone())
+                    .unwrap_or_default()
+            }
+            ProxyMode::StandaloneWarp => {
+                parsed.vpn2.as_ref()
+                    .and_then(|p| p.peers.first())
+                    .and_then(|p| p.endpoint.as_ref())
+                    .map(|e| e.host.clone())
+                    .unwrap_or_default()
+            }
+        };
 
         // Stage 2: SNAPSHOT
         info!("Transaction [2/8]: SNAPSHOT");
@@ -91,7 +106,7 @@ impl ChainEngine {
 
         // Stage 3: GENERATE
         info!("Transaction [3/8]: GENERATE");
-        let singbox_cfg = generate_singbox_config(&config, &vpn1_parsed, &vpn2_parsed, &uplink)?;
+        let singbox_cfg = generate_singbox_config(&config, &parsed, &uplink)?;
         let nft_rules = NftablesManager::generate_ruleset(
             &uplink,
             &config.routing.connection_mark,
@@ -149,7 +164,7 @@ impl ChainEngine {
 
         // Apply nftables inet chainproxy table
         if let Err(e) = NftablesManager::apply_ruleset(&nft_rules) {
-            self.emergency_cleanup(&uplink, &vpn1_endpoint_ip);
+            self.emergency_cleanup(&uplink, &underlay_endpoint_ip);
             *self.state.lock().unwrap() = ServiceState::Failed;
             return Err(ChainError::TransactionError {
                 stage: "APPLY (nftables)".to_string(),
@@ -164,8 +179,10 @@ impl ChainEngine {
             }
         }
 
-        // Apply explicit host route for VPN1 endpoint on uplink physical gateway
-        let _ = IpRouteManager::add_vpn1_endpoint_host_route(&vpn1_endpoint_ip, &gateway, &uplink);
+        // Apply explicit host route for underlay endpoint on uplink physical gateway
+        if !underlay_endpoint_ip.is_empty() {
+            let _ = IpRouteManager::add_vpn1_endpoint_host_route(&underlay_endpoint_ip, &gateway, &uplink);
+        }
 
         // Start sing-box process
         {
@@ -173,7 +190,7 @@ impl ChainEngine {
             if let Err(e) = sb.start(&resolved_sb, &actual_cfg_path) {
                 drop(sb);
                 error!("Transaction failed at APPLY (sing-box start): {}", e);
-                self.emergency_cleanup(&uplink, &vpn1_endpoint_ip);
+                self.emergency_cleanup(&uplink, &underlay_endpoint_ip);
                 *self.state.lock().unwrap() = ServiceState::Failed;
                 return Err(ChainError::TransactionError {
                     stage: "APPLY (sing-box start)".to_string(),
@@ -186,7 +203,7 @@ impl ChainEngine {
         info!("Transaction [7/8]: WATCHDOG ARMED");
         let timeout_secs = self.watchdog_timeout_secs.load(Ordering::SeqCst);
         let uplink_clone = uplink.clone();
-        let vpn1_ep_clone = vpn1_endpoint_ip.clone();
+        let underlay_ep_clone = underlay_endpoint_ip.clone();
         let singbox_clone = self.singbox.clone();
         let state_clone = self.state.clone();
 
@@ -196,7 +213,9 @@ impl ChainEngine {
             singbox_clone.lock().unwrap().stop();
             NftablesManager::delete_table();
             IpRouteManager::remove_inbound_fwmark_rule(INBOUND_RULE_PRIORITY);
-            IpRouteManager::remove_vpn1_endpoint_host_route(&vpn1_ep_clone, &uplink_clone);
+            if !underlay_ep_clone.is_empty() {
+                IpRouteManager::remove_vpn1_endpoint_host_route(&underlay_ep_clone, &uplink_clone);
+            }
             *state_clone.lock().unwrap() = ServiceState::Failed;
         });
 
@@ -205,25 +224,41 @@ impl ChainEngine {
         // Allow WireGuard handshakes across the chain to settle
         tokio::time::sleep(Duration::from_millis(3000)).await;
 
-        let vpn1_ep = vpn1_parsed
-            .peers
-            .first()
-            .and_then(|p| p.endpoint.as_ref())
-            .map(|e| e.to_string())
-            .unwrap_or_default();
-        let vpn2_ep = vpn2_parsed
-            .peers
-            .first()
-            .and_then(|p| p.endpoint.as_ref())
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let (v1_name, v1_ep) = match config.mode {
+            ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => {
+                let s5_str = parsed.socks5.as_ref().map(|s| s.redacted_string()).unwrap_or_else(|| "Socks5 Proxy".to_string());
+                let s5_ep = parsed.socks5.as_ref().map(|s| format!("{}:{}", s.server, s.port)).unwrap_or_default();
+                (s5_str, s5_ep)
+            }
+            _ => {
+                let ep = parsed.vpn1.as_ref()
+                    .and_then(|p| p.peers.first())
+                    .and_then(|p| p.endpoint.as_ref())
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                (config.vpn1.name.clone(), ep)
+            }
+        };
+
+        let (v2_name, v2_ep) = match config.mode {
+            ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => ("None".to_string(), "".to_string()),
+            _ => {
+                let ep = parsed.vpn2.as_ref()
+                    .and_then(|p| p.peers.first())
+                    .and_then(|p| p.endpoint.as_ref())
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                (config.vpn2.name.clone(), ep)
+            }
+        };
 
         let test_report = HealthChecker::run_full_test(
+            config.mode,
             Some(&uplink),
-            &config.vpn1.name,
-            &vpn1_ep,
-            &config.vpn2.name,
-            &vpn2_ep,
+            &v1_name,
+            &v1_ep,
+            &v2_name,
+            &v2_ep,
         )
         .await;
 
@@ -250,7 +285,7 @@ impl ChainEngine {
         } else {
             error!("Link test failed. Initiating automatic ROLLBACK!");
             watchdog.cancel();
-            self.emergency_cleanup(&uplink, &vpn1_endpoint_ip);
+            self.emergency_cleanup(&uplink, &underlay_endpoint_ip);
             *self.state.lock().unwrap() = ServiceState::Failed;
 
             Err(ChainError::TransactionError {
@@ -286,12 +321,29 @@ impl ChainEngine {
         IpRouteManager::remove_inbound_fwmark_rule(INBOUND_RULE_PRIORITY);
         IpRouteManager::remove_ssh_emergency_bypass();
 
-        // 4. Remove host route for VPN1
+        // 4. Remove host route for underlay endpoint
         if let Some(cfg) = self.active_config.lock().unwrap().as_ref() {
-            if let Ok((p1, _)) = cfg.parse_and_validate() {
-                if let Some(host) = p1.peers.first().and_then(|p| p.endpoint.as_ref()).map(|e| &e.host) {
+            if let Ok(parsed) = cfg.parse_and_validate() {
+                let underlay_host = match cfg.mode {
+                    ProxyMode::WgChainWarp | ProxyMode::StandaloneWg => {
+                        parsed.vpn1.as_ref()
+                            .and_then(|p| p.peers.first())
+                            .and_then(|p| p.endpoint.as_ref())
+                            .map(|e| e.host.clone())
+                    }
+                    ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => {
+                        parsed.socks5.as_ref().map(|s| s.server.clone())
+                    }
+                    ProxyMode::StandaloneWarp => {
+                        parsed.vpn2.as_ref()
+                            .and_then(|p| p.peers.first())
+                            .and_then(|p| p.endpoint.as_ref())
+                            .map(|e| e.host.clone())
+                    }
+                };
+                if let Some(host) = underlay_host {
                     let uplink = cfg.uplink_interface.as_deref().unwrap_or("eth0");
-                    IpRouteManager::remove_vpn1_endpoint_host_route(host, uplink);
+                    IpRouteManager::remove_vpn1_endpoint_host_route(&host, uplink);
                 }
             }
         }
@@ -311,7 +363,9 @@ impl ChainEngine {
         self.singbox.lock().unwrap().stop();
         NftablesManager::delete_table();
         IpRouteManager::remove_inbound_fwmark_rule(INBOUND_RULE_PRIORITY);
-        IpRouteManager::remove_vpn1_endpoint_host_route(vpn1_endpoint_ip, uplink);
+        if !vpn1_endpoint_ip.is_empty() {
+            IpRouteManager::remove_vpn1_endpoint_host_route(vpn1_endpoint_ip, uplink);
+        }
         if let Some(snap) = self.sysctl_snapshot.lock().unwrap().take() {
             SysctlManager::restore(&snap);
         }
@@ -331,13 +385,30 @@ impl ChainEngine {
 
         let phys = HealthChecker::probe_physical(uplink);
 
-        let (vpn1_hop, vpn2_hop, final_hop) = if let Some(cfg) = cfg_opt {
-            let v1_name = cfg.vpn1.name;
-            let v2_name = cfg.vpn2.name;
+        let (vpn1_hop, vpn2_hop, final_hop) = if let Some(ref cfg) = cfg_opt {
+            let (v1_name, v1_ep) = match cfg.mode {
+                ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => {
+                    let s_str = cfg.socks5.as_ref().map(|s| s.redacted_string()).unwrap_or_else(|| "Socks5 Proxy".to_string());
+                    let s_ep = cfg.socks5.as_ref().map(|s| format!("{}:{}", s.server, s.port)).unwrap_or_default();
+                    (s_str, s_ep)
+                }
+                _ => (cfg.vpn1.name.clone(), "Configured".to_string()),
+            };
+
+            let v2_name = match cfg.mode {
+                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => "WARP (未使用)".to_string(),
+                _ => cfg.vpn2.name.clone(),
+            };
+
+            let v2_status = match cfg.mode {
+                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => "N/A (直连模式)".to_string(),
+                _ => if state == ServiceState::Running { "Running".to_string() } else { "Stopped".to_string() },
+            };
+
             (
                 VpnHopStatus {
                     name: v1_name,
-                    endpoint: "Configured".to_string(),
+                    endpoint: v1_ep,
                     config_valid: true,
                     reachable: state == ServiceState::Running,
                     bytes_sent: 0,
@@ -354,7 +425,7 @@ impl ChainEngine {
                     bytes_sent: 0,
                     bytes_received: 0,
                     latency_ms: None,
-                    status: if state == ServiceState::Running { "Running".to_string() } else { "Stopped".to_string() },
+                    status: v2_status,
                     message: None,
                 },
                 FinalHopStatus {
@@ -401,13 +472,36 @@ impl ChainEngine {
             )
         };
 
-        let chain_visual = format!(
-            "VPS [{}] -> VPN1 [{}] -> WARP [{}] -> Internet [{}]",
-            phys.status,
-            vpn1_hop.status,
-            vpn2_hop.status,
-            if final_hop.internet_ok { "OK" } else { "OFF" }
-        );
+        let chain_visual = if let Some(ref cfg) = cfg_opt {
+            let internet_status = if final_hop.internet_ok { "OK" } else { "OFF" };
+            match cfg.mode {
+                ProxyMode::WgChainWarp => format!(
+                    "VPS [{}] -> WG [{}] -> WARP [{}] -> Internet [{}]",
+                    phys.status, vpn1_hop.status, vpn2_hop.status, internet_status
+                ),
+                ProxyMode::SocksChainWarp => format!(
+                    "VPS [{}] -> Socks5 [{}] -> WARP [{}] -> Internet [{}]",
+                    phys.status, vpn1_hop.status, vpn2_hop.status, internet_status
+                ),
+                ProxyMode::StandaloneWg => format!(
+                    "VPS [{}] -> WG [{}] -> Internet [{}]",
+                    phys.status, vpn1_hop.status, internet_status
+                ),
+                ProxyMode::StandaloneSocks => format!(
+                    "VPS [{}] -> Socks5 [{}] -> Internet [{}]",
+                    phys.status, vpn1_hop.status, internet_status
+                ),
+                ProxyMode::StandaloneWarp => format!(
+                    "VPS [{}] -> WARP [{}] -> Internet [{}]",
+                    phys.status, vpn2_hop.status, internet_status
+                ),
+            }
+        } else {
+            format!(
+                "VPS [{}] -> 入口 [NOT_CONFIGURED] -> 出口 [NOT_CONFIGURED] -> Internet [OFF]",
+                phys.status
+            )
+        };
 
         ChainStatus {
             state,

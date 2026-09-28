@@ -115,10 +115,17 @@ impl CliHandler {
                 let content = fs::read_to_string(config)?;
                 let parsed_cfg: ChainProxyConfig = serde_json::from_str(&content)?;
                 match parsed_cfg.parse_and_validate() {
-                    Ok((v1, v2)) => {
-                        println!("Configuration is VALID!");
-                        println!("VPN1 ({}): {} addresses, peer endpoint: {:?}", parsed_cfg.vpn1.name, v1.interface.addresses.len(), v1.peers[0].endpoint);
-                        println!("VPN2 ({}): {} addresses, peer endpoint: {:?}", parsed_cfg.vpn2.name, v2.interface.addresses.len(), v2.peers[0].endpoint);
+                    Ok(parsed) => {
+                        println!("Configuration is VALID! Mode: {:?}", parsed_cfg.mode);
+                        if let Some(v1) = parsed.vpn1 {
+                            println!("VPN1 ({}): {} addresses, peer endpoint: {:?}", parsed_cfg.vpn1.name, v1.interface.addresses.len(), v1.peers.first().and_then(|p| p.endpoint.as_ref()));
+                        }
+                        if let Some(v2) = parsed.vpn2 {
+                            println!("VPN2 ({}): {} addresses, peer endpoint: {:?}", parsed_cfg.vpn2.name, v2.interface.addresses.len(), v2.peers.first().and_then(|p| p.endpoint.as_ref()));
+                        }
+                        if let Some(s5) = parsed.socks5 {
+                            println!("Socks5 Proxy: {}", s5.redacted_string());
+                        }
                     }
                     Err(e) => {
                         eprintln!("Validation FAILED: {}", e);

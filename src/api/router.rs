@@ -96,14 +96,21 @@ async fn validate_config_handler(
     Json(payload): Json<ValidatePayload>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     match payload.config.parse_and_validate() {
-        Ok((v1, v2)) => (
-            StatusCode::OK,
-            Json(ApiResponse::ok(serde_json::json!({
-                "valid": true,
-                "vpn1_addresses": v1.interface.addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-                "vpn2_addresses": v2.interface.addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-            }))),
-        ),
+        Ok(parsed) => {
+            let v1_addrs = parsed.vpn1.as_ref().map(|v| v.interface.addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>()).unwrap_or_default();
+            let v2_addrs = parsed.vpn2.as_ref().map(|v| v.interface.addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>()).unwrap_or_default();
+            let s5_info = parsed.socks5.as_ref().map(|s| s.redacted_string());
+            (
+                StatusCode::OK,
+                Json(ApiResponse::ok(serde_json::json!({
+                    "valid": true,
+                    "mode": payload.config.mode,
+                    "vpn1_addresses": v1_addrs,
+                    "vpn2_addresses": v2_addrs,
+                    "socks5": s5_info,
+                }))),
+            )
+        }
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ApiResponse::err(e.to_string())),
@@ -128,9 +135,10 @@ async fn apply_config_handler(
 async fn test_config_handler(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<TestReport>> {
-    let (uplink, v1_name, v1_ep, v2_name, v2_ep, is_running) = {
+    let (uplink, v1_name, v1_ep, v2_name, v2_ep, is_running, mode) = {
         let engine = state.engine.lock().await;
         let status = engine.get_status();
+        let mode = engine.get_active_config().map(|c| c.mode).unwrap_or_default();
         (
             status.physical.interface,
             status.vpn1.name,
@@ -138,6 +146,7 @@ async fn test_config_handler(
             status.vpn2.name,
             status.vpn2.endpoint,
             status.state == crate::model::state::ServiceState::Running,
+            mode,
         )
     };
 
@@ -190,6 +199,7 @@ async fn test_config_handler(
     }
 
     let report = HealthChecker::run_full_test(
+        mode,
         Some(&uplink),
         &v1_name,
         &v1_ep,

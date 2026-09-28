@@ -5,5 +5,6 @@ pub mod error;
 pub mod health;
 pub mod model;
 pub mod network;
+pub mod proxy;
 pub mod singbox;
 pub mod wireguard;

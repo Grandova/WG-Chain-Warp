@@ -139,6 +139,7 @@ mod tests {
 
         let cfg1 = ChainProxyConfig {
             enabled: true,
+            mode: Default::default(),
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig {
                 name: "VPN1".to_string(),
@@ -148,6 +149,7 @@ mod tests {
                 name: "VPN2".to_string(),
                 wireguard_config: "test2".to_string(),
             },
+            socks5: None,
             routing: RoutingConfig::default(),
             dns: DnsConfig::default(),
         };
