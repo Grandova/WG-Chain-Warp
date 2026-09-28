@@ -203,7 +203,7 @@ impl ChainEngine {
         // Stage 8: TEST
         info!("Transaction [8/8]: TEST & VERIFY");
         // Allow WireGuard handshakes across the chain to settle
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+        tokio::time::sleep(Duration::from_millis(3000)).await;
 
         let vpn1_ep = vpn1_parsed
             .peers
@@ -229,7 +229,7 @@ impl ChainEngine {
 
         // If sing-box isn't running on real hardware (e.g. testing phase without live wireguard endpoints),
         // we evaluate if test passed or if we are in unconfigured/dry-run environment
-        let should_commit = test_report.success || !Path::new(&self.singbox_bin).exists();
+        let should_commit = test_report.success || SingBoxManager::resolve_binary(&self.singbox_bin).is_err();
 
         if should_commit {
             // Disarm Watchdog
