@@ -38,13 +38,27 @@ impl ChainEngine {
         let history = Arc::new(Mutex::new(HistoryManager::new(&base_path)));
         let singbox = Arc::new(Mutex::new(SingBoxManager::new()));
 
+        let cfg_file = base_path.join("config.json");
+        let initial_config = if cfg_file.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cfg_file) {
+                serde_json::from_str::<ChainProxyConfig>(&content).ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Try ensuring TUN character device on startup
+        let _ = IpRouteManager::ensure_tun_device();
+
         Self {
             base_dir: base_path,
             singbox_bin: singbox_bin.to_string(),
             history,
             singbox,
             sysctl_snapshot: Arc::new(Mutex::new(None)),
-            active_config: Arc::new(Mutex::new(None)),
+            active_config: Arc::new(Mutex::new(initial_config)),
             state: Arc::new(Mutex::new(ServiceState::Stopped)),
             start_time: None,
             active_version: Arc::new(Mutex::new(None)),
@@ -182,6 +196,17 @@ impl ChainEngine {
         // Apply explicit host route for underlay endpoint on uplink physical gateway
         if !underlay_endpoint_ip.is_empty() {
             let _ = IpRouteManager::add_vpn1_endpoint_host_route(&underlay_endpoint_ip, &gateway, &uplink);
+        }
+
+        // Ensure /dev/net/tun is present before sing-box initializes tun interface
+        if let Err(e) = IpRouteManager::ensure_tun_device() {
+            error!("Failed to ensure TUN device: {}", e);
+            self.emergency_cleanup(&uplink, &underlay_endpoint_ip);
+            *self.state.lock().unwrap() = ServiceState::Failed;
+            return Err(ChainError::TransactionError {
+                stage: "APPLY (ensure tun device)".to_string(),
+                message: e.to_string(),
+            });
         }
 
         // Start sing-box process
@@ -380,48 +405,100 @@ impl ChainEngine {
             .unwrap_or(0);
         let active_ver = self.active_version.lock().unwrap().clone();
 
-        let cfg_opt = self.active_config.lock().unwrap().clone();
-        let uplink = cfg_opt.as_ref().and_then(|c| c.uplink_interface.as_deref());
+        let cfg_opt = {
+            let in_memory = self.active_config.lock().unwrap().clone();
+            if in_memory.is_some() && state == ServiceState::Running {
+                in_memory
+            } else {
+                let cfg_path = self.base_dir.join("config.json");
+                if cfg_path.exists() {
+                    if let Ok(c) = std::fs::read_to_string(&cfg_path) {
+                        serde_json::from_str::<ChainProxyConfig>(&c).ok().or(in_memory)
+                    } else {
+                        in_memory
+                    }
+                } else {
+                    in_memory
+                }
+            }
+        };
 
+        let uplink = cfg_opt.as_ref().and_then(|c| c.uplink_interface.as_deref());
         let phys = HealthChecker::probe_physical(uplink);
 
         let (vpn1_hop, vpn2_hop, final_hop) = if let Some(ref cfg) = cfg_opt {
+            let v1_configured = match cfg.mode {
+                ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => cfg.socks5.is_some(),
+                _ => !cfg.vpn1.wireguard_config.trim().is_empty(),
+            };
+
+            let v2_configured = match cfg.mode {
+                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => false,
+                _ => !cfg.vpn2.wireguard_config.trim().is_empty(),
+            };
+
             let (v1_name, v1_ep) = match cfg.mode {
                 ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => {
-                    let s_str = cfg.socks5.as_ref().map(|s| s.redacted_string()).unwrap_or_else(|| "Socks5 Proxy".to_string());
+                    let s_str = cfg.socks5.as_ref().map(|s| s.redacted_string()).unwrap_or_else(|| "Socks5 节点".to_string());
                     let s_ep = cfg.socks5.as_ref().map(|s| format!("{}:{}", s.server, s.port)).unwrap_or_default();
                     (s_str, s_ep)
                 }
-                _ => (cfg.vpn1.name.clone(), "Configured".to_string()),
+                _ => (
+                    if cfg.vpn1.name.is_empty() { "WireGuard 节点".to_string() } else { cfg.vpn1.name.clone() },
+                    if v1_configured { "已就绪".to_string() } else { "".to_string() },
+                ),
             };
 
-            let v2_name = match cfg.mode {
-                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => "WARP (未使用)".to_string(),
-                _ => cfg.vpn2.name.clone(),
+            let (v2_name, v2_ep) = match cfg.mode {
+                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => ("Cloudflare WARP (未使用)".to_string(), "".to_string()),
+                _ => (
+                    if cfg.vpn2.name.is_empty() { "Cloudflare WARP".to_string() } else { cfg.vpn2.name.clone() },
+                    if v2_configured { "已就绪".to_string() } else { "".to_string() },
+                ),
+            };
+
+            let v1_status = if !v1_configured {
+                "未配置".to_string()
+            } else if state == ServiceState::Running {
+                "运行中".to_string()
+            } else if state == ServiceState::Failed {
+                "启动失败".to_string()
+            } else {
+                "待启动".to_string()
             };
 
             let v2_status = match cfg.mode {
-                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => "N/A (直连模式)".to_string(),
-                _ => if state == ServiceState::Running { "Running".to_string() } else { "Stopped".to_string() },
+                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => "未使用".to_string(),
+                _ => {
+                    if !v2_configured {
+                        "未配置".to_string()
+                    } else if state == ServiceState::Running {
+                        "运行中".to_string()
+                    } else if state == ServiceState::Failed {
+                        "启动失败".to_string()
+                    } else {
+                        "待启动".to_string()
+                    }
+                }
             };
 
             (
                 VpnHopStatus {
                     name: v1_name,
                     endpoint: v1_ep,
-                    config_valid: true,
-                    reachable: state == ServiceState::Running,
+                    config_valid: v1_configured,
+                    reachable: state == ServiceState::Running && v1_configured,
                     bytes_sent: 0,
                     bytes_received: 0,
                     latency_ms: None,
-                    status: if state == ServiceState::Running { "Running".to_string() } else { "Stopped".to_string() },
+                    status: v1_status,
                     message: None,
                 },
                 VpnHopStatus {
                     name: v2_name,
-                    endpoint: "Configured".to_string(),
-                    config_valid: true,
-                    reachable: state == ServiceState::Running,
+                    endpoint: v2_ep,
+                    config_valid: v2_configured,
+                    reachable: state == ServiceState::Running && v2_configured,
                     bytes_sent: 0,
                     bytes_received: 0,
                     latency_ms: None,
@@ -434,31 +511,31 @@ impl ChainEngine {
                     exit_country: None,
                     exit_isp: None,
                     latency_ms: None,
-                    status: if state == ServiceState::Running { "Active".to_string() } else { "Inactive".to_string() },
+                    status: if state == ServiceState::Running { "正常".to_string() } else { "离线".to_string() },
                 },
             )
         } else {
             (
                 VpnHopStatus {
-                    name: "VPN1".to_string(),
+                    name: "WireGuard / 入口节点".to_string(),
                     endpoint: "".to_string(),
                     config_valid: false,
                     reachable: false,
                     bytes_sent: 0,
                     bytes_received: 0,
                     latency_ms: None,
-                    status: "NOT_CONFIGURED".to_string(),
+                    status: "未配置".to_string(),
                     message: None,
                 },
                 VpnHopStatus {
-                    name: "WARP".to_string(),
+                    name: "Cloudflare WARP".to_string(),
                     endpoint: "".to_string(),
                     config_valid: false,
                     reachable: false,
                     bytes_sent: 0,
                     bytes_received: 0,
                     latency_ms: None,
-                    status: "NOT_CONFIGURED".to_string(),
+                    status: "未配置".to_string(),
                     message: None,
                 },
                 FinalHopStatus {
@@ -467,38 +544,38 @@ impl ChainEngine {
                     exit_country: None,
                     exit_isp: None,
                     latency_ms: None,
-                    status: "NOT_CONFIGURED".to_string(),
+                    status: "离线".to_string(),
                 },
             )
         };
 
         let chain_visual = if let Some(ref cfg) = cfg_opt {
-            let internet_status = if final_hop.internet_ok { "OK" } else { "OFF" };
+            let internet_status = if final_hop.internet_ok { "正常 (OK)" } else { "离线 (OFF)" };
             match cfg.mode {
                 ProxyMode::WgChainWarp => format!(
-                    "VPS [{}] -> WG [{}] -> WARP [{}] -> Internet [{}]",
+                    "VPS [{}] -> WireGuard [{}] -> WARP [{}] -> 目标公网 [{}]",
                     phys.status, vpn1_hop.status, vpn2_hop.status, internet_status
                 ),
                 ProxyMode::SocksChainWarp => format!(
-                    "VPS [{}] -> Socks5 [{}] -> WARP [{}] -> Internet [{}]",
+                    "VPS [{}] -> Socks5 [{}] -> WARP [{}] -> 目标公网 [{}]",
                     phys.status, vpn1_hop.status, vpn2_hop.status, internet_status
                 ),
                 ProxyMode::StandaloneWg => format!(
-                    "VPS [{}] -> WG [{}] -> Internet [{}]",
+                    "VPS [{}] -> WireGuard [{}] -> 目标公网 [{}]",
                     phys.status, vpn1_hop.status, internet_status
                 ),
                 ProxyMode::StandaloneSocks => format!(
-                    "VPS [{}] -> Socks5 [{}] -> Internet [{}]",
+                    "VPS [{}] -> Socks5 [{}] -> 目标公网 [{}]",
                     phys.status, vpn1_hop.status, internet_status
                 ),
                 ProxyMode::StandaloneWarp => format!(
-                    "VPS [{}] -> WARP [{}] -> Internet [{}]",
+                    "VPS [{}] -> WARP [{}] -> 目标公网 [{}]",
                     phys.status, vpn2_hop.status, internet_status
                 ),
             }
         } else {
             format!(
-                "VPS [{}] -> 入口 [NOT_CONFIGURED] -> 出口 [NOT_CONFIGURED] -> Internet [OFF]",
+                "VPS [{}] -> 入口 [未配置] -> 出口 [未配置] -> 目标公网 [离线 (OFF)]",
                 phys.status
             )
         };

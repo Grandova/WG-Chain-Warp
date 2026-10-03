@@ -38,6 +38,8 @@ impl SystemDiagnostician {
         if let Ok(ipr) = Command::new("ip").arg("-V").output() {
             out.push_str(&format!("iproute2: {}\n", String::from_utf8_lossy(&ipr.stdout).trim()));
         }
+        let tun_ok = std::path::Path::new("/dev/net/tun").exists();
+        out.push_str(&format!("TUN device (/dev/net/tun): {}\n", if tun_ok { "EXISTS (OK)" } else { "NOT FOUND (Auto-creation supported)" }));
         out.push('\n');
 
         // 3. Physical Network & Gateway

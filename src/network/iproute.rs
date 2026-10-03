@@ -239,4 +239,54 @@ impl IpRouteManager {
                 .output();
         }
     }
+
+    /// Check and automatically create /dev/net/tun if missing
+    pub fn ensure_tun_device() -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let tun_path = std::path::Path::new("/dev/net/tun");
+            if tun_path.exists() {
+                return Ok(());
+            }
+
+            info!("TUN device /dev/net/tun not found, attempting auto-creation...");
+            // 1. Try modprobe tun (Linux kernel module)
+            let _ = Command::new("modprobe").arg("tun").output();
+
+            // 2. Ensure parent directory /dev/net exists
+            let _ = std::fs::create_dir_all("/dev/net");
+
+            // 3. Create TUN character device (major 10, minor 200)
+            let status = Command::new("mknod")
+                .args(["/dev/net/tun", "c", "10", "200"])
+                .status();
+
+            if status.map(|s| s.success()).unwrap_or(false) {
+                let _ = Command::new("chmod").args(["666", "/dev/net/tun"]).status();
+            }
+
+            if tun_path.exists() {
+                info!("Successfully created /dev/net/tun character device.");
+                return Ok(());
+            }
+
+            Err(ChainError::NetworkError(
+                "系统缺少 TUN 设备 (/dev/net/tun) 且自动创建失败。\n\
+                 可能原因与排查方案：\n\
+                 1. 若运行在 Incus / LXC 容器环境：请在宿主机执行：\n\
+                    incus config device add <容器名> tun unix-char path=/dev/net/tun\n\
+                    (或 lxc config device add <容器名> tun unix-char path=/dev/net/tun)\n\
+                 2. 若运行在 Docker 容器：请在启动命令中添加：\n\
+                    --device /dev/net/tun --cap-add=NET_ADMIN\n\
+                 3. 若运行在物理机/常规 VPS：请以 root 权限执行：\n\
+                    mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun"
+                    .to_string(),
+            ))
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(())
+        }
+    }
 }

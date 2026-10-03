@@ -48,6 +48,20 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y -q
 apt-get install -y -q nftables iproute2 curl jq ca-certificates tar
 
+# 1.1 检查并初始化 /dev/net/tun 设备 (支持 Docker / LXC / Incus 等容器与标准 VPS 环境)
+log_info "正在检测并配置 TUN 设备 (/dev/net/tun)..."
+modprobe tun 2>/dev/null || true
+mkdir -p /dev/net
+if [[ ! -c /dev/net/tun ]]; then
+    mknod /dev/net/tun c 10 200 2>/dev/null || true
+    chmod 666 /dev/net/tun 2>/dev/null || true
+fi
+if [[ -c /dev/net/tun ]]; then
+    log_ok "TUN 设备已就绪: /dev/net/tun"
+else
+    log_warn "未能创建 /dev/net/tun。若运行在 Incus/LXC/Docker 容器中，请在宿主机映射 TUN 字符设备。"
+fi
+
 # 2. 检查或安装 sing-box 代理引擎
 log_info "正在检测/安装 sing-box 代理引擎..."
 NEED_SINGBOX=0
@@ -176,6 +190,9 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/var/lib/chainproxy
+ExecStartPre=-/usr/bin/mkdir -p /dev/net
+ExecStartPre=-/usr/bin/mknod /dev/net/tun c 10 200
+ExecStartPre=-/usr/bin/chmod 666 /dev/net/tun
 ExecStart=/usr/local/bin/chainproxy --api 127.0.0.1:8880 --data-dir /var/lib/chainproxy --singbox sing-box daemon
 ExecStop=/usr/local/bin/chainproxy stop
 Restart=on-failure

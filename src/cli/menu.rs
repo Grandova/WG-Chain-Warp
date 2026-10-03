@@ -78,7 +78,7 @@ impl ConsoleMenu {
         loop {
             self.print_header().await;
 
-            print!("请选择操作编号 [0-14]: ");
+            print!("请选择操作编号 [0-12]: ");
             io::stdout().flush().unwrap();
 
             let mut choice = String::new();
@@ -88,47 +88,44 @@ impl ConsoleMenu {
 
             let choice = choice.trim();
             match choice {
-                "1" => {
-                    self.show_status().await;
-                }
-                "2" | "m" | "M" => {
-                    self.switch_proxy_mode(&mut reader).await?;
-                }
-                "3" => {
-                    self.configure_vpn1(&mut reader).await?;
-                }
-                "4" | "s5" | "S5" => {
-                    self.configure_socks5(&mut reader).await?;
-                }
-                "5" => {
-                    self.configure_vpn2_manual(&mut reader).await?;
-                }
-                "6" => {
-                    self.configure_vpn2_auto_warp().await?;
-                }
-                "7" | "apply" => {
+                "1" | "apply" | "start" => {
                     self.apply_configuration().await?;
                 }
-                "8" | "test" => {
+                "2" | "test" => {
                     self.run_test(&mut reader).await;
                 }
-                "9" | "c" | "C" | "cfg" => {
-                    self.view_config(&mut reader).await?;
-                }
-                "10" | "rb" => {
-                    self.rollback().await;
-                }
-                "11" | "stop" => {
+                "3" | "stop" => {
                     self.stop_service().await;
                 }
-                "12" | "diag" => {
-                    self.diagnose();
+                "4" | "m" | "M" | "mode" => {
+                    self.switch_proxy_mode(&mut reader).await?;
                 }
-                "13" | "log" | "logs" => {
+                "5" | "wg" => {
+                    self.configure_wireguard(&mut reader).await?;
+                }
+                "6" | "s5" | "S5" | "socks" => {
+                    self.configure_socks5(&mut reader).await?;
+                }
+                "7" | "warp" => {
+                    self.configure_warp(&mut reader).await?;
+                }
+                "8" | "c" | "C" | "cfg" => {
+                    self.view_config(&mut reader).await?;
+                }
+                "9" | "log" | "logs" => {
                     self.view_logs().await;
                 }
-                "14" | "s" | "S" => {
+                "10" | "diag" => {
+                    self.diagnose();
+                }
+                "11" | "rb" | "rollback" => {
+                    self.rollback().await;
+                }
+                "12" | "s" | "S" | "restart" => {
                     self.restart_daemon().await;
+                }
+                "status" => {
+                    self.show_status().await;
                 }
                 "0" | "q" | "exit" => {
                     println!("\n已退出 chainproxy 管理菜单。");
@@ -182,7 +179,7 @@ impl ConsoleMenu {
 
     async fn print_header(&self) {
         println!("\n==============================================================");
-        println!("             chainproxy 链式 WireGuard 代理管理面板            ");
+        println!("             chainproxy 多模式网络代理管理面板 (v1.0.2)        ");
         println!("==============================================================");
 
         let working_cfg = self.load_working_config();
@@ -196,12 +193,21 @@ impl ConsoleMenu {
         if let Ok(resp) = client.get(&status_url).send().await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 if let Some(data) = json.get("data") {
-                    let state = data.get("state").and_then(|s| s.as_str()).unwrap_or("Unknown");
+                    let raw_state = data.get("state").and_then(|s| s.as_str()).unwrap_or("Unknown");
+                    let state_desc = match raw_state {
+                        "Running" => "🟢 运行中 (Running)",
+                        "Stopped" => "⚪ 已停止 (Stopped)",
+                        "Starting" => "🟡 启动中 (Starting)",
+                        "Failed" => "🔴 启动失败 (Failed)",
+                        "RollingBack" => "🟠 自动回滚中 (RollingBack)",
+                        "Degraded" => "🟡 降级运行 (Degraded)",
+                        _ => raw_state,
+                    };
                     let visual = data.get("chain_visual").and_then(|v| v.as_str()).unwrap_or("");
                     let ver = data.get("active_config_version").and_then(|v| v.as_str()).unwrap_or("none");
-                    println!(" 服务状态: {:<12} 活跃版本: {}", state, ver);
+                    println!(" 服务状态: {:<18} 活跃版本: {}", state_desc, ver);
+                    println!(" 当前模式: {}", working_cfg.mode.description());
                     println!(" 链路拓扑: {}", visual);
-                    println!(" 运行模式: {}", working_cfg.mode.description());
                     println!("--------------------------------------------------------------");
                     daemon_connected = true;
                 }
@@ -209,25 +215,86 @@ impl ConsoleMenu {
         }
 
         if !daemon_connected {
-            println!(" 运行模式: {}", working_cfg.mode.description());
-            println!(" 提示: 后台服务未运行或连接中 (如需手动重启可执行: systemctl restart chainproxy)");
+            println!(" 当前模式: {}", working_cfg.mode.description());
+            println!(" 服务状态: ⚪ 后台服务未运行或连接中 (如需手动启动: systemctl start chainproxy)");
             println!("--------------------------------------------------------------");
         }
 
-        println!("  1. 查看链路运行状态 (Status & Health)");
-        println!("  2. 切换代理运行模式 (Switch Mode) [当前: {}]", working_cfg.mode.description());
-        println!("  3. 配置入口 WireGuard (VPN1 / WG 节点)");
-        println!("  4. 配置入口 Socks5 代理 (Socks5 节点 / 中继)");
-        println!("  5. 配置出口 Cloudflare WARP (手动粘贴 INI)");
-        println!("  6. 一键自动注册 WARP 并生成配置 (Auto Register WARP)");
-        println!("  7. 事务式应用配置并启动 (Apply & Start)");
-        println!("  8. 全链路连通性与分跳测试 (Test & Verify)");
-        println!("  9. 查看节点配置详情 (View Node Configs)");
-        println!(" 10. 回滚至上一版本配置 (Rollback)");
-        println!(" 11. 停止服务并完全恢复网络 (Stop & Cleanup)");
-        println!(" 12. 查看系统诊断报告 (Diagnose)");
-        println!(" 13. 查看服务运行日志 (Logs)");
-        println!(" 14. 重启后台守护服务 (Restart Daemon)");
+        // Dynamic hint for required nodes under active mode
+        let need_hint = match working_cfg.mode {
+            ProxyMode::WgChainWarp => {
+                let wg_ok = !working_cfg.vpn1.wireguard_config.trim().is_empty();
+                let warp_ok = !working_cfg.vpn2.wireguard_config.trim().is_empty();
+                if !wg_ok && !warp_ok {
+                    "⚠️  需配置: 请先按 [5] 导入 WireGuard 节点，按 [7] 注册 WARP 出口".to_string()
+                } else if !wg_ok {
+                    "⚠️  需配置: 请按 [5] 导入 WireGuard 节点".to_string()
+                } else if !warp_ok {
+                    "⚠️  需配置: 请按 [7] 自动注册或配置 Cloudflare WARP 出口".to_string()
+                } else {
+                    "✅ 所需节点全部就绪！请按 [1] 应用配置并启动服务".to_string()
+                }
+            }
+            ProxyMode::SocksChainWarp => {
+                let s5_ok = working_cfg.socks5.is_some();
+                let warp_ok = !working_cfg.vpn2.wireguard_config.trim().is_empty();
+                if !s5_ok && !warp_ok {
+                    "⚠️  需配置: 请先按 [6] 导入 Socks5 代理，按 [7] 注册 WARP 出口".to_string()
+                } else if !s5_ok {
+                    "⚠️  需配置: 请按 [6] 导入 Socks5 代理信息".to_string()
+                } else if !warp_ok {
+                    "⚠️  需配置: 请按 [7] 自动注册或配置 Cloudflare WARP 出口".to_string()
+                } else {
+                    "✅ 所需节点全部就绪！请按 [1] 应用配置并启动服务".to_string()
+                }
+            }
+            ProxyMode::StandaloneWg => {
+                let wg_ok = !working_cfg.vpn1.wireguard_config.trim().is_empty();
+                if !wg_ok {
+                    "⚠️  需配置: 请按 [5] 导入 WireGuard 节点".to_string()
+                } else {
+                    "✅ WireGuard 节点已就绪！请按 [1] 应用配置并启动服务".to_string()
+                }
+            }
+            ProxyMode::StandaloneSocks => {
+                let s5_ok = working_cfg.socks5.is_some();
+                if !s5_ok {
+                    "⚠️  需配置: 请按 [6] 导入 Socks5 代理信息".to_string()
+                } else {
+                    "✅ Socks5 代理已就绪！请按 [1] 应用配置并启动服务".to_string()
+                }
+            }
+            ProxyMode::StandaloneWarp => {
+                let warp_ok = !working_cfg.vpn2.wireguard_config.trim().is_empty();
+                if !warp_ok {
+                    "⚠️  需配置: 请按 [7] 自动注册或配置 Cloudflare WARP 出口".to_string()
+                } else {
+                    "✅ WARP 出口已就绪！请按 [1] 应用配置并启动服务".to_string()
+                }
+            }
+        };
+        if !need_hint.is_empty() {
+            println!(" 准备状态: {}", need_hint);
+            println!("--------------------------------------------------------------");
+        }
+
+        println!("【常用控制】");
+        println!("  1. 应用配置并启动服务 (Apply & Start)");
+        println!("  2. 全链路连通性与分跳测试 (Test & Verify)");
+        println!("  3. 停止代理服务并恢复网络 (Stop & Cleanup)");
+        println!("  4. 切换代理运行模式 (Switch Mode)");
+        println!();
+        println!("【节点与出口配置】");
+        println!("  5. 配置 WireGuard 节点 (导入或编辑 .conf / INI)");
+        println!("  6. 配置 Socks5 代理节点 (直接输入 IP:端口 或 带账密链接)");
+        println!("  7. 配置 Cloudflare WARP 出口 (一键自动注册 / 手动配置)");
+        println!("  8. 查看当前所有节点配置详情 (View Config)");
+        println!();
+        println!("【运维与诊断】");
+        println!("  9. 查看服务实时日志 (View Logs)");
+        println!(" 10. 一键系统与网络诊断 (Diagnose)");
+        println!(" 11. 回滚至上一版本配置 (Rollback)");
+        println!(" 12. 重启后台守护服务 (Restart Daemon)");
         println!("  0. 退出管理菜单");
         println!("==============================================================");
     }
@@ -320,21 +387,21 @@ impl ConsoleMenu {
                 match cfg.mode {
                     ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => {
                         if cfg.socks5.is_none() {
-                            println!("💡 提示: 检测到尚未配置 Socks5 节点，请按 [4] 输入 Socks5 代理信息。");
+                            println!("💡 提示: 检测到尚未配置 Socks5 节点，请按 [6] 输入 Socks5 代理信息。");
                         }
                     }
                     ProxyMode::WgChainWarp | ProxyMode::StandaloneWg => {
                         if cfg.vpn1.wireguard_config.trim().is_empty() {
-                            println!("💡 提示: 检测到尚未配置 WireGuard 入口，请按 [3] 粘贴 WireGuard 节点。");
+                            println!("💡 提示: 检测到尚未配置 WireGuard 节点，请按 [5] 导入 WireGuard 节点。");
                         }
                     }
                     ProxyMode::StandaloneWarp => {
                         if cfg.vpn2.wireguard_config.trim().is_empty() {
-                            println!("💡 提示: 检测到尚未配置 WARP 出口，请按 [6] 自动注册或按 [5] 粘贴配置。");
+                            println!("💡 提示: 检测到尚未配置 WARP 出口，请按 [7] 配置或自动注册 WARP。");
                         }
                     }
                 }
-                println!("💡 提示: 模式变更后，请按 [7] 应用并启动生效。");
+                println!("💡 提示: 模式变更后，请按 [1] 应用配置并启动生效。");
             }
         }
 
@@ -394,7 +461,22 @@ impl ConsoleMenu {
 
                 self.save_working_config(&cfg)?;
                 println!("💾 Socks5 代理配置已保存就绪！");
-                println!("💡 提示: 请按 [7] 事务式应用配置并启动链路生效。");
+
+                match cfg.mode {
+                    ProxyMode::SocksChainWarp => {
+                        if cfg.vpn2.wireguard_config.trim().is_empty() {
+                            println!("💡 提示: 当前为 Socks5 -> WARP 链式模式，请继续按 [7] 配置出口 WARP，最后按 [1] 启动生效。");
+                        } else {
+                            println!("💡 提示: 节点已全部就绪！请按 [1] 应用配置并启动服务。");
+                        }
+                    }
+                    ProxyMode::StandaloneSocks => {
+                        println!("💡 提示: 当前为单独 Socks5 出站模式，请按 [1] 应用配置并启动服务。");
+                    }
+                    _ => {
+                        println!("💡 提示: 请按 [1] 应用配置并启动服务。");
+                    }
+                }
             }
             Err(e) => {
                 println!("\n❌ Socks5 格式解析失败: {}", e);
@@ -404,8 +486,8 @@ impl ConsoleMenu {
         Ok(())
     }
 
-    async fn configure_vpn1<R: BufRead>(&self, reader: &mut R) -> Result<()> {
-        println!("\n--- [配置入口 WireGuard (VPN1)] ---");
+    async fn configure_wireguard<R: BufRead>(&self, reader: &mut R) -> Result<()> {
+        println!("\n--- [配置 WireGuard 节点] ---");
         println!("请直接粘贴 WireGuard 配置文本 (包含 [Interface] 与 [Peer])。");
         println!("输入完毕后，输入 EOF 或在单行输入 END 结束输入：\n");
 
@@ -435,13 +517,15 @@ impl ConsoleMenu {
 
         match parse_wireguard_ini(&raw_conf) {
             Ok(parsed) => {
-                println!("\n✅ 入口 WireGuard 解析成功！");
+                println!("\n✅ WireGuard 节点解析成功！");
                 println!("- 本地地址 (Address): {:?}", parsed.interface.addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>());
                 if !parsed.interface.dns.is_empty() {
                     println!("- DNS 服务器: {:?}", parsed.interface.dns);
                 }
                 if let Some(peer) = parsed.peers.first() {
-                    println!("- 对端端点 (Endpoint): {:?}", peer.endpoint);
+                    if let Some(ref ep) = peer.endpoint {
+                        println!("- 对端端点 (Endpoint): {}:{}", ep.host, ep.port);
+                    }
                     println!("- 对端公钥 (PublicKey): {}", peer.public_key);
                     println!("- 保活周期 (Keepalive): {:?}", peer.persistent_keepalive);
                 }
@@ -449,14 +533,62 @@ impl ConsoleMenu {
                 let mut cfg = self.load_working_config();
                 cfg.vpn1.wireguard_config = raw_conf;
                 self.save_working_config(&cfg)?;
-                println!("💾 入口 WireGuard 配置已保存就绪！");
-                println!("💡 提示: 链式代理需同时具备入口与出口节点，请继续按 [4] 自动注册 WARP (或按 [3] 粘贴出口)，最后按 [5] 启动生效。");
+                println!("💾 WireGuard 配置已保存就绪！");
+
+                match cfg.mode {
+                    ProxyMode::WgChainWarp => {
+                        if cfg.vpn2.wireguard_config.trim().is_empty() {
+                            println!("💡 提示: 当前为双层链式模式，请继续按 [7] 配置出口 WARP，最后按 [1] 启动生效。");
+                        } else {
+                            println!("💡 提示: 节点已全部就绪！请按 [1] 应用配置并启动服务。");
+                        }
+                    }
+                    ProxyMode::StandaloneWg => {
+                        println!("💡 提示: 当前为单独 WireGuard 出站模式，请按 [1] 应用配置并启动服务。");
+                    }
+                    _ => {
+                        println!("💡 提示: 若需使用此 WireGuard 节点，请确认当前运行模式 (按 [4] 切换)，然后按 [1] 启动。");
+                    }
+                }
             }
             Err(e) => {
                 println!("\n❌ 配置解析失败: {}", e);
             }
         }
 
+        Ok(())
+    }
+
+    async fn configure_warp<R: BufRead>(&self, reader: &mut R) -> Result<()> {
+        println!("\n==============================================================");
+        println!("                配置出口 Cloudflare WARP                      ");
+        println!("==============================================================");
+        println!(" 选项列表：");
+        println!("   1. 一键自动注册官方 WARP 节点 (推荐，无需填写任何凭据)");
+        println!("   2. 手动粘贴已有 WARP 的 WireGuard 配置文本 (.conf / INI)");
+        println!("--------------------------------------------------------------");
+        print!("请选择配置方式 [1-2] (回车默认 1，输入 0 取消): ");
+        let _ = io::stdout().flush();
+
+        let mut choice = String::new();
+        if reader.read_line(&mut choice).is_err() {
+            return Ok(());
+        }
+        let choice = choice.trim();
+        match choice {
+            "1" | "" => {
+                self.configure_vpn2_auto_warp().await?;
+            }
+            "2" => {
+                self.configure_vpn2_manual(reader).await?;
+            }
+            "0" => {
+                println!("已取消操作。");
+            }
+            _ => {
+                println!("无效输入，已取消。");
+            }
+        }
         Ok(())
     }
 
@@ -495,7 +627,7 @@ impl ConsoleMenu {
                 cfg.vpn2.wireguard_config = raw_conf;
                 self.save_working_config(&cfg)?;
                 println!("💾 出口 WARP 配置已保存就绪！");
-                println!("💡 提示: 请按 [5] 事务式应用配置并启动链路。");
+                println!("💡 提示: 请按 [1] 应用配置并启动服务。");
             }
             Err(e) => {
                 println!("\n❌ 配置解析失败: {}", e);
@@ -522,8 +654,8 @@ impl ConsoleMenu {
                 let mut cfg = self.load_working_config();
                 cfg.vpn2.wireguard_config = res.wireguard_config;
                 self.save_working_config(&cfg)?;
-                println!("💾 已成功将 WARP 绑定为链式出口！");
-                println!("💡 提示: 入口与出口节点现已全部就绪！请按 [5] 应用配置并启动链路。");
+                println!("💾 已成功将 WARP 绑定为出口！");
+                println!("💡 提示: 节点已就绪！请按 [1] 应用配置并启动服务。");
             }
             Err(e) => {
                 println!("\n❌ 自动注册失败: {}", e);
@@ -535,45 +667,45 @@ impl ConsoleMenu {
 
     async fn apply_configuration(&self) -> Result<()> {
         let cfg = self.load_working_config();
-        println!("\n--- [事务式应用配置并启动] ---");
+        println!("\n--- [应用配置并启动服务] ---");
         println!("当前生效模式: {}", cfg.mode.description());
 
         match cfg.mode {
             ProxyMode::WgChainWarp => {
                 if cfg.vpn1.wireguard_config.trim().is_empty() {
-                    println!("❌ 错误: 入口 WireGuard 未配置！请先执行选项 3 导入 WireGuard。");
+                    println!("❌ 错误: 入口 WireGuard 未配置！请先按 [5] 导入 WireGuard 节点。");
                     return Ok(());
                 }
                 if cfg.vpn2.wireguard_config.trim().is_empty() {
-                    println!("❌ 错误: 出口 WARP 未配置！请先执行选项 6 自动注册或选项 5 粘贴 WARP。");
+                    println!("❌ 错误: 出口 WARP 未配置！请先按 [7] 自动注册或配置 WARP。");
                     return Ok(());
                 }
             }
             ProxyMode::SocksChainWarp => {
                 if cfg.socks5.is_none() {
-                    println!("❌ 错误: 入口 Socks5 代理未配置！请先执行选项 4 配置 Socks5 代理信息。");
+                    println!("❌ 错误: 入口 Socks5 代理未配置！请先按 [6] 配置 Socks5 代理信息。");
                     return Ok(());
                 }
                 if cfg.vpn2.wireguard_config.trim().is_empty() {
-                    println!("❌ 错误: 出口 WARP 未配置！请先执行选项 6 自动注册或选项 5 粘贴 WARP。");
+                    println!("❌ 错误: 出口 WARP 未配置！请先按 [7] 自动注册或配置 WARP。");
                     return Ok(());
                 }
             }
             ProxyMode::StandaloneWg => {
                 if cfg.vpn1.wireguard_config.trim().is_empty() {
-                    println!("❌ 错误: WireGuard 节点未配置！请先执行选项 3 导入 WireGuard。");
+                    println!("❌ 错误: WireGuard 节点未配置！请先按 [5] 导入 WireGuard 节点。");
                     return Ok(());
                 }
             }
             ProxyMode::StandaloneSocks => {
                 if cfg.socks5.is_none() {
-                    println!("❌ 错误: Socks5 代理未配置！请先执行选项 4 配置 Socks5 代理信息。");
+                    println!("❌ 错误: Socks5 代理未配置！请先按 [6] 配置 Socks5 代理信息。");
                     return Ok(());
                 }
             }
             ProxyMode::StandaloneWarp => {
                 if cfg.vpn2.wireguard_config.trim().is_empty() {
-                    println!("❌ 错误: 出口 WARP 未配置！请先执行选项 6 自动注册或选项 5 粘贴 WARP。");
+                    println!("❌ 错误: 出口 WARP 未配置！请先按 [7] 自动注册或配置 WARP。");
                     return Ok(());
                 }
             }
@@ -598,7 +730,7 @@ impl ConsoleMenu {
             } else {
                 println!("❌ 自动安装未能完成。请退出菜单在终端以 root 权限执行安装：");
                 println!("   curl -fsSL https://sing-box.app/install.sh | sudo bash");
-                println!("安装完成后重新进入面板按 [5] 即可启动链路。");
+                println!("安装完成后重新进入面板按 [1] 即可启动链路。");
                 return Ok(());
             }
         }
@@ -662,14 +794,40 @@ impl ConsoleMenu {
             }
         }
 
+        let working_cfg = self.load_working_config();
         if !is_running || active_version.is_none() {
-            println!("\n⚠️  [提示] 链式代理服务当前未处于运行状态 (尚未应用配置启动链路)！");
-            println!("由于链路尚未启动，sing-box 本地链路探测端口尚未开启。");
+            println!("\n⚠️  [提示] 代理服务当前未处于运行状态 (尚未启动生效)！");
+            println!("由于服务尚未启动，sing-box 本地链路探测端口尚未开启。");
             println!("\n💡 建议操作流程：");
-            println!("  1. 按 [2] 导入入口 WireGuard 配置 (粘贴您的 WireGuard 节点)");
-            println!("  2. 按 [4] 一键自动注册 Cloudflare WARP 出口 (或按 [3] 手动粘贴)");
-            println!("  3. 按 [5] 事务式应用配置并启动 (Apply & Start)");
-            println!("  4. 服务启动成功后，再按 [6] 进行全链路与出口 IP 探测验证！");
+            match working_cfg.mode {
+                ProxyMode::WgChainWarp => {
+                    println!("  1. 按 [5] 导入 WireGuard 节点");
+                    println!("  2. 按 [7] 自动注册或配置 Cloudflare WARP 出口");
+                    println!("  3. 按 [1] 应用配置并启动服务 (Apply & Start)");
+                    println!("  4. 服务启动成功后，再按 [2] 进行连通性探测验证！");
+                }
+                ProxyMode::SocksChainWarp => {
+                    println!("  1. 按 [6] 配置 Socks5 代理节点");
+                    println!("  2. 按 [7] 自动注册或配置 Cloudflare WARP 出口");
+                    println!("  3. 按 [1] 应用配置并启动服务 (Apply & Start)");
+                    println!("  4. 服务启动成功后，再按 [2] 进行连通性探测验证！");
+                }
+                ProxyMode::StandaloneWg => {
+                    println!("  1. 按 [5] 导入 WireGuard 节点");
+                    println!("  2. 按 [1] 应用配置并启动服务 (Apply & Start)");
+                    println!("  3. 服务启动成功后，再按 [2] 进行连通性探测验证！");
+                }
+                ProxyMode::StandaloneSocks => {
+                    println!("  1. 按 [6] 配置 Socks5 代理节点");
+                    println!("  2. 按 [1] 应用配置并启动服务 (Apply & Start)");
+                    println!("  3. 服务启动成功后，再按 [2] 进行连通性探测验证！");
+                }
+                ProxyMode::StandaloneWarp => {
+                    println!("  1. 按 [7] 自动注册或配置 Cloudflare WARP 出口");
+                    println!("  2. 按 [1] 应用配置并启动服务 (Apply & Start)");
+                    println!("  3. 服务启动成功后，再按 [2] 进行连通性探测验证！");
+                }
+            }
             print!("\n是否仍要向后台发送探测请求？(y/N): ");
             let _ = io::stdout().flush();
             let mut choice = String::new();
@@ -741,9 +899,9 @@ impl ConsoleMenu {
         println!("--------------------------------------------------------------");
 
         // 显示入口 VPN 1
-        println!(" 【前置入口 1: WireGuard 节点】");
+        println!(" 【WireGuard 节点配置】");
         if working_cfg.vpn1.wireguard_config.trim().is_empty() {
-            println!("   • 状态     : ❌ 未配置 (如需使用请按 3 导入)");
+            println!("   • 状态     : ❌ 未配置 (如需使用请按 [5] 配置)");
         } else {
             match parse_wireguard_ini(&working_cfg.vpn1.wireguard_config) {
                 Ok(parsed) => {
@@ -771,7 +929,7 @@ impl ConsoleMenu {
         }
 
         // 显示 Socks5
-        println!("\n 【前置入口 2: Socks5 代理节点】");
+        println!("\n 【Socks5 代理节点配置】");
         if let Some(ref s5) = working_cfg.socks5 {
             println!("   • 状态     : ✅ 已配置就绪");
             println!("   • 代理地址 : {}:{}", s5.server, s5.port);
@@ -783,13 +941,13 @@ impl ConsoleMenu {
             }
             println!("   • 安全连接 : {}", s5.redacted_string());
         } else {
-            println!("   • 状态     : ❌ 未配置 (如需使用请按 4 导入)");
+            println!("   • 状态     : ❌ 未配置 (如需使用请按 [6] 配置)");
         }
 
         // 显示出口 WARP
-        println!("\n 【出口节点: Cloudflare WARP (VPN 2)】");
+        println!("\n 【Cloudflare WARP 出口配置】");
         if working_cfg.vpn2.wireguard_config.trim().is_empty() {
-            println!("   • 状态     : ❌ 未配置 (请按 6 一键自动注册或按 5 手动粘贴)");
+            println!("   • 状态     : ❌ 未配置 (如需使用请按 [7] 配置或自动注册)");
         } else {
             match parse_wireguard_ini(&working_cfg.vpn2.wireguard_config) {
                 Ok(parsed) => {
@@ -969,7 +1127,7 @@ fn print_test_report(report: &TestReport) {
     println!("                全链路连通性与分跳探测报告                    ");
     println!("==============================================================");
     if report.success {
-        println!(" 总体探测结论: ✅ 链路全线畅通，链式代理正常运行！");
+        println!(" 总体探测结论: ✅ 链路全线畅通，代理服务正常运行！");
     } else {
         println!(" 总体探测结论: ⚠️  链路探测未完全通过 (可能尚未启动或节点不可达)");
     }
@@ -980,46 +1138,84 @@ fn print_test_report(report: &TestReport) {
     println!("     • 默认网关 : {}", if report.physical.endpoint.is_empty() { "未检测到" } else { &report.physical.endpoint });
     println!("     • 连通状态 : {}", if report.physical.reachable { "✅ 正常 (UP)" } else { "❌ 异常" });
 
-    println!("\n [2] 第一跳: 入口 WireGuard 节点");
-    println!("     • 节点名称 : {}", if report.vpn1.name.is_empty() { "VPN 1" } else { &report.vpn1.name });
-    println!("     • 对端端点 : {}", if report.vpn1.endpoint.is_empty() { "未配置" } else { &report.vpn1.endpoint });
-    println!("     • 隧道连通 : {}", if report.vpn1.reachable { "✅ 正常连接" } else { "❌ 连接失败" });
-    if let Some(lat) = report.vpn1.latency_ms {
-        println!("     • 节点延迟 : {} ms", lat);
-    }
-    if let Some(ref msg) = report.vpn1.message {
-        println!("     • 探测详情 : {}", msg);
-    }
+    let is_standalone = report.vpn2.status.contains("直连")
+        || report.vpn2.endpoint == "None"
+        || report.vpn2.name.contains("未使用");
 
-    println!("\n [3] 第二跳: Cloudflare WARP 出口 (经第一跳隧道二次封装)");
-    println!("     • 节点名称 : {}", if report.vpn2.name.is_empty() { "Cloudflare WARP" } else { &report.vpn2.name });
-    println!("     • 对端端点 : {}", if report.vpn2.endpoint.is_empty() { "未配置" } else { &report.vpn2.endpoint });
-    println!("     • 隧道连通 : {}", if report.vpn2.reachable { "✅ 正常连接" } else { "❌ 连接失败" });
-    if let Some(lat) = report.vpn2.latency_ms {
-        println!("     • 节点延迟 : {} ms", lat);
-    }
-    println!("     • WARP状态 : {}", report.vpn2.status);
+    if is_standalone {
+        let node_title = if report.vpn1.name.contains("Socks5") {
+            "出口 Socks5 代理节点 (直连出站)"
+        } else if report.vpn1.name.contains("WireGuard") || report.vpn1.name.contains("VPN") {
+            "出口 WireGuard 节点 (直连出站)"
+        } else {
+            "出口代理节点 (直连出站)"
+        };
+        println!("\n [2] {}", node_title);
+        println!("     • 节点名称 : {}", if report.vpn1.name.is_empty() { "默认代理节点" } else { &report.vpn1.name });
+        println!("     • 对端端点 : {}", if report.vpn1.endpoint.is_empty() { "未配置" } else { &report.vpn1.endpoint });
+        println!("     • 节点连通 : {}", if report.vpn1.reachable { "✅ 正常连接" } else { "❌ 连接失败" });
+        if let Some(lat) = report.vpn1.latency_ms {
+            println!("     • 节点延迟 : {} ms", lat);
+        }
+        if let Some(ref msg) = report.vpn1.message {
+            println!("     • 探测详情 : {}", msg);
+        }
 
-    println!("\n [4] 最终公网出口 (Internet Egress)");
-    println!("     • 外网访问 : {}", if report.final_exit.internet_ok { "✅ 正常畅通" } else { "❌ 无法访问公网" });
-    if let Some(ref ip) = report.final_exit.exit_ip {
-        println!("     • 最终公网 IP : {}", ip);
-    }
-    if let Some(ref country) = report.final_exit.exit_country {
-        println!("     • 出口归属地区: {}", country);
-    }
-    if let Some(ref isp) = report.final_exit.exit_isp {
-        println!("     • 出口运营商  : {}", isp);
-    }
-    if let Some(lat) = report.final_exit.latency_ms {
-        println!("     • 全链路总延迟: {} ms", lat);
+        println!("\n [3] 最终公网出口 (Internet Egress)");
+        println!("     • 外网访问 : {}", if report.final_exit.internet_ok { "✅ 正常畅通" } else { "❌ 无法访问公网" });
+        if let Some(ref ip) = report.final_exit.exit_ip {
+            println!("     • 最终公网 IP : {}", ip);
+        }
+        if let Some(ref country) = report.final_exit.exit_country {
+            println!("     • 出口归属地区: {}", country);
+        }
+        if let Some(ref isp) = report.final_exit.exit_isp {
+            println!("     • 出口运营商  : {}", isp);
+        }
+        if let Some(lat) = report.final_exit.latency_ms {
+            println!("     • 全链路总延迟: {} ms", lat);
+        }
+    } else {
+        println!("\n [2] 第一跳: 入口节点 ({})", if report.vpn1.name.is_empty() { "前置中继" } else { &report.vpn1.name });
+        println!("     • 对端端点 : {}", if report.vpn1.endpoint.is_empty() { "未配置" } else { &report.vpn1.endpoint });
+        println!("     • 隧道连通 : {}", if report.vpn1.reachable { "✅ 正常连接" } else { "❌ 连接失败" });
+        if let Some(lat) = report.vpn1.latency_ms {
+            println!("     • 节点延迟 : {} ms", lat);
+        }
+        if let Some(ref msg) = report.vpn1.message {
+            println!("     • 探测详情 : {}", msg);
+        }
+
+        println!("\n [3] 第二跳: Cloudflare WARP 出口 (经第一跳隧道二次封装)");
+        println!("     • 节点名称 : {}", if report.vpn2.name.is_empty() { "Cloudflare WARP" } else { &report.vpn2.name });
+        println!("     • 对端端点 : {}", if report.vpn2.endpoint.is_empty() { "未配置" } else { &report.vpn2.endpoint });
+        println!("     • 隧道连通 : {}", if report.vpn2.reachable { "✅ 正常连接" } else { "❌ 连接失败" });
+        if let Some(lat) = report.vpn2.latency_ms {
+            println!("     • 节点延迟 : {} ms", lat);
+        }
+        println!("     • WARP状态 : {}", report.vpn2.status);
+
+        println!("\n [4] 最终公网出口 (Internet Egress)");
+        println!("     • 外网访问 : {}", if report.final_exit.internet_ok { "✅ 正常畅通" } else { "❌ 无法访问公网" });
+        if let Some(ref ip) = report.final_exit.exit_ip {
+            println!("     • 最终公网 IP : {}", ip);
+        }
+        if let Some(ref country) = report.final_exit.exit_country {
+            println!("     • 出口归属地区: {}", country);
+        }
+        if let Some(ref isp) = report.final_exit.exit_isp {
+            println!("     • 出口运营商  : {}", isp);
+        }
+        if let Some(lat) = report.final_exit.latency_ms {
+            println!("     • 全链路总延迟: {} ms", lat);
+        }
     }
     println!("==============================================================");
 
     if !report.success {
         println!("💡 排查建议:");
-        println!("  - 若服务状态为 Stopped，请先按 [2] 导入 WireGuard、按 [4] 注册 WARP、按 [5] 应用启动");
-        println!("  - 若已启动但 VPN1 失败，请检查入口节点的 Endpoint、公私钥与 AllowedIPs 是否有效");
-        println!("  - 可按 [10] 查看最新日志以了解后台详细握手情况");
+        println!("  - 若服务状态为 Stopped，请先按 [1] 应用配置并启动服务");
+        println!("  - 若节点连接失败，请按 [8] 检查节点配置，或确认对端 Endpoint / 密钥 / 端口连通性");
+        println!("  - 可按 [9] 查看最新运行日志以了解后台详细握手情况");
     }
 }
