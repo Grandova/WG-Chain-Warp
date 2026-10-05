@@ -98,7 +98,7 @@ Linux 子进程设置 parent-death SIGTERM；daemon 被 SIGKILL 后 sing-box 退
 ~~~bash
 cargo build --example netns_driver
 work=$(mktemp -d /tmp/chainproxy-test.XXXXXX)
-printf 'nameserver 192.0.2.1\n' > "$work/resolv.conf"
+printf 'nameserver 172.31.255.2\nnameserver fdfe:dcba:9876::2\nnameserver 192.0.2.2\nnameserver 127.0.0.53\nnameserver 192.0.2.1\n' > "$work/resolv.conf"
 # 只在私有 mount namespace 内改变测试进程的 resolver。
 sudo unshare -m sh -c '
   mount --bind "$1/resolv.conf" /etc/resolv.conf
@@ -149,3 +149,11 @@ sudo unshare -m sh -c '
 v1.0.x 已经留下、且无快照归属信息的 auto_route 规则仍不会自动删除。错误现在包含具体地址族和冲突规则；需要结合旧 singbox_active.json、运行进程、TUN 状态核对后精确清理，不能仅按 table/priority 批量删除。CLI 不再无条件声称失败已回滚或 SSH 永不失联。
 
 安装回归：在 Linux 执行 python3 tests/install_upgrade.py，验证既有 sing-box 文件不被替换、旧进程先停止、无效下载保持现有服务、停止失败禁止替换。
+
+## v1.1.2 DNS bootstrap 与网关状态
+
+systemd-resolved 会将运行中 chain0 的 DNS 地址（例如 172.31.255.2）列入其上游文件。reload 在停止旧实例前生成配置，不能把这个地址当成新的物理 bootstrap DNS，否则 WireGuard 域名解析依赖尚未建立的隧道，触发 loopback connection to TUN range 并被 watchdog 回滚。现在跳过本项目 IPv4/IPv6 TUN 网段、loopback 和本网关 DNS 监听地址，继续使用真实物理上游；没有可用地址则明确报错。
+
+菜单只有在 forwarding 开关开启且存在允许网段时才显示网关配置已开启。默认 forwarding=true 但 gateway=false、forwarded_subnets=[] 不代表已建立 LAN 转发；显示的是配置状态，仍需应用成功才能生效。
+
+上面的 namespace 复现步骤故意把 TUN DNS、本机 DNS 和 loopback 放在真实 DNS 前面，覆盖 bootstrap 排除和带有旧 TUN DNS 的 reload。客户端默认网关与 DNS 是两项独立设置：默认网关指向本机后，客户端 DNS 应指定本网关 LAN 地址或可通过隧道访问的 DNS。客户端同网段的旧 DNS 查询可能通过二层直接发给旧路由器。

@@ -84,3 +84,16 @@ The final run also started with IPv6 lan0.forwarding=1 while all.forwarding=0
 and verified restoration of both settings and accept_ra after each stop.
 All test namespaces and background processes were removed.
 Real host networking and existing services were not reconfigured.
+
+2026-10-05 v1.1.2 DNS reload regression:
+- cargo fmt executed; unrelated historical formatting excluded from the patch.
+- cargo clippy --all-targets --all-features: exit 0, same 4 existing warnings.
+- cargo test: 27 passed (Windows).
+- Linux namespace suite --external-health: all 20 PASS groups above passed again.
+- Resolver fixture lists TUN IPv4/IPv6, gateway listener and loopback before the
+  physical upstream. Real endpoint resolution, reload and health checks passed.
+- Host configuration comparison ignores changing nft packet/byte counters only.
+- Live Debian 12: gateway apply committed, table 2022 points LAN traffic to chain0,
+  bootstrap DNS excludes chain0, host HTTPS/ICMP work, main default unchanged.
+- External LAN client validation remains incomplete: SYN reaches chain0 and
+  SYN-ACK leaves eth0 to the correct client MAC, but no client ACK is observed.

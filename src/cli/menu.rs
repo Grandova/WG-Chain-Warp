@@ -218,14 +218,14 @@ impl ConsoleMenu {
                 IpRouteManager::get_interface_lan_subnet(iface)?))
         });
 
-        if working_cfg.is_forwarding_enabled() {
-            let (lan_ip, lan_sub) = detected_lan.as_ref().map(|(ip, sub)| (ip.as_str(), sub.as_str())).unwrap_or(("未探测", "未探测"));
-            let eff_subnets = working_cfg.get_effective_forwarded_subnets(detected_lan.as_ref().map(|(_, s)| s.as_str()));
-            let sub_desc = if eff_subnets.is_empty() { lan_sub.to_string() } else { eff_subnets.join(", ") };
-            println!(" 局域网网关: 🟢 已开启 [网关IP: {} | 允许网段: {}]", lan_ip, sub_desc);
+        let eff_subnets = working_cfg.get_effective_forwarded_subnets(detected_lan.as_ref().map(|(_, s)| s.as_str()));
+        let gateway_enabled = working_cfg.is_forwarding_enabled() && !eff_subnets.is_empty();
+        if gateway_enabled {
+            let lan_ip = detected_lan.as_ref().map(|(ip, _)| ip.as_str()).unwrap_or("未探测");
+            println!(" 局域网网关配置: 🟢 已开启 [网关IP: {} | 允许网段: {}]", lan_ip, eff_subnets.join(", "));
         } else {
             let (lan_ip, lan_sub) = detected_lan.as_ref().map(|(ip, sub)| (ip.as_str(), sub.as_str())).unwrap_or(("未探测", "未探测"));
-            println!(" 局域网网关: ⚪ 已关闭 (按 [8] 可开启 | 本机IP: {} 网段: {})", lan_ip, lan_sub);
+            println!(" 局域网网关配置: ⚪ 已关闭 (按 [8] 可开启 | 本机IP: {} 网段: {})", lan_ip, lan_sub);
         }
         println!("--------------------------------------------------------------");
 
@@ -297,7 +297,7 @@ impl ConsoleMenu {
         println!("  5. 配置 WireGuard 节点 (导入或编辑 .conf / INI)");
         println!("  6. 配置 Socks5 代理节点 (直接输入 IP:端口 或 带账密链接)");
         println!("  7. 配置 Cloudflare WARP 出口 (一键自动注册 / 手动配置)");
-        let gw_hint = if working_cfg.is_forwarding_enabled() { "🟢 开启" } else { "⚪ 关闭" };
+        let gw_hint = if gateway_enabled { "🟢 开启" } else { "⚪ 关闭" };
         println!("  8. 局域网透明网关管理 (LAN Gateway) [当前: {}]", gw_hint);
         println!("  9. 查看当前所有节点与网关详情 (View Config)");
         println!();
@@ -686,25 +686,25 @@ impl ConsoleMenu {
         let auto_lan_subnet = IpRouteManager::get_interface_lan_subnet(iface);
 
         loop {
-            let status_str = if working_cfg.is_forwarding_enabled() {
+            let eff_subnets = working_cfg.get_effective_forwarded_subnets(auto_lan_subnet.as_deref());
+            let status_str = if working_cfg.is_forwarding_enabled() && !eff_subnets.is_empty() {
                 "🟢 已开启 (同局域网客户端可将网关设置为本机IP走代理出站)"
             } else {
                 "⚪ 已关闭 (LAN 保留普通转发策略)"
             };
             let ip_str = local_ip.map(|ip| ip.to_string()).unwrap_or_else(|| "未探测到".to_string());
             let auto_sub_str = auto_lan_subnet.clone().unwrap_or_else(|| "未探测到".to_string());
-            let eff_subnets = working_cfg.get_effective_forwarded_subnets(auto_lan_subnet.as_deref());
             let eff_str = if eff_subnets.is_empty() { "无".to_string() } else { eff_subnets.join(", ") };
 
             println!("\n==============================================================");
             println!("                 局域网透明网关 (LAN Gateway) 设置            ");
             println!("==============================================================");
-            println!(" 网关状态: {}", status_str);
+            println!(" 网关配置: {}", status_str);
             println!(" 本机物理网卡: {}", iface);
             println!(" 本机局域网 IP: {}  <-- [同局域网设备网关请填写此 IP]", ip_str);
             println!(" 自动允许实际网段: {} (开关: {})", auto_sub_str, if working_cfg.gateway.auto_allow_lan { "已启用" } else { "未启用" });
             println!(" 自定义允许网段: {:?}", working_cfg.gateway.allowed_subnets);
-            println!(" 当前生效放行网段: {}", eff_str);
+            println!(" 配置允许放行网段: {}", eff_str);
             println!("--------------------------------------------------------------");
             println!("  1. 开启局域网网关 (自动放行本机实际网段同局域网设备)");
             println!("  2. 关闭局域网网关 (保持本机代理开关不变)");
@@ -1172,7 +1172,7 @@ impl ConsoleMenu {
         let local_ip = IpRouteManager::get_interface_ipv4(iface).ok();
         let auto_sub = IpRouteManager::get_interface_lan_subnet(iface);
         let eff_subnets = working_cfg.get_effective_forwarded_subnets(auto_sub.as_deref());
-        println!("   • 网关状态 : {}", if working_cfg.is_forwarding_enabled() { "🟢 已开启 (同局域网设备设置本机IP为网关即可走代理出站)" } else { "⚪ 已关闭 (LAN 保留普通转发策略)" });
+        println!("   • 网关配置 : {}", if working_cfg.is_forwarding_enabled() && !eff_subnets.is_empty() { "🟢 已开启 (同局域网设备设置本机IP为网关即可走代理出站)" } else { "⚪ 已关闭 (LAN 保留普通转发策略)" });
         println!("   • 本机网卡 : {}", iface);
         println!("   • 网关 IP  : {}", local_ip.map(|i| i.to_string()).unwrap_or_else(|| "未探测".to_string()));
         println!("   • 自动网段 : {} (自动匹配本机所属网段: {})", auto_sub.unwrap_or_else(|| "未探测".to_string()), if working_cfg.gateway.auto_allow_lan { "已启用" } else { "未启用" });
@@ -1284,7 +1284,7 @@ impl ConsoleMenu {
         // Local fallback if daemon not responding
         let detected = IpRouteManager::get_interface_lan_subnet(iface);
         let subnets = cfg.get_effective_forwarded_subnets(detected.as_deref());
-        let report = GatewayMonitor::generate_human_diagnostics(iface, &subnets, local_ip, cfg.is_forwarding_enabled());
+        let report = GatewayMonitor::generate_human_diagnostics(iface, &subnets, local_ip, cfg.is_forwarding_enabled() && !subnets.is_empty());
         println!("{}", report);
     }
 

@@ -114,8 +114,11 @@ pub fn generate_singbox_config(
 
     #[cfg(target_os = "linux")]
     {
-        // A loopback systemd-resolved stub cannot be reached through an uplink-bound
-        // dialer, and its own upstream sockets could recurse into the host proxy.
+        // resolved includes chain0 DNS while it is running; reload must not use
+        // that DNS (or our LAN listener) to bootstrap the tunnel itself.
+        let tun_subnets =
+            [DEFAULT_TUN_IPV4, DEFAULT_TUN_IPV6].map(|s| s.parse::<ipnet::IpNet>().unwrap());
+        let local_ip = local_ip.and_then(|s| s.parse::<std::net::IpAddr>().ok());
         let server = ["/etc/resolv.conf", "/run/systemd/resolve/resolv.conf"]
             .iter()
             .filter_map(|path| std::fs::read_to_string(path).ok())
@@ -133,9 +136,14 @@ pub fn generate_singbox_config(
                     })
                     .collect::<Vec<_>>()
             })
-            .find(|ip| !ip.is_loopback() && !ip.is_unspecified());
+            .find(|ip| {
+                !ip.is_loopback()
+                    && !ip.is_unspecified()
+                    && Some(*ip) != local_ip
+                    && !tun_subnets.iter().any(|subnet| subnet.contains(ip))
+            });
         let server = server.ok_or_else(|| ChainError::ValidationError(
-            "Physical DNS requires a non-loopback nameserver in /etc/resolv.conf or /run/systemd/resolve/resolv.conf".to_string()
+            "Physical DNS requires an upstream nameserver outside loopback, chain0 and the local gateway address in /etc/resolv.conf or /run/systemd/resolve/resolv.conf".to_string()
         ))?;
         for dns in &mut dns_servers {
             if dns["tag"] == "dns-direct" {

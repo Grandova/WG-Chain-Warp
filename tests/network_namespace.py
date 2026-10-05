@@ -6,6 +6,7 @@ import argparse
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import selectors
 import signal
@@ -54,7 +55,12 @@ def main():
     names = {n: f'{tag}-{n}' for n in ['client', 'gateway', 'internet']}
     children = []
     active = None
-    baseline_host = [run('ip', '-j', 'route', 'show', 'table', 'all'), run('ip', '-j', 'rule'), run('nft', 'list', 'ruleset')]
+    def host_state():
+        # A running host naturally advances counters while namespace tests run.
+        nft = re.sub(r'counter packets \d+ bytes \d+', 'counter', run('nft', 'list', 'ruleset'))
+        return [run('ip', '-j', 'route', 'show', 'table', 'all'), run('ip', '-j', 'rule'), nft]
+
+    baseline_host = host_state()
 
     def cmd(ns, *command):
         return ['nsenter', '--net=/run/netns/' + names[ns], *command]
@@ -332,8 +338,9 @@ Server(('::', 8080), Handler).serve_forever()
             except sp.TimeoutExpired: p.kill(); p.wait()
         for name in names.values():
             run('ip','netns','del',name,check=False)
-        after_host = [run('ip','-j','route','show','table','all'),run('ip','-j','rule'),run('nft','list','ruleset')]
-        assert baseline_host == after_host, 'Real host networking changed'
+        after_host = host_state()
+        for label, before, after in zip(['routes', 'rules', 'nft'], baseline_host, after_host):
+            assert before == after, f'Real host {label} configuration changed'
         passed('real host routes/rules/firewall unchanged')
 
 

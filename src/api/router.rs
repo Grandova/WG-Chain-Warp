@@ -364,7 +364,7 @@ async fn gateway_diagnose_handler(
     } else {
         vec![]
     };
-    let enabled = cfg.as_ref().map(|c| c.is_forwarding_enabled()).unwrap_or(false);
+    let enabled = cfg.as_ref().map(|c| c.is_forwarding_enabled()).unwrap_or(false) && !subnets.is_empty();
 
     let report = GatewayMonitor::generate_human_diagnostics(uplink, &subnets, local_ip.as_deref(), enabled);
     Json(ApiResponse::ok(report))
