@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         cmd => {
             let handler = CliHandler::new(&cli.api);
-            if let Err(e) = handler.run_client_command(cmd, &cli.singbox).await {
+            if let Err(e) = handler.run_client_command(cmd, &cli.singbox, &cli.data_dir).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

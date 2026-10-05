@@ -28,16 +28,56 @@ pub fn generate_singbox_config(
         timestamp: true,
     };
 
+    if chain_config.mode == ProxyMode::Socks5Server {
+        let server = chain_config
+            .socks5_server
+            .as_ref()
+            .ok_or_else(|| ChainError::ValidationError("尚未配置 SOCKS5 服务端".to_string()))?;
+        server.validate()?;
+        let mut outbound = json!({"type": "direct", "tag": "physical-direct"});
+        if !uplink_interface.is_empty() {
+            outbound["bind_interface"] = json!(uplink_interface);
+        }
+        return Ok(SingBoxConfig {
+            log,
+            dns: DnsConfig {
+                servers: vec![json!({"type": "local", "tag": "dns-direct"})],
+                final_server: Some("dns-direct".to_string()),
+                rules: vec![],
+                strategy: Some("prefer_ipv4".to_string()),
+            },
+            inbounds: vec![json!({
+                "type": "socks", "tag": "socks-server", "listen": server.listen,
+                "listen_port": server.port, "users": server.users
+            })],
+            endpoints: vec![],
+            outbounds: vec![outbound],
+            route: RouteConfig {
+                auto_detect_interface: true,
+                default_domain_resolver: Some("dns-direct".to_string()),
+                final_outbound: "physical-direct".to_string(),
+                rules: vec![],
+            },
+        });
+    }
+
     // Determine final outbound target based on active ProxyMode
     let final_target_outbound = match chain_config.mode {
         ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp | ProxyMode::StandaloneWarp => "warp",
         ProxyMode::StandaloneWg => "vpn1",
         ProxyMode::StandaloneSocks => "socks-out",
+        ProxyMode::Socks5Server => "physical-direct",
     };
 
     // 2. DNS Section (Modern sing-box 1.14+ format)
     let mut dns_servers = Vec::new();
     let final_dns;
+    // DNS over TCP works through SOCKS CONNECT even when UDP ASSOCIATE is unavailable.
+    let dns_transport = if chain_config.mode == ProxyMode::StandaloneSocks {
+        "tcp"
+    } else {
+        "udp"
+    };
 
     match chain_config.dns.mode.as_str() {
         "physical" => {
@@ -53,7 +93,7 @@ pub fn generate_singbox_config(
                 let tag = format!("dns-custom-{}", idx);
                 dns_servers.push(json!({
                     "tag": tag,
-                    "type": "udp",
+                    "type": dns_transport,
                     "server": s,
                     "detour": final_target_outbound
                 }));
@@ -75,13 +115,13 @@ pub fn generate_singbox_config(
             // This guarantees genuine IP resolution and avoids commercial VPN threat-protection sinkholes (such as NordVPN 192.0.0.88).
             dns_servers.push(json!({
                 "tag": "dns-chain",
-                "type": "udp",
+                "type": dns_transport,
                 "server": "1.1.1.1",
                 "detour": final_target_outbound
             }));
             dns_servers.push(json!({
                 "tag": "dns-chain-backup",
-                "type": "udp",
+                "type": dns_transport,
                 "server": "8.8.8.8",
                 "detour": final_target_outbound
             }));
@@ -408,11 +448,20 @@ pub fn generate_singbox_config(
         }));
     }
 
+    if chain_config.mode == ProxyMode::StandaloneSocks {
+        // Resolve here so upstream SOCKS DNS cannot hide a broken chain resolver.
+        route_rules.push(json!({
+            "inbound": ["test-warp-in"], "action": "resolve",
+            "server": dns.final_server, "strategy": "ipv4_only"
+        }));
+    }
+
     // Route test inbounds according to active mode
     let test_vpn1_target = match chain_config.mode {
         ProxyMode::WgChainWarp | ProxyMode::StandaloneWg => "vpn1",
         ProxyMode::SocksChainWarp => "socks-relay",
         ProxyMode::StandaloneSocks => "socks-out",
+        ProxyMode::Socks5Server => "physical-direct",
         ProxyMode::StandaloneWarp => "warp",
     };
     route_rules.push(json!({
@@ -423,6 +472,7 @@ pub fn generate_singbox_config(
     let test_warp_target = match chain_config.mode {
         ProxyMode::StandaloneWg => "vpn1",
         ProxyMode::StandaloneSocks => "socks-out",
+        ProxyMode::Socks5Server => "physical-direct",
         _ => "warp",
     };
     route_rules.push(json!({
@@ -459,6 +509,61 @@ pub fn generate_singbox_config(
 mod tests {
     use super::*;
     use crate::model::config::{ChainProxyConfig, DnsConfig, RoutingConfig, VpnNodeConfig};
+
+    #[test]
+    fn socks_server_is_authenticated_direct_only_without_tun() {
+        let config: ChainProxyConfig = serde_json::from_value(json!({
+            "mode": "socks5_server",
+            "socks5_server": {"listen": "::", "port": 1080,
+                "users": [{"username": "alice", "password": "secret"}]}
+        }))
+        .unwrap();
+        let generated =
+            generate_singbox_config(&config, &config.parse_and_validate().unwrap(), "eth0", None)
+                .unwrap();
+        assert_eq!(generated.inbounds.len(), 1);
+        assert_eq!(generated.inbounds[0]["type"], "socks");
+        assert_eq!(generated.inbounds[0]["listen"], "::");
+        assert_eq!(generated.inbounds[0]["users"][0]["password"], "secret");
+        assert_eq!(generated.outbounds.len(), 1);
+        assert_eq!(generated.outbounds[0]["type"], "direct");
+        assert!(generated.outbounds[0].get("routing_mark").is_none());
+        assert!(generated.endpoints.is_empty());
+        assert!(!config.is_forwarding_enabled());
+        assert_eq!(
+            config.redacted().socks5_server.unwrap().users[0].password,
+            "********"
+        );
+    }
+
+    #[test]
+    fn standalone_socks_resolves_dns_over_tcp_through_proxy() {
+        for mode in ["chain", "custom"] {
+            let config: ChainProxyConfig = serde_json::from_value(json!({
+                "mode": "standalone_socks", "socks5": {"server": "192.0.2.1", "port": 1080},
+                "dns": {"mode": mode, "custom_servers": ["1.1.1.1"]}
+            }))
+            .unwrap();
+            let generated = generate_singbox_config(
+                &config,
+                &config.parse_and_validate().unwrap(),
+                "eth0",
+                None,
+            )
+            .unwrap();
+            for server in &generated.dns.servers {
+                if server["detour"] == "socks-out" {
+                    assert_eq!(server["type"], "tcp");
+                }
+            }
+            assert!(generated
+                .route
+                .rules
+                .iter()
+                .any(|r| r["action"] == "resolve"
+                    && r["server"] == generated.dns.final_server.as_deref().unwrap()));
+        }
+    }
 
     #[test]
     fn host_routing_never_enables_singbox_auto_route() {
@@ -528,6 +633,7 @@ AllowedIPs = 0.0.0.0/0
 
         let conf = ChainProxyConfig {
             enabled: true,
+            socks5_server: None,
             mode: ProxyMode::WgChainWarp,
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig {
@@ -590,6 +696,7 @@ AllowedIPs = 0.0.0.0/0
 
         let conf = ChainProxyConfig {
             enabled: true,
+            socks5_server: None,
             mode: ProxyMode::SocksChainWarp,
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig::default(),
@@ -634,6 +741,7 @@ AllowedIPs = 0.0.0.0/0
 
         let conf = ChainProxyConfig {
             enabled: true,
+            socks5_server: None,
             mode: ProxyMode::StandaloneSocks,
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig::default(),
@@ -678,6 +786,7 @@ AllowedIPs = 0.0.0.0/0
 
         let conf = ChainProxyConfig {
             enabled: true,
+            socks5_server: None,
             mode: ProxyMode::StandaloneWg,
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig {
@@ -707,6 +816,7 @@ AllowedIPs = 0.0.0.0/0
     fn test_generator_gateway_mode_dns() {
         let conf = ChainProxyConfig {
             enabled: true,
+            socks5_server: None,
             mode: ProxyMode::StandaloneWg,
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig {
@@ -758,6 +868,7 @@ AllowedIPs = 0.0.0.0/0
     fn test_generator_ipv4_only_rejects_aaaa() {
         let conf = ChainProxyConfig {
             enabled: true,
+            socks5_server: None,
             mode: ProxyMode::StandaloneWg,
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig {
@@ -792,6 +903,7 @@ AllowedIPs = 0.0.0.0/0
     fn test_generator_route_exclude_and_private_bypass() {
         let conf = ChainProxyConfig {
             enabled: true,
+            socks5_server: None,
             mode: ProxyMode::StandaloneWg,
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig {

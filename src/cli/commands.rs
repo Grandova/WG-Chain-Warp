@@ -81,7 +81,7 @@ impl CliHandler {
         Self { api_url: url }
     }
 
-    pub async fn run_client_command(&self, cmd: &Commands, singbox_bin: &str) -> Result<()> {
+    pub async fn run_client_command(&self, cmd: &Commands, singbox_bin: &str, data_dir: &std::path::Path) -> Result<()> {
         let client = reqwest::Client::new();
 
         match cmd {
@@ -192,7 +192,7 @@ impl CliHandler {
                 println!("{}", report);
             }
             Commands::Menu => {
-                let menu = crate::cli::menu::ConsoleMenu::new(&self.api_url, PathBuf::from("/var/lib/chainproxy"), singbox_bin);
+                let menu = crate::cli::menu::ConsoleMenu::new(&self.api_url, data_dir.to_path_buf(), singbox_bin);
                 menu.run().await?;
             }
             Commands::WarpReg => {

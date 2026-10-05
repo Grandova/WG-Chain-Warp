@@ -1,4 +1,22 @@
 Routing isolation validation (2026-10-05)
+
+v1.2.0 SOCKS validation (2026-10-05):
+- Windows cargo test --all-targets: 30 passed.
+- cargo clippy --all-targets --all-features: passed, same 4 baseline style warnings.
+- cargo fmt completed; unrelated formatting changes reverted.
+- Menu interaction: custom data-dir, listen address/port, add/update/delete users,
+  save server mode; credentials absent from output.
+- Debian 12 isolated namespace suite: 22 PASS groups.
+- Independent curl clients: both authenticated users can access HTTP by domain;
+  anonymous, wrong-password and unknown-user attempts rejected.
+- Loopback listener is inaccessible from client namespace.
+- Server bind conflict rolls back to previous authenticated listener.
+- Server apply/stop leaves routes, rules, nftables and sysctl unchanged, no TUN.
+- TCP-only Dante upstream: chain/custom DNS from host and LAN, domain HTTP pass.
+- Previous WG, IPv6, isolation, ten lifecycle cycles and failure recovery pass.
+- Real host routes/rules/firewall unchanged; running production service untouched.
+- Linux test binaries built with cargo-zigbuild and Zig 0.16.0.
+
 Base commit: d42e34964748b7fce242dc7428c6def1d28f7678
 
 Linux test environment:

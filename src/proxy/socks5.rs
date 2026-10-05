@@ -11,6 +11,45 @@ pub struct Socks5Config {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Socks5User {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Socks5ServerConfig {
+    pub listen: std::net::IpAddr,
+    pub port: u16,
+    pub users: Vec<Socks5User>,
+}
+
+impl Socks5ServerConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.port == 0 || self.users.is_empty() {
+            return Err(ChainError::ValidationError(
+                "SOCKS5 服务端必须配置有效端口和至少一个用户".to_string(),
+            ));
+        }
+        let mut names = std::collections::HashSet::new();
+        for user in &self.users {
+            if !(1..=255).contains(&user.username.len())
+                || !(1..=255).contains(&user.password.len())
+            {
+                return Err(ChainError::ValidationError(
+                    "SOCKS5 用户名、密码必须为 1–255 字节".to_string(),
+                ));
+            }
+            if !names.insert(&user.username) {
+                return Err(ChainError::ValidationError(
+                    "SOCKS5 用户名不能重复".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Socks5Config {
     /// Parse Socks5 proxy configuration from various common formats:
     /// - `user:password@host:port` (standard with auth)
@@ -179,6 +218,30 @@ fn parse_user_pass(s: &str) -> (Option<String>, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_requires_valid_unique_credentials() {
+        let mut server = Socks5ServerConfig {
+            listen: "0.0.0.0".parse().unwrap(),
+            port: 1080,
+            users: vec![],
+        };
+        assert!(server.validate().is_err());
+        server.users.push(Socks5User {
+            username: "alice".to_string(),
+            password: "p".repeat(255),
+        });
+        assert!(server.validate().is_ok());
+        server.users[0].password.push('p');
+        assert!(server.validate().is_err());
+        server.users[0].password = "secret".to_string();
+        server.users.push(server.users[0].clone());
+        assert!(server.validate().is_err());
+        server.users[1].username = "bob".to_string();
+        assert!(server.validate().is_ok());
+        server.port = 0;
+        assert!(server.validate().is_err());
+    }
 
     #[test]
     fn test_parse_standard_at_format() {

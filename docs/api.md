@@ -2,6 +2,12 @@
 
 默认服务监听地址：`http://127.0.0.1:8880`
 
+SOCKS5 服务端使用 `mode: "socks5_server"`，配置结构参见
+[`examples/socks5-server.example.json`](../examples/socks5-server.example.json)。
+`socks5_server.listen` 为本机 IPv4/IPv6 地址，`port` 为监听端口，`users` 为用户名/密码列表。
+用户列表不能为空、用户名不能重复，用户名及密码各为 1–255 字节；修改后通过现有 apply 接口生效。
+此模式使用本机直连出口，不启用透明代理路由或 LAN 网关。测试接口通过实际监听端口和首个用户认证，验证 DNS 和 HTTPS 出站。
+
 ---
 
 ## 1. 基础探活

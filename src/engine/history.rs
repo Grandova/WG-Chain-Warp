@@ -135,6 +135,7 @@ mod tests {
 
         let cfg1 = ChainProxyConfig {
             enabled: true,
+            socks5_server: None,
             mode: Default::default(),
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig {

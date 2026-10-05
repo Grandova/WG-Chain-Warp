@@ -133,14 +133,26 @@ impl ChainEngine {
             None => IpRouteManager::detect_default_uplink()?.interface,
         };
         let local_ip = IpRouteManager::get_interface_ipv4(&uplink)?.to_string();
-        let lans = IpRouteManager::lan_subnets(&config, &uplink)?;
-        let plan = IpRouteManager::route_plan(
-            &config,
-            &lans,
-            &IpRouteManager::detect_current_ssh_client_ips(),
-        )?;
+        let lans = if config.mode == ProxyMode::Socks5Server {
+            vec![]
+        } else {
+            IpRouteManager::lan_subnets(&config, &uplink)?
+        };
+        let plan = if config.mode == ProxyMode::Socks5Server {
+            RoutePlan::default()
+        } else {
+            IpRouteManager::route_plan(
+                &config,
+                &lans,
+                &IpRouteManager::detect_current_ssh_client_ips(),
+            )?
+        };
         let singbox_cfg = generate_singbox_config(&config, &parsed, &uplink, Some(&local_ip))?;
-        let nft_rules = NftablesManager::generate_ruleset(&config, &lans)?;
+        let nft_rules = if config.mode == ProxyMode::Socks5Server {
+            String::new()
+        } else {
+            NftablesManager::generate_ruleset(&config, &lans)?
+        };
         let resolved_sb = SingBoxManager::resolve_binary(&self.singbox_bin)?;
         let temp_dir = tempfile::tempdir()?;
         let temp_cfg_path = temp_dir.path().join("singbox_check.json");
@@ -156,52 +168,67 @@ impl ChainEngine {
         *self.state.lock().unwrap() = ServiceState::Starting;
         let timeout = Duration::from_secs(self.watchdog_timeout_secs.load(Ordering::SeqCst));
         let result = tokio::time::timeout(timeout, async {
-            IpRouteManager::check_available(&plan)?;
-            if IpRouteManager::run(&["link", "show", "dev", "chain0"]).is_ok() {
-                return Err(ChainError::NetworkError(
-                    "chain0 already exists; refusing to take over another TUN".to_string(),
-                ));
+            if config.mode != ProxyMode::Socks5Server {
+                IpRouteManager::check_available(&plan)?;
+                if IpRouteManager::run(&["link", "show", "dev", "chain0"]).is_ok() {
+                    return Err(ChainError::NetworkError(
+                        "chain0 already exists; refusing to take over another TUN".to_string(),
+                    ));
+                }
+                let snapshot = NetworkSnapshot::capture(plan, &config)?;
+                std::fs::create_dir_all(&self.base_dir)?;
+                let journal = self.base_dir.join("network_snapshot.json");
+                let mut file = tempfile::NamedTempFile::new_in(&self.base_dir)?;
+                file.write_all(&serde_json::to_vec_pretty(&snapshot)?)?;
+                file.as_file().sync_all()?;
+                file.persist(&journal).map_err(|e| e.error)?;
+                self.network_snapshot = Some(snapshot);
             }
-            let snapshot = NetworkSnapshot::capture(plan, &config)?;
-            std::fs::create_dir_all(&self.base_dir)?;
-            let journal = self.base_dir.join("network_snapshot.json");
-            let mut file = tempfile::NamedTempFile::new_in(&self.base_dir)?;
-            file.write_all(&serde_json::to_vec_pretty(&snapshot)?)?;
-            file.as_file().sync_all()?;
-            file.persist(&journal).map_err(|e| e.error)?;
-            self.network_snapshot = Some(snapshot);
 
+            std::fs::create_dir_all(&self.base_dir)?;
             let actual_cfg_path = self.base_dir.join("singbox_active.json");
             std::fs::write(&actual_cfg_path, serde_json::to_vec_pretty(&singbox_cfg)?)?;
-            let mut interfaces = vec![uplink.clone()];
-            for lan in &lans {
-                if !interfaces.contains(&lan.interface) {
-                    interfaces.push(lan.interface.clone());
+            if config.mode != ProxyMode::Socks5Server {
+                let mut interfaces = vec![uplink.clone()];
+                for lan in &lans {
+                    if !interfaces.contains(&lan.interface) {
+                        interfaces.push(lan.interface.clone());
+                    }
                 }
+                SysctlManager::configure_for_proxy(
+                    &interfaces,
+                    config.is_forwarding_enabled() && !lans.is_empty(),
+                    config.routing.ipv6,
+                )?;
+                IpRouteManager::install_rules(&self.network_snapshot.as_ref().unwrap().plan)?;
+                IpRouteManager::ensure_tun_device()?;
             }
-            SysctlManager::configure_for_proxy(
-                &interfaces,
-                config.is_forwarding_enabled() && !lans.is_empty(),
-                config.routing.ipv6,
-            )?;
-            IpRouteManager::install_rules(&self.network_snapshot.as_ref().unwrap().plan)?;
-            IpRouteManager::ensure_tun_device()?;
             self.singbox
                 .lock()
                 .unwrap()
                 .start(&resolved_sb, &actual_cfg_path)?;
-            if !IpRouteManager::wait_for_interface("chain0", Duration::from_secs(5)) {
-                return Err(ChainError::NetworkError(
-                    "chain0 did not appear within 5 seconds".to_string(),
-                ));
+            if config.mode != ProxyMode::Socks5Server {
+                if !IpRouteManager::wait_for_interface("chain0", Duration::from_secs(5)) {
+                    return Err(ChainError::NetworkError(
+                        "chain0 did not appear within 5 seconds".to_string(),
+                    ));
+                }
+                SysctlManager::configure_tun_sysctl("chain0")?;
+                IpRouteManager::install_routes(&self.network_snapshot.as_ref().unwrap().plan)?;
+                // Enable marking only after the routes and physical bypass are usable.
+                NftablesManager::apply_ruleset(&nft_rules)?;
             }
-            SysctlManager::configure_tun_sysctl("chain0")?;
-            IpRouteManager::install_routes(&self.network_snapshot.as_ref().unwrap().plan)?;
-            // Enable marking only after the routes and physical bypass are usable.
-            NftablesManager::apply_ruleset(&nft_rules)?;
             tokio::time::sleep(Duration::from_secs(3)).await;
 
             let (v1_name, v1_ep) = match config.mode {
+                ProxyMode::Socks5Server => (
+                    "SOCKS5 服务端".to_string(),
+                    config
+                        .socks5_server
+                        .as_ref()
+                        .map(|s| std::net::SocketAddr::new(s.listen, s.port).to_string())
+                        .unwrap_or_default(),
+                ),
                 ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => (
                     parsed
                         .socks5
@@ -233,7 +260,7 @@ impl ChainEngine {
                 .map(|e| e.to_string())
                 .unwrap_or_default();
             let report = HealthChecker::run_full_test(
-                config.mode,
+                &config,
                 Some(&uplink),
                 &v1_name,
                 &v1_ep,
@@ -348,16 +375,26 @@ impl ChainEngine {
 
         let (vpn1_hop, vpn2_hop, final_hop) = if let Some(ref cfg) = cfg_opt {
             let v1_configured = match cfg.mode {
+                ProxyMode::Socks5Server => cfg.socks5_server.is_some(),
                 ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => cfg.socks5.is_some(),
                 _ => !cfg.vpn1.wireguard_config.trim().is_empty(),
             };
 
             let v2_configured = match cfg.mode {
-                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => false,
+                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks | ProxyMode::Socks5Server => {
+                    false
+                }
                 _ => !cfg.vpn2.wireguard_config.trim().is_empty(),
             };
 
             let (v1_name, v1_ep) = match cfg.mode {
+                ProxyMode::Socks5Server => (
+                    "SOCKS5 服务端".to_string(),
+                    cfg.socks5_server
+                        .as_ref()
+                        .map(|s| std::net::SocketAddr::new(s.listen, s.port).to_string())
+                        .unwrap_or_default(),
+                ),
                 ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => {
                     let s_str = cfg
                         .socks5
@@ -386,7 +423,7 @@ impl ChainEngine {
             };
 
             let (v2_name, v2_ep) = match cfg.mode {
-                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => {
+                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks | ProxyMode::Socks5Server => {
                     ("Cloudflare WARP (未使用)".to_string(), "".to_string())
                 }
                 _ => (
@@ -414,7 +451,9 @@ impl ChainEngine {
             };
 
             let v2_status = match cfg.mode {
-                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => "未使用".to_string(),
+                ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks | ProxyMode::Socks5Server => {
+                    "未使用".to_string()
+                }
                 _ => {
                     if !v2_configured {
                         "未配置".to_string()
@@ -506,6 +545,10 @@ impl ChainEngine {
                 "离线 (OFF)"
             };
             match cfg.mode {
+                ProxyMode::Socks5Server => format!(
+                    "客户端 -> SOCKS5 [{}] -> 本机直连 [{}]",
+                    vpn1_hop.status, internet_status
+                ),
                 ProxyMode::WgChainWarp => format!(
                     "VPS [{}] -> WireGuard [{}] -> WARP [{}] -> 目标公网 [{}]",
                     phys.status, vpn1_hop.status, vpn2_hop.status, internet_status

@@ -1,5 +1,5 @@
 use crate::error::{ChainError, Result};
-use crate::model::config::ProxyMode;
+use crate::model::config::{ChainProxyConfig, ProxyMode};
 use crate::model::state::{FinalHopStatus, PhysicalHopStatus, TestReport, VpnHopStatus};
 use crate::network::iproute::IpRouteManager;
 use crate::singbox::generator::{TEST_VPN1_PORT, TEST_WARP_PORT};
@@ -74,7 +74,9 @@ impl HealthChecker {
                 if let Ok(resp) = client.get(test_url).send().await {
                     let elapsed = start.elapsed().as_millis() as u64;
                     if let Ok(text) = resp.text().await {
-                        return Ok((text.trim().to_string(), elapsed));
+                        if Self::parse_trace(&text).0.is_some() {
+                            return Ok((text.trim().to_string(), elapsed));
+                        }
                     }
                 }
             }
@@ -92,7 +94,9 @@ impl HealthChecker {
                 if let Ok(resp) = client.get(test_url).send().await {
                     let elapsed = start.elapsed().as_millis() as u64;
                     if let Ok(text) = resp.text().await {
-                        return Ok((text.trim().to_string(), elapsed));
+                        if Self::parse_trace(&text).0.is_some() {
+                            return Ok((text.trim().to_string(), elapsed));
+                        }
                     }
                 }
             }
@@ -170,15 +174,61 @@ impl HealthChecker {
         }
     }
 
+    async fn test_socks_server(config: &ChainProxyConfig) -> Result<(String, u64)> {
+        let server = config
+            .socks5_server
+            .as_ref()
+            .ok_or_else(|| ChainError::ValidationError("尚未配置 SOCKS5 服务端".to_string()))?;
+        server.validate()?;
+        let ip = if server.listen.is_unspecified() {
+            if server.listen.is_ipv4() {
+                "127.0.0.1".parse().unwrap()
+            } else {
+                "::1".parse().unwrap()
+            }
+        } else {
+            server.listen
+        };
+        let addr = std::net::SocketAddr::new(ip, server.port);
+        let user = &server.users[0];
+        let network_error = |e: reqwest::Error| ChainError::NetworkError(e.to_string());
+        let proxy = Proxy::all(format!("socks5h://{}", addr))
+            .map_err(network_error)?
+            .basic_auth(&user.username, &user.password);
+        let client = reqwest::Client::builder()
+            .proxy(proxy)
+            .timeout(Duration::from_secs(8))
+            .build()
+            .map_err(network_error)?;
+        let start = Instant::now();
+        let trace = client
+            .get("https://one.one.one.one/cdn-cgi/trace")
+            .send()
+            .await
+            .map_err(network_error)?
+            .error_for_status()
+            .map_err(network_error)?
+            .text()
+            .await
+            .map_err(network_error)?;
+        if Self::parse_trace(&trace).0.is_none() {
+            return Err(ChainError::NetworkError(
+                "SOCKS5 服务端探测未返回出口 IP".to_string(),
+            ));
+        }
+        Ok((trace, start.elapsed().as_millis() as u64))
+    }
+
     /// Run full per-hop link test: Physical -> Entry Hop -> Exit Hop -> Final Exit IP
     pub async fn run_full_test(
-        mode: ProxyMode,
+        config: &ChainProxyConfig,
         uplink: Option<&str>,
         vpn1_name: &str,
         vpn1_endpoint: &str,
         vpn2_name: &str,
         vpn2_endpoint: &str,
     ) -> TestReport {
+        let mode = config.mode;
         info!("Running per-hop health probe for mode {:?}", mode);
 
         // 1. Physical test
@@ -197,17 +247,25 @@ impl HealthChecker {
 
         // 2. Branch based on standalone vs chained mode
         match mode {
-            ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks => {
+            ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks | ProxyMode::Socks5Server => {
                 // In standalone mode, only 1 outbound hop is configured.
                 // TEST_WARP_PORT (25432) routes directly to vpn1 or socks-out.
-                let (hop1, final_exit, hop1_ok) = match Self::test_hop_via_proxy(
-                    TEST_WARP_PORT,
-                    vpn1_name,
-                    "https://1.1.1.1/cdn-cgi/trace",
-                    Duration::from_secs(5),
-                )
-                .await
-                {
+                let probe = if mode == ProxyMode::Socks5Server {
+                    Self::test_socks_server(config).await
+                } else {
+                    Self::test_hop_via_proxy(
+                        TEST_WARP_PORT,
+                        vpn1_name,
+                        if mode == ProxyMode::StandaloneSocks {
+                            "https://one.one.one.one/cdn-cgi/trace"
+                        } else {
+                            "https://1.1.1.1/cdn-cgi/trace"
+                        },
+                        Duration::from_secs(5),
+                    )
+                    .await
+                };
+                let (hop1, final_exit, hop1_ok) = match probe {
                     Ok((trace, latency)) => {
                         let (exit_ip, loc_code, colo_code, _) = Self::parse_trace(&trace);
                         let exit_country = Self::format_location(loc_code, colo_code);
@@ -222,8 +280,8 @@ impl HealthChecker {
                                 endpoint: vpn1_endpoint.to_string(),
                                 config_valid: true,
                                 reachable: true,
-                                bytes_sent: 1024,
-                                bytes_received: 2048,
+                                bytes_sent: 0,
+                                bytes_received: 0,
                                 latency_ms: Some(latency),
                                 status: "OK".to_string(),
                                 message: Some(format!("出口: {}{}", ip_str, loc_desc)),
@@ -235,6 +293,8 @@ impl HealthChecker {
                                 exit_isp: Some(
                                     if mode == ProxyMode::StandaloneSocks {
                                         "Socks5 Proxy"
+                                    } else if mode == ProxyMode::Socks5Server {
+                                        "本机直连"
                                     } else {
                                         "WireGuard"
                                     }

@@ -147,7 +147,7 @@ def main():
         for name in ['gateway', 'internet', 'client']:
             spawn(name, 'python3', '-u', '-c', HTTP)
         dns_hosts = root/'dns-hosts'
-        dns_hosts.write_text('192.0.2.1 vpn.test\n203.0.113.9 target.test\n')
+        dns_hosts.write_text('192.0.2.1 vpn.test\n203.0.113.9 target.test\n1.1.1.1 one.one.one.one\n')
         dns_process = spawn('internet', dnsmasq, '--keep-in-foreground', '--no-resolv', '--no-hosts', '--bind-interfaces', '--user=root', '--addn-hosts=' + str(dns_hosts), '--pid-file=' + str(root/'dns.pid'))
         if args.external_health:
             relay = str(Path(__file__).with_name('tls_relay.py'))
@@ -177,6 +177,9 @@ def main():
         dante_config = root/'dante.conf'
         dante_config.write_text('logoutput: stderr\ninternal: 192.0.2.1 port = 1080\nexternal: wan0\nuser.privileged: root\nuser.unprivileged: nobody\nclientmethod: none\nsocksmethod: none\nclient pass { from: 0.0.0.0/0 to: 0.0.0.0/0 }\nsocks pass { from: 0.0.0.0/0 to: 0.0.0.0/0 command: connect udpassociate udpreply\nlog: connect disconnect error\n}\n')
         spawn('internet', dante, '-f', str(dante_config), '-p', str(root/'dante.pid'))
+        tcp_dante = root/'dante-tcp.conf'
+        tcp_dante.write_text(dante_config.read_text().replace('port = 1080', 'port = 1081').replace('connect udpassociate udpreply', 'connect'))
+        spawn('internet', dante, '-f', str(tcp_dante), '-p', str(root/'dante-tcp.pid'))
         time.sleep(2.5)  # Wait for IPv6 link-local DAD before taking the baseline.
         assert all(p.poll() is None for p in children), "A test server failed to start; inspect server logs"
         before = state()
@@ -271,6 +274,17 @@ Server(('::', 8080), Handler).serve_forever()
             stop(); assert_clean(before)
             passed(mode + ': kernel WireGuard / Dante interoperability')
 
+        for dns_mode in ['chain', 'custom']:
+            tcp_only = config(mode='standalone_socks', host=True)
+            tcp_only['socks5']['port'] = 1081
+            tcp_only['dns'] = {'mode': dns_mode, 'custom_servers': ['1.1.1.1']}
+            start(tcp_only, 'socks-tcp-dns-' + dns_mode)
+            assert '203.0.113.9' in ns('gateway','dig','+short','+time=3','+tries=1','@1.1.1.1','target.test')
+            assert '203.0.113.9' in ns('client','dig','+tcp','+short','+time=3','+tries=1','@192.0.2.2','target.test')
+            assert ns('gateway','curl','--noproxy','','-fsS','--max-time','8','--socks5-hostname','127.0.0.1:25432','http://target.test:8080/') == '192.0.2.1'
+            stop(); assert_clean(before)
+        passed('TCP-only Dante: standalone SOCKS chain/custom DNS and domain HTTP')
+
         for i in range(10):
             start(config(host=bool(i%2)), f'cycle-{i}')
             assert fetch('client') == '10.64.0.2'
@@ -280,6 +294,34 @@ Server(('::', 8080), Handler).serve_forever()
         passed('foreign conntrack mark bits preserved while inbound-return bits are cleared')
 
         if args.external_health:
+            server = {'mode': 'socks5_server', 'uplink_interface': 'eth0',
+                      'socks5_server': {'listen': '0.0.0.0', 'port': 1082,
+                                        'users': [{'username':'alice','password':'test:p@ss'},
+                                                  {'username':'bob','password':'second-pass'}]}}
+            start(server, 'socks-server', engine=True)
+            assert state() == before, 'Server mode changed routing, firewall or sysctl'
+            assert 'chain0' not in ns('gateway','ip','-j','link')
+            for auth in ['alice:test:p@ss', 'bob:second-pass']:
+                assert ns('client','curl','--noproxy','','-fsS','--max-time','8','--socks5-hostname','198.18.0.129:1082','--proxy-user',auth,'http://target.test:8080/') == '192.0.2.2'
+            for auth in [[], ['--proxy-user','alice:wrong'], ['--proxy-user','unknown:second-pass']]:
+                result = sp.run(cmd('client','curl','--noproxy','','-fsS','--max-time','5','--socks5-hostname','198.18.0.129:1082',*auth,'http://target.test:8080/'), capture_output=True)
+                assert result.returncode != 0, 'Unauthenticated access allowed'
+            bad_server = json.loads(json.dumps(server))
+            bad_server['socks5_server']['port'] = 8080
+            bad_path = root/'server-port-conflict.json'; bad_path.write_text(json.dumps(bad_server))
+            active.stdin.write(str(bad_path) + '\n'); active.stdin.flush()
+            reply = json.loads(active.stdout.readline())
+            assert not reply['success'] and reply['state'] == 'Running', reply
+            assert ns('client','curl','--noproxy','','-fsS','--max-time','8','--socks5-hostname','198.18.0.129:1082','--proxy-user','bob:second-pass','http://target.test:8080/') == '192.0.2.2'
+            stop(); assert_clean(before)
+            server['socks5_server']['listen'] = '127.0.0.1'
+            start(server, 'socks-server-loopback', engine=True)
+            assert ns('gateway','curl','--noproxy','','-fsS','--max-time','8','--socks5-hostname','127.0.0.1:1082','--proxy-user','alice:test:p@ss','http://target.test:8080/') == '192.0.2.2'
+            result = sp.run(cmd('client','curl','--noproxy','','-fsS','--max-time','3','--socks5-hostname','198.18.0.129:1082','--proxy-user','alice:test:p@ss','http://target.test:8080/'), capture_output=True)
+            assert result.returncode != 0, 'Loopback listener exposed on LAN'
+            stop(); assert_clean(before)
+            passed('SOCKS server: curl multi-user auth, auth rejection, listen binding, failed reload rollback; no network mutations')
+
             start(config(host=True), 'engine-transaction', engine=True)
             assert fetch('client') == '10.64.0.2'
             # Fail after mutation/launch, then verify the previous committed proxy really resumes.
@@ -290,7 +332,7 @@ Server(('::', 8080), Handler).serve_forever()
             reply = json.loads(active.stdout.readline())
             assert not reply['success'] and reply['state'] == 'Running', reply
             assert fetch('client') == '10.64.0.2'
-            dns_hosts.write_text('192.0.2.5 vpn.test\n203.0.113.9 target.test\n')
+            dns_hosts.write_text('192.0.2.5 vpn.test\n203.0.113.9 target.test\n1.1.1.1 one.one.one.one\n')
             dns_process.send_signal(signal.SIGHUP)
             time.sleep(0.2)
             ns('internet','nft','-f','-',input='table inet endpoint_test { chain input { type filter hook input priority filter; policy accept; ip daddr 192.0.2.1 udp dport 51820 drop; }; }\n')
@@ -300,7 +342,7 @@ Server(('::', 8080), Handler).serve_forever()
             assert fetch('client') == '10.64.0.2'
             assert '192.0.2.5' not in ns('gateway','ip','route','show','table','main'), 'No endpoint pinning in main'
             ns('internet','nft','delete','table','inet','endpoint_test')
-            dns_hosts.write_text('192.0.2.1 vpn.test\n203.0.113.9 target.test\n')
+            dns_hosts.write_text('192.0.2.1 vpn.test\n203.0.113.9 target.test\n1.1.1.1 one.one.one.one\n')
             dns_process.send_signal(signal.SIGHUP)
             passed('endpoint DNS IP change picked up on reload, without stale main host routes')
             stop(); assert_clean(before)

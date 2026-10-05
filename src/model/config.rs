@@ -1,5 +1,5 @@
 use crate::error::{ChainError, Result};
-use crate::proxy::socks5::Socks5Config;
+use crate::proxy::socks5::{Socks5Config, Socks5ServerConfig};
 use crate::wireguard::model::WgConfig;
 use crate::wireguard::parser::parse_wireguard_ini;
 use ipnet::IpNet;
@@ -22,6 +22,8 @@ pub enum ProxyMode {
 
     /// 5. Standalone Cloudflare WARP -> Internet (单独 WARP 直连出站)
     StandaloneWarp,
+
+    Socks5Server,
 }
 
 impl Default for ProxyMode {
@@ -38,6 +40,7 @@ impl ProxyMode {
             ProxyMode::StandaloneWg => "单独 WireGuard 出站 (无 WARP)",
             ProxyMode::StandaloneSocks => "单独 Socks5 代理出站 (无 WARP)",
             ProxyMode::StandaloneWarp => "单独 Cloudflare WARP 出站",
+            ProxyMode::Socks5Server => "SOCKS5 服务端 (本机直连出口)",
         }
     }
 }
@@ -196,6 +199,9 @@ pub struct ChainProxyConfig {
     pub socks5: Option<Socks5Config>,
 
     #[serde(default)]
+    pub socks5_server: Option<Socks5ServerConfig>,
+
+    #[serde(default)]
     pub routing: RoutingConfig,
 
     #[serde(default)]
@@ -222,6 +228,7 @@ impl Default for ChainProxyConfig {
             vpn1: VpnNodeConfig::default(),
             vpn2: VpnNodeConfig::default(),
             socks5: None,
+            socks5_server: None,
             routing: RoutingConfig::default(),
             dns: DnsConfig::default(),
             gateway: GatewayConfig::default(),
@@ -237,6 +244,14 @@ impl ChainProxyConfig {
         let mut parsed = ParsedNodes::default();
 
         match self.mode {
+            ProxyMode::Socks5Server => {
+                self.socks5_server
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ChainError::ValidationError("尚未配置 SOCKS5 服务端".to_string())
+                    })?
+                    .validate()?;
+            }
             ProxyMode::WgChainWarp => {
                 let v1 = parse_wireguard_ini(&self.vpn1.wireguard_config).map_err(|e| {
                     ChainError::ValidationError(format!(
@@ -384,7 +399,7 @@ impl ChainProxyConfig {
 
     /// The forwarding switch is authoritative; gateway only supplies LAN discovery settings.
     pub fn is_forwarding_enabled(&self) -> bool {
-        self.routing.proxy_forwarded_outbound
+        self.mode != ProxyMode::Socks5Server && self.routing.proxy_forwarded_outbound
     }
 
     /// Redacted copy of config safe for public logging and API responses
@@ -418,6 +433,11 @@ impl ChainProxyConfig {
             }
         }
 
+        if let Some(server) = &mut copy.socks5_server {
+            for user in &mut server.users {
+                user.password = "********".to_string();
+            }
+        }
         copy
     }
 }
@@ -430,6 +450,7 @@ mod tests {
     fn test_gateway_config_effective_subnets() {
         let mut cfg = ChainProxyConfig {
             enabled: true,
+            socks5_server: None,
             mode: ProxyMode::WgChainWarp,
             uplink_interface: Some("eth0".to_string()),
             vpn1: VpnNodeConfig::default(),
