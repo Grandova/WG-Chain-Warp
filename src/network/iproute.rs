@@ -343,7 +343,10 @@ impl IpRouteManager {
                     rule["table"].as_u64() == Some(*t as u64)
                         || rule["table"].as_str() == Some(&t.to_string())
                 }) {
-                    return Err(ChainError::NetworkError("An existing policy rule references table 2022/2023; stop its owner before applying".to_string()));
+                    return Err(ChainError::NetworkError(format!(
+                        "Existing {} policy rule references table 2022/2023: {}. Stop its owner before applying; if upgrading from v1.0.x, inspect legacy auto_route rules with chainproxy diagnose. Refusing to delete rules without ownership information",
+                        family, rule
+                    )));
                 }
                 if let Some(priority) = rule["priority"].as_u64() {
                     if plan

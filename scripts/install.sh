@@ -115,35 +115,41 @@ if [[ $NEED_SINGBOX -eq 1 ]]; then
     fi
 fi
 
-# 确保软链接到系统常用路径 (/usr/local/bin 和 /usr/bin)
+# 只验证现有安装路径，不覆盖包管理器文件或创建自指软链接。
 REAL_SB=$(command -v sing-box 2>/dev/null || true)
-if [[ -z "$REAL_SB" && -x "/usr/local/bin/sing-box" ]]; then
-    REAL_SB="/usr/local/bin/sing-box"
-elif [[ -z "$REAL_SB" && -x "/usr/bin/sing-box" ]]; then
-    REAL_SB="/usr/bin/sing-box"
-fi
-
-if [[ -n "$REAL_SB" ]]; then
-    ln -sf "$REAL_SB" /usr/local/bin/sing-box 2>/dev/null || true
-    ln -sf "$REAL_SB" /usr/bin/sing-box 2>/dev/null || true
-    log_ok "sing-box 部署就绪: $("$REAL_SB" version 2>/dev/null | head -n 1 || echo "$REAL_SB")"
-else
-    log_err "未能自动安装 sing-box，请手动执行以下命令安装后重试:"
-    log_err "  curl -fsSL https://sing-box.app/install.sh | sudo bash"
+if [[ -z "$REAL_SB" || ! -x "$REAL_SB" ]]; then
+    log_err "未能找到可执行的 sing-box，请检查安装路径。"
     exit 1
 fi
+if ! "$REAL_SB" version >/dev/null 2>&1; then
+    log_err "sing-box 已存在但无法执行: $REAL_SB"
+    "$REAL_SB" version || true
+    exit 1
+fi
+log_ok "sing-box 部署就绪: $("$REAL_SB" version | head -n 1)"
 
 # 3. 安装 chainproxy 单二进制程序
 log_info "正在部署 chainproxy 主程序..."
 CHAINPROXY_BIN="/usr/local/bin/chainproxy"
+install_chainproxy() {
+    if ! "$1" --version >/dev/null 2>&1; then
+        log_err "下载或编译的 chainproxy 无法执行，保留现有程序。"
+        return 1
+    fi
+    if systemctl is-active --quiet chainproxy; then
+        log_info "正在停止旧实例并恢复其网络配置..."
+        systemctl stop chainproxy
+    fi
+    install -m 755 "$1" "$CHAINPROXY_BIN"
+}
 
 if [[ -f "./target/release/chainproxy" ]]; then
-    install -m 755 "./target/release/chainproxy" "$CHAINPROXY_BIN"
+    install_chainproxy "./target/release/chainproxy"
     log_ok "已安装当前编译的二进制程序: $CHAINPROXY_BIN"
 elif command -v cargo >/dev/null 2>&1 && [[ -f "./Cargo.toml" ]]; then
     log_info "正在通过本地 Rust 工具链编译 release 版本..."
     cargo build --release
-    install -m 755 "./target/release/chainproxy" "$CHAINPROXY_BIN"
+    install_chainproxy "./target/release/chainproxy"
     log_ok "编译并安装完成: $CHAINPROXY_BIN"
 else
     # 尝试从预编译 Release 获取，若失败且支持则通过 git + cargo 源码编译
@@ -151,10 +157,9 @@ else
     TMP_DIR=$(mktemp -d)
     DOWNLOADED=0
     for try_url in \
-        "https://github.com/Grandova/WG-Chain-Warp/releases/download/v1.0.14/chainproxy-linux-amd64" \
         "https://github.com/Grandova/WG-Chain-Warp/releases/latest/download/chainproxy-linux-amd64"; do
         if curl -fsSL "$try_url" -o "${TMP_DIR}/chainproxy" 2>/dev/null; then
-            install -m 755 "${TMP_DIR}/chainproxy" "$CHAINPROXY_BIN"
+            install_chainproxy "${TMP_DIR}/chainproxy"
             log_ok "下载预编译静态二进制完成: $CHAINPROXY_BIN"
             DOWNLOADED=1
             break
@@ -167,7 +172,7 @@ else
             CLONE_DIR=$(mktemp -d)
             if git clone https://github.com/Grandova/WG-Chain-Warp.git "$CLONE_DIR"; then
                 (cd "$CLONE_DIR" && cargo build --release)
-                install -m 755 "$CLONE_DIR/target/release/chainproxy" "$CHAINPROXY_BIN"
+                install_chainproxy "$CLONE_DIR/target/release/chainproxy"
                 log_ok "源码拉取并编译安装完成: $CHAINPROXY_BIN"
                 DOWNLOADED=1
             fi

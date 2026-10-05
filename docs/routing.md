@@ -141,3 +141,11 @@ sudo unshare -m sh -c '
 | .gitignore、README.md、docs/routing.md、docs/routing-validation.txt | 纳入测试、架构和测试记录 |
 
 参考：[nftables chain 类型](https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains)、[sing-box TUN](https://sing-box.sagernet.org/configuration/inbound/tun/)、[sing-box Dial Fields](https://sing-box.sagernet.org/configuration/shared/dial/)、[sing-tun Linux 实现](https://github.com/SagerNet/sing-tun/blob/dev/tun_linux.go)、[conntrack 手册](https://netfilter.org/projects/conntrack-tools/conntrack-manpage.html)。
+
+## v1.1.1 升级安装修复
+
+修复安装脚本将 sing-box 的真实安装路径覆盖成自指软链接的问题，不再跨 /usr/bin 与 /usr/local/bin 重写 sing-box 文件。新二进制下载/编译并验证可执行后，先停止旧 chainproxy 服务，让 ExecStop 使用旧二进制完成清理，再替换程序。下载目标统一使用 latest Release。
+
+v1.0.x 已经留下、且无快照归属信息的 auto_route 规则仍不会自动删除。错误现在包含具体地址族和冲突规则；需要结合旧 singbox_active.json、运行进程、TUN 状态核对后精确清理，不能仅按 table/priority 批量删除。CLI 不再无条件声称失败已回滚或 SSH 永不失联。
+
+安装回归：在 Linux 执行 python3 tests/install_upgrade.py，验证既有 sing-box 文件不被替换、旧进程先停止、无效下载保持现有服务、停止失败禁止替换。

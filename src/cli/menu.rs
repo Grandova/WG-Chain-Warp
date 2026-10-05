@@ -911,7 +911,7 @@ impl ConsoleMenu {
 
         // 检查本地/宿主机是否存在 sing-box 引擎，如缺失则尝试自动安装
         if SingBoxManager::resolve_binary(&self.singbox_bin).is_err() {
-            println!("\n⚠️  [检测] 系统尚未安装 sing-box 代理引擎！");
+            println!("\n⚠️  [检测] 未找到能正常执行的 sing-box（可能未安装或安装已损坏）。");
             println!("正在自动为您拉取安装官方 sing-box 引擎 (curl -fsSL https://sing-box.app/install.sh | bash)...");
             let install_status = std::process::Command::new("sh")
                 .arg("-c")
@@ -927,7 +927,7 @@ impl ConsoleMenu {
             }
         }
 
-        println!("正在向后台发送事务 Apply 请求 (包含 30 秒看门狗与 SSH 零失联保护)...");
+        println!("正在向后台发送事务 Apply 请求 (包含 30 秒看门狗与入站回程保护)...");
         let client = reqwest::Client::new();
         let apply_url = format!("{}/api/v1/config/apply", self.api_url);
         let payload = serde_json::json!({ "config": cfg });
@@ -945,8 +945,8 @@ impl ConsoleMenu {
                         }
                     }
                 } else {
-                    println!("\n❌ 应用失败，已自动回滚: {}", json.get("error").and_then(|e| e.as_str()).unwrap_or("未知错误"));
-                    println!("💡 宿主机网络与 SSH 连接已被系统看门狗与策略路由完整保护，未发生断网。");
+                    println!("\n❌ 应用失败: {}", json.get("error").and_then(|e| e.as_str()).unwrap_or("未知错误"));
+                    println!("💡 请根据上方错误处理；可运行 chainproxy diagnose 检查路由及恢复状态。");
                 }
             }
             Err(e) => {
