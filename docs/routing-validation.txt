@@ -1,0 +1,86 @@
+Routing isolation validation (2026-10-05)
+Base commit: d42e34964748b7fce242dc7428c6def1d28f7678
+
+Linux test environment:
+Debian 12, x86_64; isolated client/gateway/internet network namespaces.
+Linux 6.12.95+deb13-amd64
+sing-box version 1.14.2
+nftables v1.0.6 (Lester Gooch #5)
+ip utility, iproute2-6.1.0, libbpf 1.1.2
+
+Independent peers: kernel WireGuard; Dante 1.4.2; curl/dig/dnsmasq.
+Cloudflare WARP service registration/production exit is not covered by the
+kernel-WireGuard WARP-mode tests. HTTPS health checks use real Cloudflare TLS.
+
+Local checks:
+cargo fmt: completed; unrelated baseline formatting changes were reverted
+to preserve repository style and keep the patch scoped.
+cargo clippy --all-targets --all-features: exit 0, 4 existing style warnings
+(collapsible_if, derivable_impls, new_without_default, ineffective_open_options).
+cargo test: 27 passed, 0 failed (Windows).
+git diff --check: passed.
+
+Linux musl binaries cross-compiled with cargo-zigbuild and Zig 0.14.1.
+The Windows linker wrapper emitted cmd-script warnings but exited 0;
+the resulting ELF binaries were then executed successfully on Linux.
+
+Linux unit tests:
+
+running 27 tests
+test engine::history::tests::test_history_commit_and_rollback ... ok
+test model::config::tests::test_gateway_config_effective_subnets ... ok
+test model::config::tests::test_log_level_default_and_serde ... ok
+test network::iproute::tests::custom_inbound_mark_and_both_ssh_families_are_preserved ... ok
+test network::iproute::tests::host_and_forward_switches_have_separate_tables ... ok
+test proxy::socks5::tests::test_parse_four_part_colon_format ... ok
+test proxy::socks5::tests::test_parse_ipv6_literal ... ok
+test proxy::socks5::tests::test_parse_no_auth ... ok
+test proxy::socks5::tests::test_parse_socks5_scheme_prefix ... ok
+test proxy::socks5::tests::test_parse_standard_at_format ... ok
+test singbox::generator::tests::host_routing_never_enables_singbox_auto_route ... ok
+test singbox::generator::tests::test_generator_chain_structure ... ok
+test singbox::generator::tests::test_generator_gateway_mode_dns ... ok
+test singbox::generator::tests::test_generator_ipv4_only_rejects_aaaa ... ok
+test singbox::generator::tests::test_generator_route_exclude_and_private_bypass ... ok
+test singbox::generator::tests::test_generator_socks_chain_warp ... ok
+test singbox::generator::tests::test_generator_standalone_socks ... ok
+test singbox::generator::tests::test_generator_standalone_wg ... ok
+test wireguard::parser::tests::test_invalid_endpoint_port ... ok
+test wireguard::parser::tests::test_invalid_key_length ... ok
+test wireguard::parser::tests::test_ipv6_and_domain_endpoints ... ok
+test wireguard::parser::tests::test_missing_address ... ok
+test wireguard::parser::tests::test_missing_private_key ... ok
+test wireguard::parser::tests::test_preshared_key_and_multiple_addresses ... ok
+test wireguard::parser::tests::test_valid_vpn1_and_warp_configs ... ok
+test wireguard::warp_register::tests::test_curve25519_keypair_generation ... ok
+test wireguard::warp_register::tests::test_warp_registration_result ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.28s
+
+
+Network namespace integration (--external-health):
+PASS host-False-lan-True: real HTTP host/LAN/return/LAN-local + physical mark + cleanup
+PASS host-True-lan-True: real HTTP host/LAN/return/LAN-local + physical mark + cleanup
+PASS host-True-lan-False: real HTTP host/LAN/return/LAN-local + physical mark + cleanup
+PASS host-False-lan-False: real HTTP host/LAN/return/LAN-local + physical mark + cleanup
+PASS IPv6 host/LAN proxy, inbound replies, underlay bypass and cleanup
+PASS chain/physical/custom DNS: UDP and TCP gateway listener, plus TUN DNS hijack
+PASS actual interface prefix detection: /25, /23, /16
+PASS foreign priority/table ownership conflicts rejected without deletion
+PASS wg_chain_warp: kernel WireGuard / Dante interoperability
+PASS socks_chain_warp: kernel WireGuard / Dante interoperability
+PASS standalone_socks: kernel WireGuard / Dante interoperability
+PASS standalone_warp: kernel WireGuard / Dante interoperability
+PASS 10 start/stop cycles: no routes/rules/TUN/nft/sysctl residue
+PASS foreign conntrack mark bits preserved while inbound-return bits are cleared
+PASS endpoint DNS IP change picked up on reload, without stale main host routes
+PASS full engine APPLY/COMMIT and failed reload restores previous running configuration
+PASS 10 complete engine start/stop transactions with real HTTPS health checks
+PASS daemon SIGKILL: child exits, inbound survives, new engine restores durable snapshot
+PASS engine watchdog timeout: HTTP inbound and physical egress restored
+PASS real host routes/rules/firewall unchanged
+
+The final run also started with IPv6 lan0.forwarding=1 while all.forwarding=0
+and verified restoration of both settings and accept_ra after each stop.
+All test namespaces and background processes were removed.
+Real host networking and existing services were not reconfigured.

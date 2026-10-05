@@ -1,0 +1,7 @@
+/target
+/dist
+/sing-box
+/sing-box.exe
+*.test.json
+*.log
+.env
