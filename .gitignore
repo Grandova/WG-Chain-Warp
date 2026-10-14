@@ -5,3 +5,5 @@
 *.test.json
 *.log
 .env
+/x-ui-main.zip
+/x-ui-main/

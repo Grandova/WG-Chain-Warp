@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - chainproxy Web 管理面板</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+            background-color: #f0f2f5;
+            background-image: radial-gradient(circle at 50% 30%, #e6f7ff 0%, #f0f2f5 70%);
+            color: rgba(0, 0, 0, 0.85);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-card {
+            width: 92%;
+            max-width: 420px;
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 40px 36px 36px;
+            box-shadow: 0 10px 30px rgba(0, 21, 41, 0.08);
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+        .login-logo {
+            width: 56px;
+            height: 56px;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #1890ff 0%, #096dd9 100%);
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 26px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            box-shadow: 0 6px 16px rgba(24, 144, 255, 0.3);
+        }
+        .login-title {
+            font-size: 22px;
+            font-weight: 600;
+            color: #001529;
+            margin-bottom: 6px;
+        }
+        .login-subtitle {
+            font-size: 13px;
+            color: rgba(0, 0, 0, 0.45);
+            margin-bottom: 28px;
+        }
+        .form-item {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+        .input-wrap {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+        .input-icon {
+            position: absolute;
+            left: 14px;
+            color: rgba(0, 0, 0, 0.35);
+            font-size: 15px;
+            pointer-events: none;
+        }
+        .ant-input {
+            width: 100%;
+            height: 42px;
+            padding: 6px 14px 6px 40px;
+            font-size: 14px;
+            line-height: 1.5;
+            color: rgba(0, 0, 0, 0.85);
+            background-color: #fff;
+            border: 1px solid #d9d9d9;
+            border-radius: 8px;
+            outline: none;
+            transition: all 0.25s;
+        }
+        .ant-input:hover {
+            border-color: #40a9ff;
+        }
+        .ant-input:focus {
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+        }
+        .ant-btn-primary {
+            width: 100%;
+            height: 42px;
+            background: #1890ff;
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.25s;
+            box-shadow: 0 4px 12px rgba(24, 144, 255, 0.25);
+        }
+        .ant-btn-primary:hover {
+            background: #40a9ff;
+        }
+        .ant-btn-primary:active {
+            background: #096dd9;
+        }
+        .ant-btn-primary:disabled {
+            background: #bae7ff;
+            cursor: not-allowed;
+        }
+        .error-msg {
+            display: none;
+            margin-bottom: 16px;
+            padding: 10px 14px;
+            border-radius: 8px;
+            background: #fff2f0;
+            border: 1px solid #ffccc7;
+            color: #cf1322;
+            font-size: 13px;
+            text-align: left;
+        }
+        .login-footer {
+            margin-top: 24px;
+            font-size: 12px;
+            color: rgba(0, 0, 0, 0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="login-logo">CP</div>
+        <h1 class="login-title">chainproxy 面板登录</h1>
+        <p class="login-subtitle">链式 WireGuard · SOCKS5 · Cloudflare WARP 控制台</p>
+
+        <div id="errBox" class="error-msg"></div>
+
+        <form id="loginForm" onsubmit="doLogin(event)">
+            <div class="form-item">
+                <div class="input-wrap">
+                    <span class="input-icon">👤</span>
+                    <input id="username" type="text" class="ant-input" placeholder="用户名" autocomplete="username" required autofocus>
+                </div>
+            </div>
+            <div class="form-item">
+                <div class="input-wrap">
+                    <span class="input-icon">🔒</span>
+                    <input id="password" type="password" class="ant-input" placeholder="密码" autocomplete="current-password" required>
+                </div>
+            </div>
+            <div class="form-item" style="margin-bottom: 0;">
+                <button id="loginBtn" type="submit" class="ant-btn-primary">登 录</button>
+            </div>
+        </form>
+        <div class="login-footer">
+            可通过终端命令 <code>chainproxy</code> 随时重置账号或端口
+        </div>
+    </div>
+
+    <script>
+        async function doLogin(e) {
+            e.preventDefault();
+            const errBox = document.getElementById('errBox');
+            const btn = document.getElementById('loginBtn');
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+
+            errBox.style.display = 'none';
+            btn.disabled = true;
+            btn.textContent = '正在登录...';
+
+            try {
+                const resp = await fetch('./login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    window.location.href = './';
+                } else {
+                    errBox.textContent = data.error || '用户名或密码错误';
+                    errBox.style.display = 'block';
+                }
+            } catch (err) {
+                errBox.textContent = '网络请求失败: ' + err.message;
+                errBox.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '登 录';
+            }
+        }
+    </script>
+</body>
+</html>

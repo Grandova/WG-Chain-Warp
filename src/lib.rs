@@ -7,4 +7,5 @@ pub mod model;
 pub mod network;
 pub mod proxy;
 pub mod singbox;
+pub mod web;
 pub mod wireguard;

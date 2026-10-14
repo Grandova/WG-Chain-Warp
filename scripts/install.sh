@@ -209,11 +209,32 @@ log_ok "主程序自检通过: $("$CHAINPROXY_BIN" --version 2>&1)"
 
 ln -sf "$CHAINPROXY_BIN" /usr/bin/chainproxy
 
-# 4. 创建安全运行数据目录 (权限 700)
+# 4. 创建安全运行数据目录 (权限 700) 并初始化 Web 面板配置
 DATA_DIR="/var/lib/chainproxy"
 mkdir -p "$DATA_DIR/versions"
 chmod 700 "$DATA_DIR"
 log_ok "运行数据目录就绪: $DATA_DIR"
+
+if [ -t 0 ]; then
+    echo ""
+    read -r -p "是否自定义设置 Web 面板登录账号、密码与端口？[y/N] (默认端口 54321, 账号密码 admin): " CUSTOM_PANEL || true
+    if [[ "${CUSTOM_PANEL:-N}" =~ ^[Yy]$ ]]; then
+        read -r -p "请设置面板登录用户名 [默认 admin]: " PANEL_USER || true
+        PANEL_USER=${PANEL_USER:-admin}
+        read -r -p "请设置面板登录密码 [默认 admin]: " PANEL_PASS || true
+        PANEL_PASS=${PANEL_PASS:-admin}
+        read -r -p "请设置面板监听端口 [默认 54321]: " PANEL_PORT || true
+        PANEL_PORT=${PANEL_PORT:-54321}
+        "$CHAINPROXY_BIN" --data-dir "$DATA_DIR" setting \
+            --username "$PANEL_USER" \
+            --password "$PANEL_PASS" \
+            --port "$PANEL_PORT" >/dev/null 2>&1 || true
+        log_ok "已完成自定义 Web 面板配置！"
+    fi
+fi
+
+# 确保 panel.json 初始化
+"$CHAINPROXY_BIN" --data-dir "$DATA_DIR" setting --show >/dev/null 2>&1 || true
 
 # 5. 配置并启动 systemd 后台服务
 SERVICE_DST="/etc/systemd/system/chainproxy.service"
@@ -221,7 +242,7 @@ log_info "正在配置 systemd 守护服务..."
 
 cat > "$SERVICE_DST" << 'EOF'
 [Unit]
-Description=chainproxy - Linux Chained WireGuard VPN & Proxy Daemon
+Description=chainproxy - Linux Chained WireGuard VPN & Web Management Panel
 After=network.target network-online.target
 Wants=network-online.target
 
@@ -232,7 +253,7 @@ WorkingDirectory=/var/lib/chainproxy
 ExecStartPre=-/bin/sh -c 'test -e /dev/net/tun || (mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun 2>/dev/null || true)'
 ExecStart=/usr/local/bin/chainproxy --api 127.0.0.1:8880 --data-dir /var/lib/chainproxy --singbox sing-box daemon
 ExecStop=/usr/local/bin/chainproxy stop
-Restart=on-failure
+Restart=always
 RestartSec=3s
 KillMode=mixed
 TimeoutStopSec=15s
@@ -250,7 +271,7 @@ systemctl enable chainproxy
 systemctl restart chainproxy
 
 # 检查服务运行状态
-log_info "正在检测后台守护进程响应..."
+log_info "正在检测后台守护进程与 Web 面板响应..."
 DAEMON_OK=0
 for i in {1..8}; do
     sleep 1
@@ -261,29 +282,30 @@ for i in {1..8}; do
 done
 
 if [[ $DAEMON_OK -eq 1 ]]; then
-    log_ok "chainproxy 后台守护进程已成功启动并就绪 (127.0.0.1:8880)！"
+    log_ok "chainproxy 后台守护进程与 Web 控制台已成功启动！"
 else
     log_warn "后台守护服务未能正常响应，输出排查信息:"
     systemctl status chainproxy --no-pager || true
     journalctl -u chainproxy -n 20 --no-pager || true
 fi
 
+PANEL_PORT_VAL=$(jq -r '.port // 54321' "$DATA_DIR/panel.json" 2>/dev/null || echo "54321")
+PANEL_USER_VAL=$(jq -r '.username // "admin"' "$DATA_DIR/panel.json" 2>/dev/null || echo "admin")
+PANEL_PASS_VAL=$(jq -r '.password // "admin"' "$DATA_DIR/panel.json" 2>/dev/null || echo "admin")
+PANEL_PATH_VAL=$(jq -r '.base_path // "/"' "$DATA_DIR/panel.json" 2>/dev/null || echo "/")
+SERVER_IP=$(curl -s4m 4 https://api.ipify.org 2>/dev/null || ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -n1 || echo "<服务器IP>")
+
 echo ""
 echo -e "${GREEN}==================================================================${NC}"
-echo -e "${GREEN}             🎉 chainproxy 一键安装与配置就绪！                   ${NC}"
+echo -e "${GREEN}          🎉 chainproxy Web 控制台安装与配置就绪！                ${NC}"
 echo -e "${GREEN}==================================================================${NC}"
-echo -e " 命令行管理入口: ${CYAN}chainproxy${NC} (直接在终端输入即可启动中文面板)"
-echo -e " 自动注册 WARP : ${CYAN}chainproxy warp-reg${NC}"
-echo -e " 守护进程管理  : ${CYAN}systemctl restart chainproxy${NC}"
-echo -e " REST API 地址 : ${CYAN}http://127.0.0.1:8880${NC}"
+echo -e " Web 面板地址  : ${CYAN}http://${SERVER_IP}:${PANEL_PORT_VAL}${PANEL_PATH_VAL}${NC}"
+echo -e " 登录用户名    : ${CYAN}${PANEL_USER_VAL}${NC}"
+echo -e " 登录密  码    : ${CYAN}${PANEL_PASS_VAL}${NC}"
+echo -e "------------------------------------------------------------------"
+echo -e " 终端管理菜单  : ${CYAN}chainproxy${NC} (管理服务启停、修改面板端口/密码)"
+echo -e " 命令行修改面板: ${CYAN}chainproxy setting --port 54321 --username admin --password 新密码${NC}"
 echo -e "${GREEN}==================================================================${NC}"
+echo -e "${YELLOW} 提示: 请在浏览器打开上方 Web 面板地址配置 WireGuard / WARP / SOCKS5 节点${NC}"
 echo ""
 
-# 如果是交互式终端，直接打开中文管理菜单
-if [ -t 0 ]; then
-    read -r -p "是否现在立即打开交互式中文管理菜单？(Y/n): " OPEN_MENU || true
-    OPEN_MENU=${OPEN_MENU:-Y}
-    if [[ "$OPEN_MENU" =~ ^[Yy]$ ]]; then
-        exec "$CHAINPROXY_BIN" menu
-    fi
-fi

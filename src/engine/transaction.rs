@@ -590,6 +590,39 @@ impl ChainEngine {
     }
 
     pub fn get_active_config(&self) -> Option<ChainProxyConfig> {
-        self.active_config.lock().unwrap().clone()
+        let in_mem = self.active_config.lock().unwrap().clone();
+        if in_mem.is_some() {
+            return in_mem;
+        }
+        let cfg_path = self.base_dir.join("config.json");
+        if cfg_path.exists() {
+            if let Ok(c) = std::fs::read_to_string(&cfg_path) {
+                if let Ok(parsed) = serde_json::from_str::<ChainProxyConfig>(&c) {
+                    return Some(parsed);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn save_config(&mut self, config: ChainProxyConfig) -> Result<()> {
+        std::fs::create_dir_all(&self.base_dir)?;
+        let cfg_path = self.base_dir.join("config.json");
+        std::fs::write(&cfg_path, serde_json::to_vec_pretty(&config)?)?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&cfg_path, std::fs::Permissions::from_mode(0o600));
+        }
+        *self.active_config.lock().unwrap() = Some(config);
+        Ok(())
+    }
+
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    pub fn singbox_bin(&self) -> &str {
+        &self.singbox_bin
     }
 }
