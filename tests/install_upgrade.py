@@ -18,6 +18,7 @@ with tempfile.TemporaryDirectory() as tmp:
     for path, version in [(old, 'old'), (new, 'new'), (engine, 'sing-box-test')]:
         path.write_text('#!/bin/sh\nprintf "' + version + '\\n"\n')
         path.chmod(0o755)
+    new.chmod(0o644)  # Simulate curl -o downloaded file without execute bit
     env = dict(os.environ, PATH=tmp + ':' + os.environ['PATH'],
                CHAINPROXY_BIN=str(old), CANDIDATE=str(new), EVENTS=str(events))
     setup = """

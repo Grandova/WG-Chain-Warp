@@ -132,15 +132,25 @@ log_ok "sing-box 部署就绪: $("$REAL_SB" version | head -n 1)"
 log_info "正在部署 chainproxy 主程序..."
 CHAINPROXY_BIN="/usr/local/bin/chainproxy"
 install_chainproxy() {
-    if ! "$1" --version >/dev/null 2>&1; then
+    local staged="${CHAINPROXY_BIN}.new.$$"
+    chmod 755 "$1" 2>/dev/null || true
+    if ! install -m 755 "$1" "$staged" 2>/dev/null; then
+        log_err "无法写入目标路径: $staged"
+        return 1
+    fi
+    if ! "$staged" --version >/dev/null 2>&1; then
+        rm -f "$staged"
         log_err "下载或编译的 chainproxy 无法执行，保留现有程序。"
         return 1
     fi
     if systemctl is-active --quiet chainproxy; then
         log_info "正在停止旧实例并恢复其网络配置..."
-        systemctl stop chainproxy
+        if ! systemctl stop chainproxy; then
+            rm -f "$staged"
+            return 1
+        fi
     fi
-    install -m 755 "$1" "$CHAINPROXY_BIN"
+    mv -f "$staged" "$CHAINPROXY_BIN"
 }
 
 if [[ -f "./target/release/chainproxy" ]]; then
@@ -159,10 +169,11 @@ else
     for try_url in \
         "https://github.com/Grandova/WG-Chain-Warp/releases/latest/download/chainproxy-linux-amd64"; do
         if curl -fsSL "$try_url" -o "${TMP_DIR}/chainproxy" 2>/dev/null; then
-            install_chainproxy "${TMP_DIR}/chainproxy"
-            log_ok "下载预编译静态二进制完成: $CHAINPROXY_BIN"
-            DOWNLOADED=1
-            break
+            if install_chainproxy "${TMP_DIR}/chainproxy"; then
+                log_ok "下载预编译静态二进制完成: $CHAINPROXY_BIN"
+                DOWNLOADED=1
+                break
+            fi
         fi
     done
 
@@ -171,10 +182,10 @@ else
             log_warn "拉取预编译程序失败，正在通过 git clone 源码并本地编译..."
             CLONE_DIR=$(mktemp -d)
             if git clone https://github.com/Grandova/WG-Chain-Warp.git "$CLONE_DIR"; then
-                (cd "$CLONE_DIR" && cargo build --release)
-                install_chainproxy "$CLONE_DIR/target/release/chainproxy"
-                log_ok "源码拉取并编译安装完成: $CHAINPROXY_BIN"
-                DOWNLOADED=1
+                if (cd "$CLONE_DIR" && cargo build --release) && install_chainproxy "$CLONE_DIR/target/release/chainproxy"; then
+                    log_ok "源码拉取并编译安装完成: $CHAINPROXY_BIN"
+                    DOWNLOADED=1
+                fi
             fi
             rm -rf "$CLONE_DIR"
         fi
