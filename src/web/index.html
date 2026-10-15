@@ -549,10 +549,10 @@
                         <div class="xcard">
                             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
                                 <div>
-                                    <div style="font-weight:600; color:#001529; margin-bottom:6px;">代理引擎状态 (sing-box)</div>
+                                    <div style="font-weight:600; color:#001529; margin-bottom:6px;">内核引擎状态 (Sooya WarpKernel)</div>
                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                                         <span id="dashEngineBadge" class="ant-tag tag-gray">检测中</span>
-                                        <span id="dashSbVer" class="ant-tag tag-blue">sing-box --</span>
+                                        <span id="dashSbVer" class="ant-tag tag-blue">Sooya WarpKernel</span>
                                     </div>
                                 </div>
                                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -1054,7 +1054,7 @@
 
                 // Cards
                 document.getElementById('siderVer').textContent = `Sooya v${system.chainproxy_version}`;
-                document.getElementById('dashSbVer').textContent = `sing-box: ${system.singbox_version}`;
+                document.getElementById('dashSbVer').textContent = `内核: ${system.singbox_version}`;
                 document.getElementById('dashSysUptime').textContent = formatDuration(system.uptime);
                 document.getElementById('dashProxyUptime').textContent = formatDuration(chain.uptime_seconds);
                 document.getElementById('dashActiveVer').textContent = `配置版本: ${chain.active_config_version || '未激活'}`;

@@ -261,7 +261,7 @@ impl HealthChecker {
                         if mode == ProxyMode::StandaloneSocks {
                             "https://one.one.one.one/cdn-cgi/trace"
                         } else {
-                            "https://1.1.1.1/cdn-cgi/trace"
+                            "http://1.1.1.1/cdn-cgi/trace"
                         },
                         Duration::from_secs(4),
                     )
@@ -362,7 +362,7 @@ impl HealthChecker {
                 let (hop2, final_exit, hop2_ok) = match Self::test_hop_via_proxy(
                     TEST_WARP_PORT,
                     vpn2_name,
-                    "https://1.1.1.1/cdn-cgi/trace",
+                    "http://1.1.1.1/cdn-cgi/trace",
                     Duration::from_secs(4),
                 )
                 .await
@@ -453,12 +453,12 @@ impl HealthChecker {
                     TEST_VPN1_PORT,
                     vpn1_name,
                     "http://1.1.1.1/cdn-cgi/trace",
-                    Duration::from_millis(2200),
+                    Duration::from_millis(2500),
                 );
                 let hop2_fut = Self::test_hop_via_proxy(
                     TEST_WARP_PORT,
                     vpn2_name,
-                    "https://1.1.1.1/cdn-cgi/trace",
+                    "http://1.1.1.1/cdn-cgi/trace",
                     Duration::from_secs(4),
                 );
 

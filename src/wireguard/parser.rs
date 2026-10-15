@@ -144,6 +144,28 @@ pub fn parse_cidr(raw: &str, section: &str, field: &str) -> Result<IpNet> {
     })
 }
 
+pub fn parse_reserved_bytes(raw: &str) -> Option<[u8; 3]> {
+    let clean = raw.trim().trim_start_matches('[').trim_end_matches(']').trim();
+    if clean.is_empty() {
+        return None;
+    }
+    if clean.contains(',') {
+        let nums: Vec<u8> = clean
+            .split(',')
+            .filter_map(|p| p.trim().parse::<u8>().ok())
+            .collect();
+        if nums.len() == 3 {
+            return Some([nums[0], nums[1], nums[2]]);
+        }
+    }
+    if let Ok(decoded) = BASE64_STANDARD.decode(clean.as_bytes()) {
+        if decoded.len() == 3 {
+            return Some([decoded[0], decoded[1], decoded[2]]);
+        }
+    }
+    None
+}
+
 pub fn parse_wireguard_ini(content: &str) -> Result<WgConfig> {
     let mut current_section: Option<String> = None;
 
@@ -153,6 +175,7 @@ pub fn parse_wireguard_ini(content: &str) -> Result<WgConfig> {
     let mut dns: Vec<IpAddr> = Vec::new();
     let mut listen_port: Option<u16> = None;
     let mut mtu: Option<u16> = None;
+    let mut reserved: [u8; 3] = [0, 0, 0];
     let mut ignored_scripts: Vec<(String, String)> = Vec::new();
 
     // Peers
@@ -195,7 +218,23 @@ pub fn parse_wireguard_ini(content: &str) -> Result<WgConfig> {
         let line_num = line_idx + 1;
         let trimmed = line.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed.starts_with('#') || trimmed.starts_with(';') {
+            let comment_body = trimmed[1..].trim();
+            if let Some((ck, cv)) = comment_body.split_once('=') {
+                let ck = ck.trim();
+                if ck.eq_ignore_ascii_case("clientid")
+                    || ck.eq_ignore_ascii_case("client_id")
+                    || ck.eq_ignore_ascii_case("reserved")
+                {
+                    if let Some(r) = parse_reserved_bytes(cv) {
+                        reserved = r;
+                    }
+                }
+            }
             continue;
         }
 
@@ -301,6 +340,13 @@ pub fn parse_wireguard_ini(content: &str) -> Result<WgConfig> {
                         message: format!("Invalid MTU: '{}'", value),
                     })?;
                     mtu = Some(mtu_val);
+                } else if key.eq_ignore_ascii_case("reserved")
+                    || key.eq_ignore_ascii_case("clientid")
+                    || key.eq_ignore_ascii_case("client_id")
+                {
+                    if let Some(r) = parse_reserved_bytes(value) {
+                        reserved = r;
+                    }
                 } else if key.eq_ignore_ascii_case("postup")
                     || key.eq_ignore_ascii_case("postdown")
                     || key.eq_ignore_ascii_case("preup")
@@ -334,6 +380,12 @@ pub fn parse_wireguard_ini(content: &str) -> Result<WgConfig> {
                         message: format!("Invalid PersistentKeepalive: '{}'", value),
                     })?;
                     current_peer_keepalive = Some(ka);
+                } else if key.eq_ignore_ascii_case("reserved")
+                    || key.eq_ignore_ascii_case("clientid")
+                {
+                    if let Some(r) = parse_reserved_bytes(value) {
+                        reserved = r;
+                    }
                 }
             }
             _ => unreachable!(),
@@ -380,6 +432,7 @@ pub fn parse_wireguard_ini(content: &str) -> Result<WgConfig> {
             dns,
             listen_port,
             mtu,
+            reserved,
             ignored_scripts,
         },
         peers,

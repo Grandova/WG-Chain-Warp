@@ -26,6 +26,9 @@ pub struct WgInterface {
     pub dns: Vec<IpAddr>,
     pub listen_port: Option<u16>,
     pub mtu: Option<u16>,
+    /// Cloudflare WARP 3-byte client_id (reserved header bytes [r0, r1, r2])
+    #[serde(default)]
+    pub reserved: [u8; 3],
     /// Script hooks found in config (PostUp, PreUp, etc.) - stored for user reference ONLY, NEVER executed!
     pub ignored_scripts: Vec<(String, String)>,
 }

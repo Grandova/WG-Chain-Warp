@@ -120,9 +120,10 @@ impl SysInfoCollector {
         let sb_ver = if let Some(ref v) = guard.cached_sb_version {
             v.clone()
         } else {
-            let v = SingBoxManager::probe_version(singbox_bin)
-                .map(|info| info.version)
-                .unwrap_or_else(|_| "未安装".to_string());
+            let v = match SingBoxManager::probe_version(singbox_bin) {
+                Ok(info) => format!("Sooya WarpKernel + {}", info.version),
+                Err(_) => "Sooya WarpKernel (Rust Native)".to_string(),
+            };
             guard.cached_sb_version = Some(v.clone());
             v
         };

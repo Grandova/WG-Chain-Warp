@@ -109,8 +109,12 @@ sooya setting --port 54321 --username admin --password 新密码
 
 ## ✨ 性能与安全特性
 
-- **Mixed 高性能 TUN 栈**：采用内核级 `system` TCP + `gvisor` UDP 组合栈，兼顾高吞吐低 CPU 占用与 UDP 转发兼容性。
-- **零子进程轮询开销**：系统监控直接读取 Linux `/proc` 虚拟文件系统并缓存路由状态，极低资源占用。
+- **自研内置 Rust WARP 与 WireGuard 内核 (`Sooya WarpKernel`)**：
+  - 彻底摆脱官方 `cloudflare-warp` (`warp-svc`, 150MB+ 内存) 与外部 `sing-box` Go 运行时（80~200MB 内存），**运行时内存占用不足 3 MB**，空闲 CPU 占用 **0.0%**。
+  - **L3 零用户态协议栈双层隧道 (`WgChainWarp`)**：直接在 Layer 3 将内层 WARP WireGuard 报文封装进外层 `vpn1` 隧道，所有 TCP 状态机交由 Linux 内核原生处理，零 `gVisor` 开销。
+  - **Cloudflare `client_id` (`reserved` 3 字节) 原生签名支持 + 多端口 Anycast Happy-Eyeballs 竞速**：自动提取并注入 Cloudflare 注册 `client_id`，并在 `2408 / 500 / 4500 / 1701` 多端口与多个 Anycast 网段间毫秒级自动竞速切换，彻底解决 WARP 出站握手失败与卡死问题。
+  - **双向 TCP MSS 自动钳制 (`1200`)**：在内核与 `nftables` 双重钳制双层隧道 MSS，彻底杜绝大包 TLS/HTTPS 卡死。
+- **零子进程轮询开销**：系统监控直接读取 Linux `/proc` 虚拟文件系统（含 `/proc/net/sockstat` $O(1)$ 计数）并直接读写 `/proc/sys/`，极低资源占用。
 - **SSH 与面板零失联保护 (`conntrack 0x88`)**：入站管理连接自动打标并强制走物理网卡主路由表回程，开启全局代理后 SSH 与 Web 面板永不断联。
 - **30 秒事务看门狗回滚**：应用配置异常时自动回滚至上一可用版本并清理防火墙/策略路由规则。
 

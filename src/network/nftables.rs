@@ -45,7 +45,7 @@ impl NftablesManager {
                 "        {family}meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"host-proxy\"\n"
             ));
         }
-        script.push_str("    }\n}\n");
+        script.push_str("    }\n    chain postrouting {\n        type filter hook postrouting priority mangle; policy accept;\n        oifname \"chain0\" tcp flags syn / syn,rst tcp option maxseg size set 1200 comment \"mss-clamp\"\n    }\n}\n");
         Ok(script)
     }
 

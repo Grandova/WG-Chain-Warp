@@ -7,5 +7,6 @@ pub mod model;
 pub mod network;
 pub mod proxy;
 pub mod singbox;
+pub mod warp_kernel;
 pub mod web;
 pub mod wireguard;

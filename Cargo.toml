@@ -1,6 +1,6 @@
 [package]
 name = "sooya"
-version = "1.4.1"
+version = "1.5.0"
 edition = "2021"
 description = "Sooya - Lightweight Linux Chained WireGuard & WARP Proxy with Web Panel"
 license = "MIT OR Apache-2.0"

@@ -68,22 +68,17 @@ install_base() {
         mknod /dev/net/tun c 10 200 2>/dev/null || true
         chmod 666 /dev/net/tun 2>/dev/null || true
     fi
-
-    # 检测或安装 sing-box 引擎
-    if ! command -v sing-box >/dev/null 2>&1; then
-        echo -e "${green}正在安装官方 sing-box 代理引擎...${plain}"
-        if ! (curl -fsSL https://sing-box.app/install.sh 2>/dev/null | bash); then
-            local sb_ver="1.14.2"
-            local sb_tar="sing-box-${sb_ver}-linux-${arch}.tar.gz"
-            wget -N --no-check-certificate -O "/tmp/${sb_tar}" "https://github.com/SagerNet/sing-box/releases/download/v${sb_ver}/${sb_tar}"
-            tar -xzf "/tmp/${sb_tar}" -C /tmp
-            install -m 755 "/tmp/sing-box-${sb_ver}-linux-${arch}/sing-box" /usr/local/bin/sing-box
-            rm -rf "/tmp/${sb_tar}" "/tmp/sing-box-${sb_ver}-linux-${arch}"
-        fi
-    fi
 }
 
 cleanup_legacy() {
+    # 自动停止并禁用占用大量内存的官方 cloudflare-warp (warp-svc) 守护进程（Sooya 已内置零内存开销的原生 Rust WARP 内核）
+    if systemctl is-active --quiet warp-svc 2>/dev/null; then
+        echo -e "${yellow}检测到官方 warp-svc 正在后台运行，正在停止并切换至 Sooya 内置极速 Rust WARP 内核以释放内存...${plain}"
+        systemctl stop warp-svc 2>/dev/null || true
+        systemctl disable warp-svc 2>/dev/null || true
+    fi
+    pkill -9 -f warp-svc 2>/dev/null || true
+
     # 清理旧版 chainproxy 残留并平滑迁移数据目录
     if systemctl is-active --quiet chainproxy 2>/dev/null; then
         systemctl stop chainproxy 2>/dev/null || true

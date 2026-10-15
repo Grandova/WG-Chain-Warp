@@ -29,6 +29,8 @@ struct WarpRegResponse {
 
 #[derive(Deserialize)]
 struct WarpConfigObj {
+    #[serde(default)]
+    pub client_id: Option<String>,
     pub peers: Vec<WarpPeerObj>,
     pub interface: WarpInterfaceObj,
 }
@@ -113,6 +115,11 @@ impl WarpRegistrar {
                     if status.is_success() {
                         match resp.json::<WarpRegResponse>().await {
                             Ok(reg_data) => {
+                                let client_id = reg_data.config.client_id.clone();
+                                let reserved = client_id
+                                    .as_deref()
+                                    .and_then(crate::wireguard::parser::parse_reserved_bytes)
+                                    .unwrap_or([0, 0, 0]);
                                 let peer = reg_data.config.peers.into_iter().next().ok_or_else(|| {
                                     ChainError::NetworkError("Cloudflare API returned empty peer list".to_string())
                                 })?;
@@ -135,14 +142,52 @@ impl WarpRegistrar {
                                 }
                                 let peer_pubkey = peer.public_key;
 
+                                // Probe best Anycast endpoint/port if directly reachable
+                                if let (Ok(priv_bytes), Ok(pub_bytes)) = (
+                                    BASE64_STANDARD.decode(private_key.as_bytes()),
+                                    BASE64_STANDARD.decode(peer_pubkey.as_bytes()),
+                                ) {
+                                    if priv_bytes.len() == 32 && pub_bytes.len() == 32 {
+                                        let mut sk = [0u8; 32];
+                                        let mut pk = [0u8; 32];
+                                        sk.copy_from_slice(&priv_bytes);
+                                        pk.copy_from_slice(&pub_bytes);
+                                        let cfg_sock = ep.parse().ok();
+                                        if let Ok(Some((best_addr, rtt))) = tokio::task::spawn_blocking(move || {
+                                            crate::warp_kernel::endpoint::select_best_warp_endpoint(
+                                                sk,
+                                                pk,
+                                                reserved,
+                                                cfg_sock,
+                                                Duration::from_millis(450),
+                                            )
+                                        })
+                                        .await
+                                        {
+                                            info!(
+                                                "Selected optimal WARP Anycast endpoint {} ({} ms)",
+                                                best_addr, rtt
+                                            );
+                                            ep = best_addr.to_string();
+                                        }
+                                    }
+                                }
+
                                 let address_line = if let Some(ref v6) = addr_v6 {
                                     format!("Address = {}, {}", addr_v4, v6)
                                 } else {
                                     format!("Address = {}", addr_v4)
                                 };
 
+                                let client_id_comment = if let Some(ref cid) = client_id {
+                                    format!("# ClientID = {}\n", cid)
+                                } else {
+                                    String::new()
+                                };
+
                                 let wg_conf = format!(
-                                    "[Interface]\nPrivateKey = {}\n{}\nDNS = 1.1.1.1, 1.0.0.1\n\n[Peer]\nPublicKey = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {}\nPersistentKeepalive = 25\n",
+                                    "[Interface]\n{}PrivateKey = {}\n{}\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1280\n\n[Peer]\nPublicKey = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {}\nPersistentKeepalive = 25\n",
+                                    client_id_comment,
                                     private_key,
                                     address_line,
                                     peer_pubkey,
@@ -185,7 +230,7 @@ impl WarpRegistrar {
         let fallback_v6 = Some("2606:4700:110:8f6f:f8b2:ff95:cfb8:d7ad/128".to_string());
 
         let wg_conf = format!(
-            "[Interface]\nPrivateKey = {}\nAddress = {}, {}\nDNS = 1.1.1.1, 1.0.0.1\n\n[Peer]\nPublicKey = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {}\nPersistentKeepalive = 25\n",
+            "[Interface]\nPrivateKey = {}\nAddress = {}, {}\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1280\n\n[Peer]\nPublicKey = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {}\nPersistentKeepalive = 25\n",
             private_key,
             fallback_v4,
             fallback_v6.as_ref().unwrap(),
