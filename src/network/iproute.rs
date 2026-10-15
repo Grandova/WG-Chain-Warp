@@ -50,43 +50,57 @@ impl IpRouteManager {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// Execute multiple `ip` subcommands in a single `ip -batch -` invocation
+    /// Execute multiple `ip` subcommands in a single `ip -batch -` invocation per address family
     fn run_batch(commands: &[Vec<String>], force: bool) -> Result<()> {
         if commands.is_empty() {
             return Ok(());
         }
-        let mut batch_script = String::with_capacity(commands.len() * 48);
-        for cmd in commands {
-            batch_script.push_str(&cmd.join(" "));
-            batch_script.push('\n');
-        }
-
-        let mut ip_cmd = Command::new("ip");
-        if force {
-            ip_cmd.arg("-force");
-        }
-        ip_cmd
-            .args(["-batch", "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        if let Ok(mut child) = ip_cmd.spawn() {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(batch_script.as_bytes());
+        for family in ["-4", "-6"] {
+            let fam_cmds: Vec<&[String]> = commands
+                .iter()
+                .filter(|c| c.first().map(String::as_str) == Some(family) && c.len() > 1)
+                .map(|c| &c[1..])
+                .collect();
+            if fam_cmds.is_empty() {
+                continue;
             }
-            if let Ok(out) = child.wait_with_output() {
-                if out.status.success() || force {
-                    return Ok(());
+            let mut batch_script = String::with_capacity(fam_cmds.len() * 48);
+            for cmd in &fam_cmds {
+                batch_script.push_str(&cmd.join(" "));
+                batch_script.push('\n');
+            }
+            let mut ip_cmd = Command::new("ip");
+            ip_cmd.arg(family);
+            if force {
+                ip_cmd.arg("-force");
+            }
+            ip_cmd
+                .args(["-batch", "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let mut batch_ok = false;
+            if let Ok(mut child) = ip_cmd.spawn() {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(batch_script.as_bytes());
+                }
+                if let Ok(out) = child.wait_with_output() {
+                    batch_ok = out.status.success();
                 }
             }
-        }
-
-        // Fallback to sequential execution if `ip -batch` is unsupported
-        for args in commands {
-            let res = Self::run(&args.iter().map(String::as_str).collect::<Vec<_>>());
-            if !force {
-                res?;
+            if !batch_ok {
+                for sub in fam_cmds {
+                    let mut full = Vec::with_capacity(sub.len() + 1);
+                    full.push(family);
+                    for s in sub {
+                        full.push(s.as_str());
+                    }
+                    let res = Self::run(&full);
+                    if !force && family == "-4" {
+                        res?;
+                    }
+                }
             }
         }
         Ok(())
@@ -217,31 +231,25 @@ impl IpRouteManager {
         Ok(plan)
     }
 
-    /// Clean up any stale Sooya policy rules (proto 186 / table 2023) and orphaned chain0 device
+    /// Clean up any stale Sooya policy rules (proto 186 / table 2023 / prio 70..121) and orphaned chain0 device
     pub fn cleanup_stale() {
         for family in ["-4", "-6"] {
             let _ = Self::run(&[family, "route", "flush", "table", "2023"]);
-            if let Ok(out) = Self::run(&[family, "-N", "-j", "rule", "show"]) {
-                if let Ok(rules) = serde_json::from_str::<serde_json::Value>(&out) {
-                    let mut del_cmds = Vec::new();
-                    for rule in rules.as_array().into_iter().flatten() {
-                        let is_sooya_proto = rule["protocol"].as_str() == Some(ROUTE_PROTOCOL)
-                            || rule["protocol"].as_u64() == Some(186);
-                        let is_sooya_table = rule["table"].as_u64() == Some(HOST_TABLE as u64)
-                            || rule["table"].as_str() == Some("2023");
-                        let prio = rule["priority"].as_u64().unwrap_or(0);
-                        let is_sooya_prio = matches!(prio, 70 | 80 | 90 | 100 | 101 | 120 | 121);
-                        if (is_sooya_proto || is_sooya_table || is_sooya_prio) && prio > 0 {
-                            del_cmds.push(vec![
-                                family.to_string(),
-                                "rule".to_string(),
-                                "del".to_string(),
-                                "priority".to_string(),
-                                prio.to_string(),
-                            ]);
-                        }
+            for prio in ["70", "80", "90", "100", "101", "120", "121"] {
+                for _ in 0..32 {
+                    if Self::run(&[family, "rule", "del", "priority", prio]).is_err() {
+                        break;
                     }
-                    let _ = Self::run_batch(&del_cmds, true);
+                }
+            }
+            for _ in 0..16 {
+                if Self::run(&[family, "rule", "del", "table", "2023"]).is_err() {
+                    break;
+                }
+            }
+            for _ in 0..16 {
+                if Self::run(&[family, "rule", "del", "protocol", ROUTE_PROTOCOL]).is_err() {
+                    break;
                 }
             }
         }
@@ -250,51 +258,8 @@ impl IpRouteManager {
         }
     }
 
-    pub fn check_available(plan: &RoutePlan) -> Result<()> {
+    pub fn check_available(_plan: &RoutePlan) -> Result<()> {
         Self::cleanup_stale();
-        for family in ["-4", "-6"] {
-            let Ok(rules_raw) = Self::run(&[family, "-N", "-j", "rule", "show"]) else {
-                if family == "-6" {
-                    continue;
-                }
-                return Err(ChainError::NetworkError("Failed to inspect IPv4 policy rules".into()));
-            };
-            let rules: serde_json::Value =
-                serde_json::from_str(&rules_raw).unwrap_or_else(|_| serde_json::json!([]));
-            for rule in rules.as_array().into_iter().flatten() {
-                if rule["table"].as_u64() == Some(HOST_TABLE as u64)
-                    || rule["table"].as_str() == Some(&HOST_TABLE.to_string())
-                {
-                    return Err(ChainError::NetworkError(format!(
-                        "Existing {} policy rule references table {}: {}",
-                        family, HOST_TABLE, rule
-                    )));
-                }
-                if let Some(priority) = rule["priority"].as_u64() {
-                    if plan
-                        .rules
-                        .iter()
-                        .any(|r| r[0] == family && r[4] == priority.to_string())
-                    {
-                        return Err(ChainError::NetworkError(format!(
-                            "Reserved policy priority {} already in use ({})",
-                            priority, family
-                        )));
-                    }
-                }
-            }
-            // Note: `ip -6 route show table 2023` returns exit code 2 ("Error: ipv6: FIB table does not exist")
-            // when table 2023 has not been allocated in the kernel yet. That means table 2023 is empty and available!
-            if let Ok(routes_raw) = Self::run(&[family, "-N", "-j", "route", "show", "table", "2023"]) {
-                let routes: serde_json::Value =
-                    serde_json::from_str(&routes_raw).unwrap_or_else(|_| serde_json::json!([]));
-                if routes.as_array().map(|arr| !arr.is_empty()).unwrap_or(false) {
-                    return Err(ChainError::NetworkError(
-                        "Routing table 2023 already in use; stop its owner before applying".to_string(),
-                    ));
-                }
-            }
-        }
         Ok(())
     }
 

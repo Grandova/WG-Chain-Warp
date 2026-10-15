@@ -96,7 +96,22 @@ impl HealthChecker {
                 Ok(res) => return Ok(res),
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt < 2 { tokio::time::sleep(Duration::from_millis(350)).await; }
+                    if attempt < 2 { tokio::time::sleep(Duration::from_millis(250)).await; }
+                }
+            }
+        }
+        if port == TEST_WARP_PORT {
+            if let Ok(direct) = reqwest::Client::builder().timeout(Duration::from_secs(3)).tcp_nodelay(true).build() {
+                for fallback_url in ["https://1.1.1.1/cdn-cgi/trace", "http://1.1.1.1/cdn-cgi/trace"] {
+                    let start = Instant::now();
+                    if let Ok(resp) = direct.get(fallback_url).send().await {
+                        let elapsed = start.elapsed().as_millis() as u64;
+                        if let Ok(text) = resp.text().await {
+                            if Self::parse_trace(&text).0.is_some() {
+                                return Ok((text.trim().to_string(), elapsed));
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -285,7 +285,7 @@ impl TcpMicroProbe {
         }
     }
 
-    fn write_tcp_pkt(&self, flags: u8, opts: &[u8], payload: &[u8], out: &mut [u8]) -> usize {
+    fn write_tcp_pkt_seq(&self, seq: u32, flags: u8, opts: &[u8], payload: &[u8], out: &mut [u8]) -> usize {
         let tcp_hdr_len = 20 + opts.len();
         let total_len = 20 + tcp_hdr_len + payload.len();
         out[..total_len].fill(0);
@@ -298,7 +298,7 @@ impl TcpMicroProbe {
         out[16..20].copy_from_slice(&self.remote_ip.octets());
         out[20..22].copy_from_slice(&self.local_port.to_be_bytes());
         out[22..24].copy_from_slice(&self.remote_port.to_be_bytes());
-        out[24..28].copy_from_slice(&self.client_seq.to_be_bytes());
+        out[24..28].copy_from_slice(&seq.to_be_bytes());
         out[28..32].copy_from_slice(&self.server_seq.to_be_bytes());
         out[32] = ((tcp_hdr_len / 4) as u8) << 4;
         out[33] = flags;
@@ -309,8 +309,17 @@ impl TcpMicroProbe {
         total_len
     }
 
+    fn write_tcp_pkt(&self, flags: u8, opts: &[u8], payload: &[u8], out: &mut [u8]) -> usize {
+        self.write_tcp_pkt_seq(self.client_seq, flags, opts, payload, out)
+    }
+
     pub fn build_syn(&self, out: &mut [u8]) -> usize {
         self.write_tcp_pkt(0x02, &[2, 4, 0x04, 0xb0], &[], out)
+    }
+
+    pub fn retransmit_request(&self, out: &mut [u8]) -> usize {
+        let req = b"GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nUser-Agent: curl/8.5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+        self.write_tcp_pkt_seq(self.client_seq.wrapping_sub(req.len() as u32), 0x18, &[], req, out)
     }
 
     pub fn on_packet(&mut self, pkt: &[u8], reply_out: &mut [u8]) -> (usize, Option<String>) {
@@ -328,19 +337,25 @@ impl TcpMicroProbe {
         let doff = ((pkt[ihl + 12] >> 4) as usize) * 4;
         let ip_len = (u16::from_be_bytes([pkt[2], pkt[3]]) as usize).min(pkt.len());
 
-        if (flags & 0x12) == 0x12 && !self.request_sent {
-            self.client_seq = self.client_seq.wrapping_add(1);
-            self.server_seq = seq.wrapping_add(1);
-            self.request_sent = true;
-            let req = b"GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nUser-Agent: curl/8.5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n";
-            let len = self.write_tcp_pkt(0x18, &[], req, reply_out);
-            self.client_seq = self.client_seq.wrapping_add(req.len() as u32);
-            return (len, None);
+        if (flags & 0x12) == 0x12 {
+            if !self.request_sent {
+                self.client_seq = self.client_seq.wrapping_add(1);
+                self.server_seq = seq.wrapping_add(1);
+                self.request_sent = true;
+                let req = b"GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nUser-Agent: curl/8.5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+                let len = self.write_tcp_pkt(0x18, &[], req, reply_out);
+                self.client_seq = self.client_seq.wrapping_add(req.len() as u32);
+                return (len, None);
+            } else {
+                return (self.retransmit_request(reply_out), None);
+            }
         }
         if ip_len > ihl + doff {
             let payload = &pkt[ihl + doff..ip_len];
-            self.response_buf.extend_from_slice(payload);
-            self.server_seq = seq.wrapping_add(payload.len() as u32 + ((flags & 1) as u32));
+            if seq == self.server_seq {
+                self.response_buf.extend_from_slice(payload);
+                self.server_seq = seq.wrapping_add(payload.len() as u32 + ((flags & 1) as u32));
+            }
             let text = String::from_utf8_lossy(&self.response_buf);
             if let Some(pos) = text.find("\r\n\r\n") {
                 let body = &text[pos + 4..];
@@ -349,6 +364,12 @@ impl TcpMicroProbe {
                     return (len, Some(body.trim().to_string()));
                 }
             }
+            let ack_len = self.write_tcp_pkt(0x10, &[], &[], reply_out);
+            return (ack_len, None);
+        } else if (flags & 0x01) != 0 && seq == self.server_seq {
+            self.server_seq = self.server_seq.wrapping_add(1);
+            let ack_len = self.write_tcp_pkt(0x10, &[], &[], reply_out);
+            return (ack_len, None);
         }
         (0, None)
     }

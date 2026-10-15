@@ -24,6 +24,8 @@ pub struct KernelStats {
     pub vpn1_rx: u64,
     pub warp_tx: u64,
     pub warp_rx: u64,
+    pub vpn1_handshake_ok: bool,
+    pub warp_handshake_ok: bool,
     pub active_warp_endpoint: Option<String>,
 }
 
@@ -117,6 +119,8 @@ pub struct WarpKernel {
     vpn1_rx: Arc<AtomicU64>,
     warp_tx: Arc<AtomicU64>,
     warp_rx: Arc<AtomicU64>,
+    vpn1_hs_ok: Arc<AtomicBool>,
+    warp_hs_ok: Arc<AtomicBool>,
     active_warp_ep: Arc<Mutex<Option<String>>>,
 }
 
@@ -136,6 +140,8 @@ impl WarpKernel {
             vpn1_rx: Arc::new(AtomicU64::new(0)),
             warp_tx: Arc::new(AtomicU64::new(0)),
             warp_rx: Arc::new(AtomicU64::new(0)),
+            vpn1_hs_ok: Arc::new(AtomicBool::new(false)),
+            warp_hs_ok: Arc::new(AtomicBool::new(false)),
             active_warp_ep: Arc::new(Mutex::new(None)),
         }
     }
@@ -150,6 +156,8 @@ impl WarpKernel {
             vpn1_rx: self.vpn1_rx.load(Ordering::Relaxed),
             warp_tx: self.warp_tx.load(Ordering::Relaxed),
             warp_rx: self.warp_rx.load(Ordering::Relaxed),
+            vpn1_handshake_ok: self.vpn1_hs_ok.load(Ordering::Relaxed),
+            warp_handshake_ok: self.warp_hs_ok.load(Ordering::Relaxed),
             active_warp_endpoint: self.active_warp_ep.lock().unwrap().clone(),
         }
     }
@@ -176,6 +184,8 @@ impl WarpKernel {
         for c in [&self.vpn1_tx, &self.vpn1_rx, &self.warp_tx, &self.warp_rx] {
             c.store(0, Ordering::Relaxed);
         }
+        self.vpn1_hs_ok.store(false, Ordering::Relaxed);
+        self.warp_hs_ok.store(false, Ordering::Relaxed);
         *self.active_warp_ep.lock().unwrap() = None;
 
         if config.mode == ProxyMode::Socks5Server {
@@ -186,6 +196,7 @@ impl WarpKernel {
                 .clone();
             srv.validate()?;
             self.running.store(true, Ordering::SeqCst);
+            self.vpn1_hs_ok.store(true, Ordering::Relaxed);
             let (running, tx, rx) = (self.running.clone(), self.vpn1_tx.clone(), self.vpn1_rx.clone());
             let h = tokio::spawn(async move {
                 let _ = run_native_socks5_server(SocketAddr::new(srv.listen, srv.port), srv.users, running, tx, rx).await;
@@ -243,12 +254,14 @@ impl WarpKernel {
             self.workers.push(h2);
         }
 
-        let (running, v1_tx, v1_rx, w_tx, w_rx, w_ep) = (
+        let (running, v1_tx, v1_rx, w_tx, w_rx, v1_hs, w_hs, w_ep) = (
             self.running.clone(),
             self.vpn1_tx.clone(),
             self.vpn1_rx.clone(),
             self.warp_tx.clone(),
             self.warp_rx.clone(),
+            self.vpn1_hs_ok.clone(),
+            self.warp_hs_ok.clone(),
             self.active_warp_ep.clone(),
         );
         let uplink_str = uplink.to_string();
@@ -257,7 +270,7 @@ impl WarpKernel {
             .spawn(move || {
                 run_kernel_packet_loop(
                     tun_fd, udp_sock, &uplink_str, host_ipv4, vpn1_spec, warp_spec, socks_cfg,
-                    probe_rx, running, v1_tx, v1_rx, w_tx, w_rx, w_ep,
+                    probe_rx, running, v1_tx, v1_rx, w_tx, w_rx, v1_hs, w_hs, w_ep,
                 );
             })
             .map_err(|e| ChainError::SystemError(e.to_string()))?;
@@ -385,6 +398,8 @@ fn run_kernel_packet_loop(
     vpn1_rx: Arc<AtomicU64>,
     warp_tx: Arc<AtomicU64>,
     warp_rx: Arc<AtomicU64>,
+    vpn1_hs_ok: Arc<AtomicBool>,
+    warp_hs_ok: Arc<AtomicBool>,
     active_warp_ep_shared: Arc<Mutex<Option<String>>>,
 ) {
     let mut vpn1_tunnel = vpn1_spec.as_ref().map(|s| {
@@ -395,7 +410,10 @@ fn run_kernel_packet_loop(
     });
     let socks_assoc = socks_cfg.as_ref().and_then(|s| socks5_udp_associate(s, uplink));
     let (_socks_ctrl, socks_relay) = match socks_assoc {
-        Some((c, r)) => (Some(c), Some(r)),
+        Some((c, r)) => {
+            vpn1_hs_ok.store(true, Ordering::Relaxed);
+            (Some(c), Some(r))
+        }
         None => (None, None),
     };
 
@@ -532,17 +550,25 @@ fn run_kernel_packet_loop(
                 ProbeTarget::Vpn1 => vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(false),
                 ProbeTarget::Warp => warp_tunnel.as_ref().map(|w| w.has_session()).unwrap_or(false),
             };
-            if ready && !active_probes[idx].fsm.request_sent && active_probes[idx].last_tx.elapsed() >= Duration::from_millis(400) && active_probes[idx].retries < 8 {
-                let n = active_probes[idx].fsm.build_syn(&mut probe_buf);
-                active_probes[idx].last_tx = Instant::now();
-                active_probes[idx].retries += 1;
-                if active_probes[idx].target == ProbeTarget::Vpn1 {
-                    if let Some((ref mut v1, vep)) = vpn1_tunnel {
-                        send_via_vpn1(&probe_buf[..n], v1, vep, &udp_sock, &mut wg1_buf, &vpn1_tx);
-                    }
-                } else if let Some(ref mut w) = warp_tunnel {
-                    if let Some(wn) = w.encapsulate(&probe_buf[..n], &mut wg2_buf) {
-                        send_warp_frame(&wg2_buf[..wn], active_warp_ep, &mut vpn1_tunnel, socks_relay, &udp_sock, &mut ip_id, &mut wrap_buf, &mut wg1_buf, &vpn1_tx, &warp_tx);
+            if ready && active_probes[idx].retries < 8 {
+                let n = if !active_probes[idx].fsm.request_sent && active_probes[idx].last_tx.elapsed() >= Duration::from_millis(380) {
+                    active_probes[idx].fsm.build_syn(&mut probe_buf)
+                } else if active_probes[idx].fsm.request_sent && active_probes[idx].last_tx.elapsed() >= Duration::from_millis(650) {
+                    active_probes[idx].fsm.retransmit_request(&mut probe_buf)
+                } else {
+                    0
+                };
+                if n > 0 {
+                    active_probes[idx].last_tx = Instant::now();
+                    active_probes[idx].retries += 1;
+                    if active_probes[idx].target == ProbeTarget::Vpn1 {
+                        if let Some((ref mut v1, vep)) = vpn1_tunnel {
+                            send_via_vpn1(&probe_buf[..n], v1, vep, &udp_sock, &mut wg1_buf, &vpn1_tx);
+                        }
+                    } else if let Some(ref mut w) = warp_tunnel {
+                        if let Some(wn) = w.encapsulate(&probe_buf[..n], &mut wg2_buf) {
+                            send_warp_frame(&wg2_buf[..wn], active_warp_ep, &mut vpn1_tunnel, socks_relay, &udp_sock, &mut ip_id, &mut wrap_buf, &mut wg1_buf, &vpn1_tx, &warp_tx);
+                        }
                     }
                 }
             }
@@ -563,7 +589,9 @@ fn run_kernel_packet_loop(
                 vpn1_rx.fetch_add(udp_len as u64, Ordering::Relaxed);
                 match v1.decapsulate(&udp_buf[..udp_len], &mut wg1_buf) {
                     DecapOutcome::None | DecapOutcome::Keepalive => {}
-                    DecapOutcome::HandshakeCompleted { .. } => {
+                    DecapOutcome::HandshakeCompleted { rtt_ms } => {
+                        vpn1_hs_ok.store(true, Ordering::Relaxed);
+                        info!("WireGuard handshake completed with {} (RTT: {} ms)", vep, rtt_ms);
                         if let Some(ka) = v1.encapsulate_keepalive(&mut tun_buf) {
                             let _ = udp_sock.send_to(&tun_buf[..ka], vep);
                             vpn1_tx.fetch_add(ka as u64, Ordering::Relaxed);
@@ -584,6 +612,7 @@ fn run_kernel_packet_loop(
                             if active_probes[pi].target == ProbeTarget::Vpn1 {
                                 let (tx_n, body) = active_probes[pi].fsm.on_packet(&wg1_buf[..plen], &mut probe_buf);
                                 if tx_n > 0 || body.is_some() {
+                                    active_probes[pi].last_tx = Instant::now();
                                     hit = true;
                                     if tx_n > 0 {
                                         if let Some((ref mut v1_inner, vep_inner)) = vpn1_tunnel {
@@ -629,9 +658,11 @@ fn run_kernel_packet_loop(
                 warp_rx.fetch_add(w_pkt.len() as u64, Ordering::Relaxed);
                 match w.decapsulate(w_pkt, &mut wg2_buf) {
                     DecapOutcome::None | DecapOutcome::Keepalive => {}
-                    DecapOutcome::HandshakeCompleted { .. } => {
+                    DecapOutcome::HandshakeCompleted { rtt_ms } => {
                         active_warp_ep = w_src;
                         *active_warp_ep_shared.lock().unwrap() = Some(active_warp_ep.to_string());
+                        warp_hs_ok.store(true, Ordering::Relaxed);
+                        info!("Cloudflare WARP handshake completed with {} (RTT: {} ms)", active_warp_ep, rtt_ms);
                         if let Some(ka) = w.encapsulate_keepalive(&mut tun_buf) {
                             send_warp_frame(&tun_buf[..ka], active_warp_ep, &mut vpn1_tunnel, socks_relay, &udp_sock, &mut ip_id, &mut wrap_buf, &mut wg1_buf, &vpn1_tx, &warp_tx);
                         }
@@ -644,6 +675,7 @@ fn run_kernel_packet_loop(
                             if active_probes[pi].target == ProbeTarget::Warp {
                                 let (tx_n, body) = active_probes[pi].fsm.on_packet(&wg2_buf[..alen], &mut probe_buf);
                                 if tx_n > 0 || body.is_some() {
+                                    active_probes[pi].last_tx = Instant::now();
                                     hit = true;
                                     if tx_n > 0 {
                                         if let Some(wn) = w.encapsulate(&probe_buf[..tx_n], &mut tun_buf) {

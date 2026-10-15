@@ -53,6 +53,7 @@ fn build_core_routes() -> Router<AppState> {
         .route("/panel/api/server/status", get(panel_server_status_handler))
         .route("/panel/api/chain/config", get(panel_get_config_handler))
         .route("/panel/api/chain/save", post(panel_save_config_handler))
+        .route("/panel/api/outbounds", get(panel_get_outbounds_handler).post(panel_save_outbounds_handler))
         .route("/panel/api/warp/register", post(warp_register_handler))
         .route("/panel/api/setting/all", get(panel_get_setting_handler))
         .route("/panel/api/setting/update", post(panel_update_setting_handler))
@@ -222,6 +223,37 @@ async fn panel_save_config_handler(
     }
     match state.reader.save_config(payload.config) {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::ok("配置已保存".to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(e.to_string()))),
+    }
+}
+
+async fn panel_get_outbounds_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    if !is_authenticated(&headers, &state).await {
+        return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
+    }
+    let path = state.data_dir.join("outbounds.json");
+    let list = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or_else(|| serde_json::json!([]));
+    (StatusCode::OK, Json(ApiResponse::ok(list)))
+}
+
+async fn panel_save_outbounds_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> (StatusCode, Json<ApiResponse<String>>) {
+    if !is_authenticated(&headers, &state).await {
+        return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
+    }
+    let _ = std::fs::create_dir_all(&state.data_dir);
+    let path = state.data_dir.join("outbounds.json");
+    match std::fs::write(&path, serde_json::to_vec_pretty(&payload).unwrap_or_default()) {
+        Ok(_) => (StatusCode::OK, Json(ApiResponse::ok("已保存出站列表".to_string()))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(e.to_string()))),
     }
 }

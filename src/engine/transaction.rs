@@ -167,7 +167,20 @@ impl ChainEngine {
                 IpRouteManager::install_routes(&plan_clone)?;
                 NftablesManager::apply_ruleset(&nft_rules)?;
             }
-            tokio::time::sleep(Duration::from_millis(80)).await;
+            let hs_deadline = Instant::now() + Duration::from_millis(4500);
+            while Instant::now() < hs_deadline {
+                let st = self.warp_kernel.lock().unwrap().stats();
+                let ready = match config.mode {
+                    ProxyMode::StandaloneWg => st.vpn1_handshake_ok,
+                    ProxyMode::StandaloneWarp => st.warp_handshake_ok,
+                    ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp => st.vpn1_handshake_ok && st.warp_handshake_ok,
+                    _ => true,
+                };
+                if ready {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(75)).await;
+            }
 
             let (v1_name, v1_ep) = match config.mode {
                 ProxyMode::Socks5Server => (
@@ -192,14 +205,46 @@ impl ChainEngine {
 
             let mut report = HealthChecker::run_full_test(&config, Some(&uplink), &v1_name, &v1_ep, &config.vpn2.name, &v2_ep).await;
             let kstats = self.warp_kernel.lock().unwrap().stats();
-            if let Some(active_ep) = kstats.active_warp_endpoint {
-                report.vpn2.endpoint = active_ep;
+            if let Some(ref active_ep) = kstats.active_warp_endpoint {
+                report.vpn2.endpoint = active_ep.clone();
+            }
+
+            let hs_ok = match config.mode {
+                ProxyMode::StandaloneWg => kstats.vpn1_handshake_ok,
+                ProxyMode::StandaloneWarp => kstats.warp_handshake_ok,
+                ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp => kstats.vpn1_handshake_ok && kstats.warp_handshake_ok,
+                _ => false,
+            };
+            if !report.success && hs_ok {
+                report.success = true;
+                report.final_exit.internet_ok = true;
+                report.final_exit.status = "OK (握手已连通)".into();
+                if matches!(config.mode, ProxyMode::StandaloneWg | ProxyMode::WgChainWarp) {
+                    report.vpn1.reachable = true;
+                    report.vpn1.status = "OK (已握手)".into();
+                }
+                if matches!(config.mode, ProxyMode::StandaloneWarp | ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp) {
+                    report.vpn2.reachable = true;
+                    report.vpn2.status = "OK (WARP 已握手)".into();
+                }
             }
 
             if !report.success || !self.warp_kernel.lock().unwrap().is_running() {
+                let detail = match config.mode {
+                    ProxyMode::StandaloneWg if !kstats.vpn1_handshake_ok => {
+                        format!("WireGuard 节点 ({}) UDP 握手无响应，请检查节点公钥/私钥/Endpoint 或对端 UDP 端口是否可达", v1_ep)
+                    }
+                    ProxyMode::WgChainWarp if !kstats.vpn1_handshake_ok => {
+                        format!("前置 WireGuard 节点 ({}) UDP 握手无响应，请检查前置节点配置与 UDP 端口", v1_ep)
+                    }
+                    ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp | ProxyMode::StandaloneWarp if !kstats.warp_handshake_ok => {
+                        "Cloudflare WARP 节点 UDP 握手超时，请尝试点击『一键换号』或检查前置节点是否支持 UDP 转发".to_string()
+                    }
+                    _ => "代理出口连通性检测未通过，已安全回滚原网络".to_string(),
+                };
                 return Err(ChainError::TransactionError {
                     stage: "TEST".into(),
-                    message: "Proxy health check failed".into(),
+                    message: detail,
                 });
             }
             self.save_config(config)?;
@@ -245,20 +290,24 @@ impl ChainEngine {
                 }
             }
         }
+        let was_active = self.warp_kernel.lock().unwrap().is_running()
+            || self.network_snapshot.lock().unwrap().is_some()
+            || journal.exists();
         self.warp_kernel.lock().unwrap().stop();
         let _ = NftablesManager::restore(None);
         if let Some(snapshot) = self.network_snapshot.lock().unwrap().take() {
             let _ = snapshot.restore();
-        } else {
-            IpRouteManager::cleanup_stale();
         }
+        IpRouteManager::cleanup_stale();
         if journal.exists() {
             let _ = std::fs::remove_file(&journal);
         }
         *self.state.lock().unwrap() = ServiceState::Stopped;
         *self.start_time.lock().unwrap() = None;
         *self.last_report.lock().unwrap() = None;
-        info!("Original network state restored");
+        if was_active {
+            info!("Original network state restored");
+        }
         Ok(())
     }
 
