@@ -1,4 +1,4 @@
-# Sooya (`v1.6.1`)
+# Sooya (`v1.6.2`)
 
 > **极致轻量、纯 Rust 原生内核的 Linux 链式 WireGuard + WARP + SOCKS5 出站代理面板**  
 > 一键将自建/商业 WireGuard 或 SOCKS5 节点与 Cloudflare WARP 串联或独立出站；支持**本机 SOCKS5 服务端与任意 WireGuard/WARP 出站节点同时开启**，让其他设备连接本机 SOCKS5 即可直接共享当前 WireGuard/WARP 出站线路！  

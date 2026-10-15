@@ -53,17 +53,14 @@ fn build_core_routes() -> Router<AppState> {
         .route("/panel/api/bootstrap", get(panel_bootstrap_handler))
         .route("/panel/api/server/status", get(panel_server_status_handler))
         .route("/panel/api/chain/config", get(panel_get_config_handler))
-        .route("/panel/api/chain/save", post(panel_save_config_handler))
         .route("/panel/api/outbounds", get(panel_get_outbounds_handler).post(panel_save_outbounds_handler))
         .route("/panel/api/warp/register", post(warp_register_handler))
-        .route("/panel/api/setting/all", get(panel_get_setting_handler))
         .route("/panel/api/setting/update", post(panel_update_setting_handler))
         .route("/panel/api/setting/updateUser", post(panel_update_user_handler))
         .route("/panel/api/setting/restart", post(panel_restart_handler))
         .route("/health", get(health_handler))
         .route("/api/v1/status", get(status_handler))
         .route("/api/v1/config", get(get_config_handler))
-        .route("/api/v1/config/validate", post(validate_config_handler))
         .route("/api/v1/config/apply", post(apply_config_handler))
         .route("/api/v1/config/test", post(test_config_handler))
         .route("/api/v1/stop", post(stop_handler))
@@ -71,7 +68,6 @@ fn build_core_routes() -> Router<AppState> {
         .route("/api/v1/socks5/stop", post(socks5_stop_handler))
         .route("/api/v1/warp/register", post(warp_register_handler))
         .route("/api/v1/logs", get(logs_handler))
-        .route("/api/v1/log_level", post(set_log_level_handler))
         .route("/api/v1/network", get(network_handler))
 }
 
@@ -174,11 +170,7 @@ async fn panel_bootstrap_handler(
     let system = state.sysinfo.collect();
     let chain = state.reader.get_status();
     let config = state.reader.get_active_config().unwrap_or_default();
-    let path = state.data_dir.join("outbounds.json");
-    let outbounds = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .unwrap_or_else(|| serde_json::json!([]));
+    let outbounds = state.reader.get_outbounds();
     let panel = state.panel.lock().await;
     let setting = serde_json::json!({
         "listen": panel.listen,
@@ -233,41 +225,6 @@ async fn panel_get_config_handler(
     )
 }
 
-async fn panel_save_config_handler(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Json(mut payload): Json<ValidatePayload>,
-) -> (StatusCode, Json<ApiResponse<String>>) {
-    if !is_authenticated(&headers, &state).await {
-        return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
-    }
-    payload.config.routing.preserve_inbound_connections = true;
-    if matches!(
-        payload.config.mode,
-        crate::model::config::ProxyMode::WgChainWarp
-            | crate::model::config::ProxyMode::SocksChainWarp
-            | crate::model::config::ProxyMode::StandaloneWarp
-    ) && payload.config.vpn2.wireguard_config.trim().is_empty()
-    {
-        match crate::wireguard::WarpRegistrar::register_warp().await {
-            Ok(reg) => {
-                payload.config.vpn2.wireguard_config = reg.wireguard_config;
-                if payload.config.vpn2.name.trim().is_empty() {
-                    payload.config.vpn2.name = "Cloudflare WARP".to_string();
-                }
-            }
-            Err(e) => return (StatusCode::BAD_REQUEST, Json(ApiResponse::err(e.to_string()))),
-        }
-    }
-    if let Err(e) = payload.config.parse_and_validate() {
-        return (StatusCode::BAD_REQUEST, Json(ApiResponse::err(e.to_string())));
-    }
-    match state.reader.save_config(payload.config) {
-        Ok(_) => (StatusCode::OK, Json(ApiResponse::ok("配置已保存".to_string()))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(e.to_string()))),
-    }
-}
-
 async fn panel_get_outbounds_handler(
     headers: HeaderMap,
     State(state): State<AppState>,
@@ -275,12 +232,7 @@ async fn panel_get_outbounds_handler(
     if !is_authenticated(&headers, &state).await {
         return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
     }
-    let path = state.data_dir.join("outbounds.json");
-    let list = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .unwrap_or_else(|| serde_json::json!([]));
-    (StatusCode::OK, Json(ApiResponse::ok(list)))
+    (StatusCode::OK, Json(ApiResponse::ok(state.reader.get_outbounds())))
 }
 
 async fn panel_save_outbounds_handler(
@@ -291,31 +243,10 @@ async fn panel_save_outbounds_handler(
     if !is_authenticated(&headers, &state).await {
         return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
     }
-    let _ = std::fs::create_dir_all(&state.data_dir);
-    let path = state.data_dir.join("outbounds.json");
-    match std::fs::write(&path, serde_json::to_vec_pretty(&payload).unwrap_or_default()) {
+    match state.reader.save_outbounds(&payload) {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::ok("已保存出站列表".to_string()))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(e.to_string()))),
     }
-}
-
-async fn panel_get_setting_handler(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    if !is_authenticated(&headers, &state).await {
-        return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
-    }
-    let panel = state.panel.lock().await;
-    (
-        StatusCode::OK,
-        Json(ApiResponse::ok(serde_json::json!({
-            "listen": panel.listen,
-            "port": panel.port,
-            "base_path": panel.base_path,
-            "username": panel.username,
-        }))),
-    )
 }
 
 #[derive(Deserialize)]
@@ -414,37 +345,6 @@ async fn get_config_handler(State(state): State<AppState>) -> Json<ApiResponse<s
 #[derive(Deserialize)]
 struct ValidatePayload {
     config: ChainProxyConfig,
-}
-
-async fn validate_config_handler(
-    Json(payload): Json<ValidatePayload>,
-) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    match payload.config.parse_and_validate() {
-        Ok(parsed) => {
-            let v1_addrs = parsed
-                .vpn1
-                .as_ref()
-                .map(|v| v.interface.addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>())
-                .unwrap_or_default();
-            let v2_addrs = parsed
-                .vpn2
-                .as_ref()
-                .map(|v| v.interface.addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>())
-                .unwrap_or_default();
-            let s5_info = parsed.socks5.as_ref().map(|s| s.redacted_string());
-            (
-                StatusCode::OK,
-                Json(ApiResponse::ok(serde_json::json!({
-                    "valid": true,
-                    "mode": payload.config.mode,
-                    "vpn1_addresses": v1_addrs,
-                    "vpn2_addresses": v2_addrs,
-                    "socks5": s5_info,
-                }))),
-            )
-        }
-        Err(e) => (StatusCode::BAD_REQUEST, Json(ApiResponse::err(e.to_string()))),
-    }
 }
 
 async fn apply_config_handler(
@@ -593,24 +493,6 @@ async fn logs_handler() -> Json<ApiResponse<String>> {
 
 async fn network_handler() -> Json<ApiResponse<String>> {
     Json(ApiResponse::ok(SystemDiagnostician::generate_report()))
-}
-
-#[derive(Deserialize)]
-struct SetLogLevelPayload {
-    level: String,
-}
-
-async fn set_log_level_handler(
-    State(state): State<AppState>,
-    Json(payload): Json<SetLogLevelPayload>,
-) -> (StatusCode, Json<ApiResponse<String>>) {
-    if let Some(mut cfg) = state.reader.get_active_config() {
-        cfg.log_level = payload.level.clone();
-        let _ = state.reader.save_config(cfg);
-        (StatusCode::OK, Json(ApiResponse::ok(format!("Log level updated to {}", payload.level))))
-    } else {
-        (StatusCode::BAD_REQUEST, Json(ApiResponse::err("No active configuration to update")))
-    }
 }
 
 #[cfg(test)]

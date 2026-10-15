@@ -144,6 +144,7 @@ pub struct ChainEngine {
     socks5_service: Arc<Mutex<Socks5Service>>,
     network_snapshot: Arc<Mutex<Option<NetworkSnapshot>>>,
     active_config: Arc<Mutex<Option<ChainProxyConfig>>>,
+    outbounds_lock: Arc<Mutex<()>>,
     state: Arc<Mutex<ServiceState>>,
     start_time: Arc<Mutex<Option<Instant>>>,
     watchdog_timeout_secs: Arc<AtomicU64>,
@@ -175,6 +176,7 @@ impl ChainEngine {
             socks5_service: Arc::new(Mutex::new(Socks5Service::new())),
             network_snapshot: Arc::new(Mutex::new(None)),
             active_config: Arc::new(Mutex::new(initial_config)),
+            outbounds_lock: Arc::new(Mutex::new(())),
             state: Arc::new(Mutex::new(ServiceState::Stopped)),
             start_time: Arc::new(Mutex::new(None)),
             watchdog_timeout_secs: Arc::new(AtomicU64::new(30)),
@@ -193,10 +195,7 @@ impl ChainEngine {
 
     pub fn start_socks5(&self, srv: Socks5ServerConfig) -> Result<()> {
         self.socks5_service.lock().unwrap().start(&srv)?;
-        let mut cfg = self.get_active_config().unwrap_or_else(|| ChainProxyConfig {
-            mode: ProxyMode::Socks5Server,
-            ..Default::default()
-        });
+        let mut cfg = self.get_active_config().unwrap_or_default();
         cfg.socks5_server = Some(srv);
         let _ = self.save_config(cfg);
         Ok(())
@@ -204,12 +203,8 @@ impl ChainEngine {
 
     pub fn stop_socks5(&self) -> Result<()> {
         self.socks5_service.lock().unwrap().stop();
-        if let Some(mut cfg) = self.get_active_config() {
-            cfg.socks5_server = None;
-            if cfg.mode == ProxyMode::Socks5Server && !self.warp_kernel.lock().unwrap().is_running() {
-                *self.state.lock().unwrap() = ServiceState::Stopped;
-            }
-            let _ = self.save_config(cfg);
+        if !self.warp_kernel.lock().unwrap().is_running() {
+            *self.state.lock().unwrap() = ServiceState::Stopped;
         }
         Ok(())
     }
@@ -769,17 +764,139 @@ impl ChainEngine {
         Some(parsed)
     }
 
-    pub fn save_config(&self, config: ChainProxyConfig) -> Result<()> {
+    pub fn save_config(&self, mut config: ChainProxyConfig) -> Result<()> {
+        if let Some(prev) = self.get_active_config() {
+            if config.vpn1.wireguard_config.trim().is_empty() && !prev.vpn1.wireguard_config.trim().is_empty() {
+                config.vpn1 = prev.vpn1;
+            }
+            if config.vpn2.wireguard_config.trim().is_empty() && !prev.vpn2.wireguard_config.trim().is_empty() {
+                config.vpn2 = prev.vpn2;
+            }
+            if config.socks5.is_none() && prev.socks5.is_some() {
+                config.socks5 = prev.socks5;
+            }
+            if config.socks5_server.is_none() && prev.socks5_server.is_some() {
+                config.socks5_server = prev.socks5_server;
+            }
+        }
         std::fs::create_dir_all(&self.base_dir)?;
         let cfg_path = self.base_dir.join("config.json");
-        std::fs::write(&cfg_path, serde_json::to_vec_pretty(&config)?)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(&self.base_dir)?;
+        tmp.write_all(&serde_json::to_vec_pretty(&config)?)?;
+        tmp.persist(&cfg_path).map_err(|e| e.error)?;
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&cfg_path, std::fs::Permissions::from_mode(0o600));
         }
-        *self.active_config.lock().unwrap() = Some(config);
+        *self.active_config.lock().unwrap() = Some(config.clone());
+        self.sync_config_to_outbounds(&config);
         Ok(())
+    }
+
+    pub fn get_outbounds(&self) -> serde_json::Value {
+        let _guard = self.outbounds_lock.lock().unwrap();
+        let path = self.base_dir.join("outbounds.json");
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .filter(|v| v.is_array())
+            .unwrap_or_else(|| serde_json::json!([]))
+    }
+
+    pub fn save_outbounds(&self, payload: &serde_json::Value) -> Result<()> {
+        let _guard = self.outbounds_lock.lock().unwrap();
+        std::fs::create_dir_all(&self.base_dir)?;
+        let path = self.base_dir.join("outbounds.json");
+        let mut tmp = tempfile::NamedTempFile::new_in(&self.base_dir)?;
+        tmp.write_all(&serde_json::to_vec_pretty(payload)?)?;
+        tmp.persist(&path).map_err(|e| e.error)?;
+        Ok(())
+    }
+
+    /// Ensure any active WireGuard or WARP credentials applied in `config` are also synced into `outbounds.json`
+    /// without ever deleting or overwriting other saved nodes.
+    fn sync_config_to_outbounds(&self, config: &ChainProxyConfig) {
+        let _guard = self.outbounds_lock.lock().unwrap();
+        let path = self.base_dir.join("outbounds.json");
+        let mut list = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+            .unwrap_or_default();
+        if list.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        let wg1 = config.vpn1.wireguard_config.trim();
+        let wg2 = config.vpn2.wireguard_config.trim();
+
+        for item in &mut list {
+            if let Some(c) = item.get_mut("config").and_then(|v| v.as_object_mut()) {
+                // Backfill auto-registered WARP key into nodes that have empty vpn2
+                if !wg2.is_empty() {
+                    let cur_v2 = c
+                        .get("vpn2")
+                        .and_then(|v| v.get("wireguard_config"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    if cur_v2.is_empty() {
+                        c.insert(
+                            "vpn2".to_string(),
+                            serde_json::json!({
+                                "name": "Cloudflare WARP",
+                                "wireguard_config": wg2
+                            }),
+                        );
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // If config has a WireGuard node not yet present in outbounds.json, append it so it is never lost
+        if !wg1.is_empty() && matches!(config.mode, ProxyMode::StandaloneWg | ProxyMode::WgChainWarp) {
+            let exists = list.iter().any(|item| {
+                item.get("config")
+                    .and_then(|c| c.get("vpn1"))
+                    .and_then(|v| v.get("wireguard_config"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim() == wg1)
+                    .unwrap_or(false)
+            });
+            if !exists {
+                let mode_str = if config.mode == ProxyMode::WgChainWarp {
+                    "wg_chain_warp"
+                } else {
+                    "standalone_wg"
+                };
+                let remark = if config.vpn1.name.trim().is_empty() {
+                    "WireGuard 节点".to_string()
+                } else {
+                    config.vpn1.name.clone()
+                };
+                list.push(serde_json::json!({
+                    "id": format!("node-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(1)),
+                    "remark": remark,
+                    "enabled": true,
+                    "config": {
+                        "mode": mode_str,
+                        "vpn1": config.vpn1,
+                        "vpn2": config.vpn2,
+                        "routing": config.routing,
+                    }
+                }));
+                changed = true;
+            }
+        }
+
+        if changed {
+            if let Ok(mut tmp) = tempfile::NamedTempFile::new_in(&self.base_dir) {
+                if tmp.write_all(&serde_json::to_vec_pretty(&list).unwrap_or_default()).is_ok() {
+                    let _ = tmp.persist(&path);
+                }
+            }
+        }
     }
 
     pub fn base_dir(&self) -> &Path {

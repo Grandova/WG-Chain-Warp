@@ -34,7 +34,6 @@ pub struct ServerSystemStatus {
     pub udp_count: usize,
     pub net_io: NetIoStats,
     pub net_traffic: NetTrafficStats,
-    pub singbox_version: String,
     pub chainproxy_version: String,
 }
 
@@ -121,7 +120,6 @@ impl SysInfoCollector {
             udp_count,
             net_io: NetIoStats { up: up_speed, down: down_speed },
             net_traffic: NetTrafficStats { sent: cur_sent, recv: cur_recv },
-            singbox_version: "Sooya WarpKernel (Rust Native)".to_string(),
             chainproxy_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }

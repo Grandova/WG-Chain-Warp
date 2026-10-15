@@ -465,7 +465,7 @@ html.light .ring-bg { stroke: #ececf0; }
         <div>
           <div class="brand-title">
             <span>Sooya 面板</span>
-            <span class="brand-ver" id="siderVersion">v1.6.1</span>
+            <span class="brand-ver" id="siderVersion">v1.6.2</span>
           </div>
           <div style="font-size:11.5px;color:var(--muted);">仅接管出站 (0x800) · 入站 100% 原路返回</div>
         </div>
@@ -1118,10 +1118,34 @@ function getEndpointSummary(item) {
   return '-';
 }
 
+let persistQueue = Promise.resolve();
+let switchSeq = 0;
+
+function getDeletedIds() {
+  try { return new Set(JSON.parse(localStorage.getItem('sooya_deleted_ids') || '[]')); } catch (_) { return new Set(); }
+}
+function markDeletedId(id, wgConf) {
+  const s = getDeletedIds();
+  if (id) s.add(id);
+  if (wgConf) s.add('wg:' + wgConf.trim());
+  try { localStorage.setItem('sooya_deleted_ids', JSON.stringify([...s])); } catch (_) {}
+}
+function unmarkDeletedWg(wgConf) {
+  if (!wgConf) return;
+  const s = getDeletedIds();
+  if (s.delete('wg:' + wgConf.trim())) {
+    try { localStorage.setItem('sooya_deleted_ids', JSON.stringify([...s])); } catch (_) {}
+  }
+}
+
 function persistOutbounds() {
   outbounds.forEach(o => { if (o.config) o.config.mode = normalizeMode(o.config.mode); });
-  try { localStorage.setItem('sooya_outbounds_v2', JSON.stringify(outbounds)); } catch (_) {}
-  api('./panel/api/outbounds', 'POST', outbounds).catch(() => {});
+  const snapshot = JSON.parse(JSON.stringify(outbounds));
+  try { localStorage.setItem('sooya_outbounds_v2', JSON.stringify(snapshot)); } catch (_) {}
+  persistQueue = persistQueue
+    .then(() => api('./panel/api/outbounds', 'POST', snapshot))
+    .catch(() => {});
+  return persistQueue;
 }
 
 function makeDefaultWarpItem() {
@@ -1162,7 +1186,6 @@ function ensureBuiltinItems() {
   }
 }
 
-/* ==================== Instant 1-Request Bootstrap & Cache Hydration ==================== */
 function hydrateFromLocalCache() {
   try {
     const cached = JSON.parse(localStorage.getItem('sooya_outbounds_v2') || '[]');
@@ -1178,11 +1201,29 @@ function hydrateFromLocalCache() {
 async function bootstrapDashboard() {
   try {
     const boot = await api('./panel/api/bootstrap');
-    const serverList = boot.outbounds || [];
-    if (Array.isArray(serverList) && serverList.length > 0) {
-      outbounds = serverList;
+    const deleted = getDeletedIds();
+    const localList = [...outbounds];
+    const serverList = Array.isArray(boot.outbounds) ? boot.outbounds : [];
+
+    // Merge server outbounds + local cache without losing any custom WG/SOCKS5 node
+    const merged = [];
+    const seenIds = new Set();
+    const seenWg = new Set();
+
+    for (const src of [serverList, localList]) {
+      for (const item of src) {
+        if (!item || !item.id || deleted.has(item.id)) continue;
+        if (item.config) item.config.mode = normalizeMode(item.config.mode);
+        const wg = (item.config?.vpn1?.wireguard_config || '').trim();
+        if (wg && deleted.has('wg:' + wg)) continue;
+        if (seenIds.has(item.id) || (wg && seenWg.has(wg))) continue;
+        seenIds.add(item.id);
+        if (wg) seenWg.add(wg);
+        merged.push(item);
+      }
     }
-    outbounds.forEach(o => { if (o.config) o.config.mode = normalizeMode(o.config.mode); });
+    outbounds = merged;
+    ensureBuiltinItems();
 
     const ch = boot.chain || {};
     const c = boot.config || {};
@@ -1191,39 +1232,54 @@ async function bootstrapDashboard() {
     const isSocks5Running = !!ch.socks5_running;
     lastChainStatus = ch;
 
-    ensureBuiltinItems();
-
-    const hasCustomSaved =
-      (c.mode === 'standalone_wg' && c.vpn1?.wireguard_config?.trim()) ||
-      (c.mode === 'wg_chain_warp' && c.vpn1?.wireguard_config?.trim()) ||
-      (c.mode === 'socks_chain_warp' && c.socks5?.server);
-
-    if (hasCustomSaved) {
-      const exists = outbounds.some(o =>
-        ['standalone_wg', 'wg_chain_warp'].includes(normalizeMode(o.config?.mode)) &&
-        (o.config?.vpn1?.wireguard_config || '').trim() === (c.vpn1?.wireguard_config || '').trim()
-      );
-      if (!exists) {
-        outbounds.push({
-          id: 'node-' + Date.now(),
-          remark: c.vpn1?.name || MODE_META[c.mode]?.label || '已保存节点',
-          enabled: isTunnelRunning,
-          config: c
-        });
-      }
+    // Recover WG or SOCKS5 node from config.json if not yet in outbounds list
+    const savedWg = (c.vpn1?.wireguard_config || '').trim();
+    if (savedWg && !deleted.has('wg:' + savedWg) && !outbounds.some(o => (o.config?.vpn1?.wireguard_config || '').trim() === savedWg)) {
+      const wgMode = (c.mode === 'wg_chain_warp') ? 'wg_chain_warp' : 'standalone_wg';
+      outbounds.push({
+        id: 'node-' + Date.now(),
+        remark: c.vpn1?.name || 'WireGuard 节点',
+        enabled: isTunnelRunning && (c.mode === 'standalone_wg' || c.mode === 'wg_chain_warp'),
+        config: {
+          mode: wgMode,
+          vpn1: { name: c.vpn1?.name || 'WireGuard 节点', wireguard_config: savedWg },
+          vpn2: c.vpn2 || { name: 'Cloudflare WARP', wireguard_config: '' },
+          routing: c.routing || { proxy_host_outbound: true, preserve_inbound_connections: true, connection_mark: '0x88', ipv6: false }
+        }
+      });
     }
 
+    // Sync active enabled states WITHOUT overwriting any node's saved config
+    const targetS5 = findSocks5Item();
     let matchedTunnel = false;
     for (const o of outbounds) {
       const om = normalizeMode(o.config?.mode);
       if (om === 'socks5_server') {
-        if (c.socks5_server && c.socks5_server.port > 0) {
+        if (c.socks5_server?.port > 0 && targetS5 && o.id === targetS5.id) {
           o.config.socks5_server = c.socks5_server;
         }
-        o.enabled = isSocks5Running;
-      } else if (isTunnelRunning && !matchedTunnel && (om === c.mode || (['standalone_wg', 'wg_chain_warp'].includes(om) && ['standalone_wg', 'wg_chain_warp'].includes(c.mode) && (o.config?.vpn1?.wireguard_config || '').trim() === (c.vpn1?.wireguard_config || '').trim()))) {
+        o.enabled = isSocks5Running && !!targetS5 && o.id === targetS5.id;
+        continue;
+      }
+      if (!isTunnelRunning || matchedTunnel) {
+        o.enabled = false;
+        continue;
+      }
+      const itemWg = (o.config?.vpn1?.wireguard_config || '').trim();
+      const isWgMatch = ['standalone_wg', 'wg_chain_warp'].includes(om)
+        && ['standalone_wg', 'wg_chain_warp'].includes(c.mode)
+        && itemWg && itemWg === savedWg;
+      const isWarpMatch = om === 'standalone_warp' && c.mode === 'standalone_warp';
+      const isSocksMatch = om === 'socks_chain_warp'
+        && c.mode === 'socks_chain_warp'
+        && o.config?.socks5?.server === c.socks5?.server;
+
+      if (isWgMatch || isWarpMatch || isSocksMatch) {
         o.enabled = true;
-        o.config = c;
+        o.config.mode = c.mode;
+        if (c.vpn2?.wireguard_config?.trim()) {
+          o.config.vpn2 = c.vpn2;
+        }
         matchedTunnel = true;
       } else {
         o.enabled = false;
@@ -1245,8 +1301,6 @@ async function bootstrapDashboard() {
 function findSocks5Item() {
   const listenPort = lastChainStatus?.socks5_listen ? parseInt(String(lastChainStatus.socks5_listen).split(':').pop(), 10) : 0;
   if (listenPort > 0) {
-    const byEnabledPort = outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) === 'socks5_server' && Number(o.config?.socks5_server?.port) === listenPort);
-    if (byEnabledPort) return byEnabledPort;
     const byPort = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server' && Number(o.config?.socks5_server?.port) === listenPort);
     if (byPort) return byPort;
   }
@@ -1261,10 +1315,7 @@ function copyTextToClipboard(text) {
     const ta = document.createElement('textarea');
     ta.value = text;
     ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.top = '-9999px';
-    ta.style.left = '-9999px';
-    ta.style.opacity = '0';
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;';
     document.body.appendChild(ta);
     ta.focus();
     ta.select();
@@ -1281,10 +1332,14 @@ function copyTextToClipboard(text) {
   return copied;
 }
 
-function updateModeHighlight() {
+function getActiveTunnelItem() {
   const isTunnelRunning = !!(lastChainStatus && lastChainStatus.state === 'Running');
+  return outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server' && (isTunnelRunning || switchingId === o.id)) || null;
+}
+
+function updateModeHighlight() {
   const isSocks5Running = !!(lastChainStatus && lastChainStatus.socks5_running);
-  const activeTunnel = outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server' && (isTunnelRunning || switchingId === o.id));
+  const activeTunnel = getActiveTunnelItem();
   const activeTunnelMode = activeTunnel ? normalizeMode(activeTunnel.config?.mode) : 'direct';
 
   const bar = document.getElementById('globalModeBar');
@@ -1308,7 +1363,7 @@ function renderOutboundTable() {
 
   const isTunnelRunning = !!(lastChainStatus && lastChainStatus.state === 'Running');
   const isSocks5Running = !!(lastChainStatus && lastChainStatus.socks5_running);
-  const activeTunnel = outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server' && (isTunnelRunning || switchingId === o.id));
+  const activeTunnel = getActiveTunnelItem();
   const activeS5 = isSocks5Running ? findSocks5Item() : null;
 
   const activeNames = [];
@@ -1325,7 +1380,6 @@ function renderOutboundTable() {
   document.getElementById('ob-tx').textContent = fmtBytes(tunTx + s5Tx);
   document.getElementById('ob-rx').textContent = fmtBytes(tunRx + s5Rx);
 
-  // Only rebuild DOM skeleton if item IDs or remarks changed (never destroy <select> during mode switch)
   const sig = outbounds.map(o => `${o.id}:${o.remark}`).join('|');
   if (sig !== lastRenderedSignature) {
     lastRenderedSignature = sig;
@@ -1366,7 +1420,6 @@ function renderOutboundTable() {
     }).join('');
   }
 
-  // Fine-grained in-place updates (zero DOM destruction / zero flicker)
   for (const item of outbounds) {
     const modeKey = normalizeMode(item.config?.mode);
     const isS5Row = modeKey === 'socks5_server';
@@ -1381,12 +1434,13 @@ function renderOutboundTable() {
     const sw = tbody.querySelector(`input[data-switch="${item.id}"]`);
     if (sw) {
       sw.checked = rowActive;
-      sw.disabled = busy;
+      sw.disabled = switchingId !== null;
     }
 
     const sel = tbody.querySelector(`select[data-mode-select="${item.id}"]`);
-    if (sel && document.activeElement !== sel) {
-      sel.value = modeKey;
+    if (sel) {
+      sel.disabled = switchingId !== null;
+      if (document.activeElement !== sel) sel.value = modeKey;
     }
 
     const epEl = tbody.querySelector(`td[data-endpoint="${item.id}"]`);
@@ -1419,18 +1473,30 @@ function renderOutboundTable() {
   }
 }
 
-/* ==================== Actions & Mode Switching ==================== */
+/* ==================== Unified Mode Switching & Node Toggle ==================== */
 async function changeItemMode(id, newMode) {
+  if (switchingId !== null) return;
   const item = outbounds.find(o => o.id === id);
   if (!item || !item.config) return;
-  item.config.mode = normalizeMode(newMode);
+  const normalized = normalizeMode(newMode);
+  item.config.mode = normalized;
   persistOutbounds();
   renderOutboundTable();
-  await onToggleOutbound(id, true);
+
+  // Only re-apply tunnel immediately if this node is ALREADY enabled and running;
+  // if it is currently OFF, just save the selected mode so it doesn't conflict with the user clicking the switch!
+  const isThisNodeRunning = item.enabled && lastChainStatus?.state === 'Running';
+  if (isThisNodeRunning) {
+    await onToggleOutbound(id, true);
+  } else {
+    showAlert(`已将 [${item.remark}] 出站模式保存为「${MODE_META[normalized]?.label || normalized}」，开启开关即可生效`, 'success');
+  }
 }
 
 async function quickSwitchMode(targetMode) {
+  if (switchingId !== null) return;
   ensureBuiltinItems();
+
   if (targetMode === 'socks5_server') {
     const s5Srv = findSocks5Item();
     const isSocks5Running = !!(lastChainStatus && lastChainStatus.socks5_running);
@@ -1441,9 +1507,16 @@ async function quickSwitchMode(targetMode) {
     await stopTunnelOnly();
     return;
   }
+
+  const activeTunnel = getActiveTunnelItem();
+  if (activeTunnel && normalizeMode(activeTunnel.config?.mode) === targetMode) {
+    showAlert(`当前已处于「${MODE_META[targetMode]?.label || targetMode}」运行状态`, 'info');
+    return;
+  }
+
   if (targetMode === 'standalone_wg' || targetMode === 'wg_chain_warp') {
     const wgItem =
-      outbounds.find(o => o.enabled && ['standalone_wg', 'wg_chain_warp'].includes(normalizeMode(o.config?.mode)) && o.config?.vpn1?.wireguard_config?.trim()) ||
+      outbounds.find(o => o.enabled && o.config?.vpn1?.wireguard_config?.trim()) ||
       outbounds.find(o => ['standalone_wg', 'wg_chain_warp'].includes(normalizeMode(o.config?.mode)) && o.config?.vpn1?.wireguard_config?.trim()) ||
       outbounds.find(o => o.config?.vpn1?.wireguard_config?.trim());
     if (wgItem) {
@@ -1473,16 +1546,16 @@ async function quickSwitchMode(targetMode) {
       onModalModeChange();
       showAlert('请填写前置 SOCKS5 节点信息并点击「保存并立即启用」', 'info');
     }
-    return;
   }
 }
 
 async function onToggleOutbound(id, checked) {
+  if (switchingId !== null) return;
   const item = outbounds.find(o => o.id === id);
   if (!item) return;
   if (item.config) item.config.mode = normalizeMode(item.config.mode);
   const modeKey = normalizeMode(item.config?.mode);
-  const isTunnelRunning = !!(lastChainStatus && lastChainStatus.state === 'Running');
+  switchSeq++;
 
   // Instant dedicated path for local SOCKS5 Server (< 5ms, never interrupts WireGuard/WARP tunnel!)
   if (modeKey === 'socks5_server') {
@@ -1500,7 +1573,7 @@ async function onToggleOutbound(id, checked) {
     try {
       if (checked) {
         await api('./api/v1/socks5/apply', 'POST', { socks5_server: srvCfg });
-        const activeTunnel = isTunnelRunning ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
+        const activeTunnel = getActiveTunnelItem();
         const viaMsg = activeTunnel ? `，外部设备连接后流量将自动走 [${activeTunnel.remark}] 出站！` : ' (当前为直连出口，开启任意 WG/WARP 节点后将自动走代理出站)';
         showAlert(`✅ 本机 SOCKS5 服务端已开启 (端口 ${srvCfg.port})${viaMsg}`, 'success');
       } else {
@@ -1513,12 +1586,13 @@ async function onToggleOutbound(id, checked) {
       if (lastChainStatus) lastChainStatus.socks5_running = !checked;
       showAlert(`❌ 操作 SOCKS5 服务端失败: ${e.message}`, 'error');
     } finally {
+      renderOutboundTable();
       refreshStatus(false);
     }
     return;
   }
 
-  // Save previous state for rollback if apply fails, and optimistically update UI immediately (0ms)
+  // Optimistic UI update for tunnel switch
   const prevEnabled = outbounds.map(o => ({ id: o.id, enabled: o.enabled }));
   const prevChainState = lastChainStatus ? lastChainStatus.state : 'Stopped';
 
@@ -1529,12 +1603,12 @@ async function onToggleOutbound(id, checked) {
   });
   if (lastChainStatus) lastChainStatus.state = checked ? 'Running' : 'Stopped';
   switchingId = id;
-  updateModeHighlight();
   renderOutboundTable();
 
   try {
     if (!checked) {
       await api('./api/v1/stop', 'POST', { all: false });
+      if (lastChainStatus) lastChainStatus.state = 'Stopped';
       persistOutbounds();
       const s5Keep = lastChainStatus?.socks5_running ? '（本机 SOCKS5 服务端继续保持运行）' : '';
       showAlert(`已关闭出站隧道，宿主机已恢复物理网卡直连 ${s5Keep}`, 'success');
@@ -1547,11 +1621,13 @@ async function onToggleOutbound(id, checked) {
         delete cfgToApply.socks5_server;
       }
       const rep = await api('./api/v1/config/apply', 'POST', { config: cfgToApply });
-      // If WARP credentials were auto-generated on backend, sync config in background without blocking
+      if (lastChainStatus) lastChainStatus.state = 'Running';
+
+      // Only backfill auto-generated WARP vpn2 credentials — NEVER overwrite item.config or item.config.vpn1!
       if (['standalone_warp', 'wg_chain_warp', 'socks_chain_warp'].includes(modeKey) && !item.config?.vpn2?.wireguard_config?.trim()) {
         api('./panel/api/chain/config').then(latest => {
-          if (latest && latest.config) {
-            item.config = latest.config;
+          if (latest?.config?.vpn2?.wireguard_config?.trim()) {
+            item.config.vpn2 = latest.config.vpn2;
             persistOutbounds();
           }
         }).catch(() => {});
@@ -1561,7 +1637,6 @@ async function onToggleOutbound(id, checked) {
       const loc = rep.final_exit?.exit_country || '';
       const s5Note = lastChainStatus?.socks5_running ? ' · 本机 SOCKS5 服务端流量已自动切换走此节点出站' : '';
       showAlert(`✅ 出站 [${item.remark}] (${MODE_META[modeKey]?.label || modeKey}) 已启用！${ip} ${loc}${s5Note}`, 'success');
-      // Refresh status shortly after so background exit IP probe updates the badge
       setTimeout(() => refreshStatus(false), 900);
       setTimeout(() => refreshStatus(false), 2200);
     }
@@ -1584,22 +1659,23 @@ async function onToggleOutbound(id, checked) {
 function applyStatusToDom(sys, ch) {
   lastChainStatus = ch;
 
-  const ver = sys.chainproxy_version || sys.app_version;
-  if (ver) document.getElementById('siderVersion').textContent = 'v' + ver;
+  if (sys.chainproxy_version) {
+    document.getElementById('siderVersion').textContent = 'v' + sys.chainproxy_version;
+  }
 
-  const memUsed = sys.mem ? sys.mem.current : (sys.mem_used || 0);
-  const memTotal = sys.mem ? sys.mem.total : (sys.mem_total || 0);
-  const swapUsed = sys.swap ? sys.swap.current : (sys.swap_used || 0);
-  const swapTotal = sys.swap ? sys.swap.total : (sys.swap_total || 0);
-  const diskUsed = sys.disk ? sys.disk.current : (sys.disk_used || 0);
-  const diskTotal = sys.disk ? sys.disk.total : (sys.disk_total || 0);
-  const cpuVal = sys.cpu !== undefined ? sys.cpu : (sys.cpu_usage || 0);
-  const loads = Array.isArray(sys.loads) ? sys.loads : [sys.load_1 || 0, sys.load_5 || 0, sys.load_15 || 0];
-  const upSpeed = sys.net_io ? sys.net_io.up : (sys.net_up_speed || 0);
-  const downSpeed = sys.net_io ? sys.net_io.down : (sys.net_down_speed || 0);
-  const sentTot = sys.net_traffic ? sys.net_traffic.sent : (sys.net_sent_total || 0);
-  const recvTot = sys.net_traffic ? sys.net_traffic.recv : (sys.net_recv_total || 0);
-  const uptimeSecs = sys.uptime !== undefined ? sys.uptime : (sys.uptime_seconds || 0);
+  const memUsed = sys.mem?.current || 0;
+  const memTotal = sys.mem?.total || 0;
+  const swapUsed = sys.swap?.current || 0;
+  const swapTotal = sys.swap?.total || 0;
+  const diskUsed = sys.disk?.current || 0;
+  const diskTotal = sys.disk?.total || 0;
+  const cpuVal = sys.cpu || 0;
+  const loads = Array.isArray(sys.loads) ? sys.loads : [0, 0, 0];
+  const upSpeed = sys.net_io?.up || 0;
+  const downSpeed = sys.net_io?.down || 0;
+  const sentTot = sys.net_traffic?.sent || 0;
+  const recvTot = sys.net_traffic?.recv || 0;
+  const uptimeSecs = sys.uptime || 0;
 
   setGauge('cpu', cpuVal, `${sys.cpu_cores || 1} Cores`);
   setGauge('mem', memTotal ? (memUsed / memTotal) * 100 : 0, `${fmtBytes(memUsed)} / ${fmtBytes(memTotal)}`);
@@ -1626,7 +1702,7 @@ function applyStatusToDom(sys, ch) {
     });
   }
 
-  const activeTunnel = isRun ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
+  const activeTunnel = isRun ? getActiveTunnelItem() : null;
 
   if (isRun && isS5) {
     pulse.className = 'pulse-dot running';
@@ -1693,14 +1769,19 @@ function applyStatusToDom(sys, ch) {
 }
 
 async function refreshStatus(manual = false) {
+  if (!manual && switchingId !== null) return;
+  const seq = switchSeq;
   try {
     const d = await api('./panel/api/server/status');
+    if (!manual && (switchingId !== null || seq !== switchSeq)) return;
     applyStatusToDom(d.system || {}, d.chain || {});
     if (manual) showAlert('状态已刷新', 'success');
   } catch (e) { console.error(e); }
 }
 
 async function stopTunnelOnly() {
+  if (switchingId !== null) return;
+  switchSeq++;
   try {
     outbounds.forEach(o => {
       if (normalizeMode(o.config?.mode) !== 'socks5_server') o.enabled = false;
@@ -1718,6 +1799,8 @@ async function stopTunnelOnly() {
 }
 
 async function stopChain() {
+  if (switchingId !== null) return;
+  switchSeq++;
   try {
     outbounds.forEach(o => o.enabled = false);
     if (lastChainStatus) {
@@ -1770,11 +1853,12 @@ async function deleteOutbound(id) {
   const item = outbounds.find(o => o.id === id);
   if (!item) return;
   if (!confirm(`确定删除「${item.remark}」吗？`)) return;
+  markDeletedId(item.id, item.config?.vpn1?.wireguard_config);
   if (item.enabled && lastChainStatus?.state === 'Running') {
     await onToggleOutbound(id, false);
   }
   outbounds = outbounds.filter(o => o.id !== id);
-  if (outbounds.length === 0) outbounds.push(makeDefaultWarpItem());
+  ensureBuiltinItems();
   persistOutbounds();
   renderOutboundTable();
 }
@@ -1872,16 +1956,23 @@ async function saveOutboundFromModal(applyNow) {
       return;
     }
   }
+  unmarkDeletedWg(cfg.vpn1?.wireguard_config);
   const editId = document.getElementById('editId').value;
   let targetId = editId;
   if (editId) {
     const item = outbounds.find(o => o.id === editId);
-    if (item) { item.remark = remark; item.config = cfg; }
+    if (item) {
+      if (!cfg.vpn2?.wireguard_config && item.config?.vpn2?.wireguard_config) {
+        cfg.vpn2 = item.config.vpn2;
+      }
+      item.remark = remark;
+      item.config = cfg;
+    }
   } else {
     targetId = 'node-' + Date.now();
     outbounds.push({ id: targetId, remark, enabled: false, config: cfg });
   }
-  persistOutbounds();
+  await persistOutbounds();
   closeOutboundModal();
   renderOutboundTable();
 

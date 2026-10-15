@@ -27,9 +27,6 @@ pub enum ChainError {
         message: String,
     },
 
-    #[error("sing-box error: {0}")]
-    SingBoxError(String),
-
     #[error("System error: {0}")]
     SystemError(String),
 
