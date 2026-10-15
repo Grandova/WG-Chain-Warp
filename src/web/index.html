@@ -465,7 +465,7 @@ html.light .ring-bg { stroke: #ececf0; }
         <div>
           <div class="brand-title">
             <span>Sooya 面板</span>
-            <span class="brand-ver" id="siderVersion">v1.6.0</span>
+            <span class="brand-ver" id="siderVersion">v1.6.1</span>
           </div>
           <div style="font-size:11.5px;color:var(--muted);">仅接管出站 (0x800) · 入站 100% 原路返回</div>
         </div>
@@ -1242,6 +1242,45 @@ async function bootstrapDashboard() {
   } catch (e) { console.error(e); }
 }
 
+function findSocks5Item() {
+  const listenPort = lastChainStatus?.socks5_listen ? parseInt(String(lastChainStatus.socks5_listen).split(':').pop(), 10) : 0;
+  if (listenPort > 0) {
+    const byEnabledPort = outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) === 'socks5_server' && Number(o.config?.socks5_server?.port) === listenPort);
+    if (byEnabledPort) return byEnabledPort;
+    const byPort = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server' && Number(o.config?.socks5_server?.port) === listenPort);
+    if (byPort) return byPort;
+  }
+  return outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) === 'socks5_server')
+    || outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server' && o.id !== 'builtin-socks5')
+    || outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
+}
+
+function copyTextToClipboard(text) {
+  let copied = false;
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.left = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    copied = document.execCommand('copy');
+    document.body.removeChild(ta);
+  } catch (_) {}
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      navigator.clipboard.writeText(text).catch(() => {});
+      copied = true;
+    } catch (_) {}
+  }
+  return copied;
+}
+
 function updateModeHighlight() {
   const isTunnelRunning = !!(lastChainStatus && lastChainStatus.state === 'Running');
   const isSocks5Running = !!(lastChainStatus && lastChainStatus.socks5_running);
@@ -1270,11 +1309,11 @@ function renderOutboundTable() {
   const isTunnelRunning = !!(lastChainStatus && lastChainStatus.state === 'Running');
   const isSocks5Running = !!(lastChainStatus && lastChainStatus.socks5_running);
   const activeTunnel = outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server' && (isTunnelRunning || switchingId === o.id));
-  const activeS5 = isSocks5Running ? outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server') : null;
+  const activeS5 = isSocks5Running ? findSocks5Item() : null;
 
   const activeNames = [];
   if (activeTunnel) activeNames.push(activeTunnel.remark);
-  if (activeS5) activeNames.push(`${activeS5.remark} (${lastChainStatus?.socks5_listen || '10808'})`);
+  if (activeS5) activeNames.push(`${activeS5.remark} (${lastChainStatus?.socks5_listen || activeS5.config?.socks5_server?.port || '10808'})`);
   document.getElementById('ob-active-name').textContent = activeNames.length > 0 ? activeNames.join(' + ') : '未启用 (本机直连)';
   document.getElementById('btnStopAll').style.display = (isTunnelRunning || isSocks5Running) ? 'inline-flex' : 'none';
   updateModeHighlight();
@@ -1308,7 +1347,7 @@ function renderOutboundTable() {
         <td>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-sm" onclick="openOutboundModal('${item.id}')">编辑</button>
-            ${isS5Row ? `<button type="button" class="btn btn-sm" onclick="copySocks5Link('${item.id}')">📋 链接</button>` : ''}
+            ${isS5Row ? `<button type="button" class="btn btn-sm" onclick="copySocks5Link('${item.id}', this)">📋 链接</button>` : ''}
             ${isBuiltin ? '' : `<button type="button" class="btn btn-sm btn-danger-ghost" onclick="deleteOutbound('${item.id}')">删除</button>`}
           </div>
         </td>
@@ -1332,7 +1371,9 @@ function renderOutboundTable() {
     const modeKey = normalizeMode(item.config?.mode);
     const isS5Row = modeKey === 'socks5_server';
     const busy = switchingId === item.id;
-    const rowActive = isS5Row ? isSocks5Running : ((isTunnelRunning || busy) && item.enabled);
+    const rowActive = isS5Row
+      ? (isSocks5Running && activeS5 && activeS5.id === item.id)
+      : ((isTunnelRunning || busy) && item.enabled);
 
     const tr = tbody.querySelector(`tr[data-row-id="${item.id}"]`);
     if (tr) tr.className = rowActive ? 'active-row' : '';
@@ -1391,7 +1432,7 @@ async function changeItemMode(id, newMode) {
 async function quickSwitchMode(targetMode) {
   ensureBuiltinItems();
   if (targetMode === 'socks5_server') {
-    const s5Srv = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
+    const s5Srv = findSocks5Item();
     const isSocks5Running = !!(lastChainStatus && lastChainStatus.socks5_running);
     await onToggleOutbound(s5Srv.id, !isSocks5Running);
     return;
@@ -1446,8 +1487,15 @@ async function onToggleOutbound(id, checked) {
   // Instant dedicated path for local SOCKS5 Server (< 5ms, never interrupts WireGuard/WARP tunnel!)
   if (modeKey === 'socks5_server') {
     const srvCfg = item.config?.socks5_server || { listen: '0.0.0.0', port: 10808, users: [] };
-    item.enabled = checked;
-    if (lastChainStatus) lastChainStatus.socks5_running = checked;
+    outbounds.forEach(o => {
+      if (normalizeMode(o.config?.mode) === 'socks5_server') {
+        o.enabled = checked ? (o.id === id) : false;
+      }
+    });
+    if (lastChainStatus) {
+      lastChainStatus.socks5_running = checked;
+      if (checked) lastChainStatus.socks5_listen = `${srvCfg.listen}:${srvCfg.port}`;
+    }
     renderOutboundTable();
     try {
       if (checked) {
@@ -1492,7 +1540,7 @@ async function onToggleOutbound(id, checked) {
       showAlert(`已关闭出站隧道，宿主机已恢复物理网卡直连 ${s5Keep}`, 'success');
     } else {
       const cfgToApply = JSON.parse(JSON.stringify(item.config));
-      const s5Item = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
+      const s5Item = findSocks5Item();
       if (lastChainStatus?.socks5_running && s5Item?.config?.socks5_server) {
         cfgToApply.socks5_server = s5Item.config.socks5_server;
       } else {
@@ -1569,9 +1617,13 @@ function applyStatusToDom(sys, ch) {
   const isRun = ch.state === 'Running';
   const isS5 = !!ch.socks5_running;
 
-  const s5Item = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
+  const s5Item = findSocks5Item();
   if (s5Item && switchingId !== s5Item.id) {
-    s5Item.enabled = isS5;
+    outbounds.forEach(o => {
+      if (normalizeMode(o.config?.mode) === 'socks5_server') {
+        o.enabled = isS5 && o.id === s5Item.id;
+      }
+    });
   }
 
   const activeTunnel = isRun ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
@@ -1600,9 +1652,10 @@ function applyStatusToDom(sys, ch) {
 
   if (isS5) {
     const viaTxt = activeTunnel ? `自动走 [${escapeHtml(activeTunnel.remark)}] 出站` : '当前走物理网卡直连';
-    stSocks5.innerHTML = `<span class="tag tag-green">● 监听 ${escapeHtml(ch.socks5_listen || '0.0.0.0:10808')} (${viaTxt})</span> <button class="btn btn-sm" onclick="copySocks5Link('builtin-socks5')">复制链接</button>`;
+    const targetS5Id = s5Item ? s5Item.id : 'builtin-socks5';
+    stSocks5.innerHTML = `<span class="tag tag-green">● 监听 ${escapeHtml(ch.socks5_listen || '0.0.0.0:10808')} (${viaTxt})</span> <button type="button" class="btn btn-sm" onclick="copySocks5Link('${targetS5Id}', this)">📋 复制链接</button>`;
   } else {
-    stSocks5.innerHTML = `<span class="tag tag-gray">未开启</span> <button class="btn btn-sm" onclick="quickSwitchMode('socks5_server')">一键开启</button>`;
+    stSocks5.innerHTML = `<span class="tag tag-gray">未开启</span> <button type="button" class="btn btn-sm" onclick="quickSwitchMode('socks5_server')">一键开启</button>`;
   }
 
   const activeBadges = [];
@@ -1689,17 +1742,28 @@ function genRandomSocks5Auth() {
   document.getElementById('mSrvPass').value = rand(12);
 }
 
-function copySocks5Link(id) {
-  const item = outbounds.find(o => o.id === id) || outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
+function copySocks5Link(id, btnEl) {
+  const item = (id && outbounds.find(o => o.id === id)) || findSocks5Item();
   const s = item?.config?.socks5_server || { listen: '0.0.0.0', port: 10808, users: [] };
-  const host = window.location.hostname || '127.0.0.1';
-  const u = s.users && s.users[0] && s.users[0].username ? `${encodeURIComponent(s.users[0].username)}:${encodeURIComponent(s.users[0].password)}@` : '';
+  const pageHost = window.location.hostname;
+  const host = (pageHost && pageHost !== '127.0.0.1' && pageHost !== 'localhost')
+    ? pageHost
+    : ((s.listen && s.listen !== '0.0.0.0' && s.listen !== '::') ? s.listen : (pageHost || '127.0.0.1'));
+  const u = s.users && s.users[0] && s.users[0].username
+    ? `${encodeURIComponent(s.users[0].username)}:${encodeURIComponent(s.users[0].password || '')}@`
+    : '';
   const link = `socks5://${u}${host}:${s.port}`;
-  navigator.clipboard.writeText(link).then(() => {
-    showAlert(`已复制 SOCKS5 链接: ${link}`, 'success');
-  }).catch(() => {
-    prompt('请复制 SOCKS5 连接地址:', link);
-  });
+  const ok = copyTextToClipboard(link);
+  if (btnEl) {
+    const orig = btnEl.textContent;
+    btnEl.textContent = '✅ 已复制';
+    setTimeout(() => { btnEl.textContent = orig; }, 1600);
+  }
+  if (ok) {
+    showAlert(`✅ 已复制 SOCKS5 链接: ${link}`, 'success');
+  } else {
+    window.prompt('请复制 SOCKS5 连接地址:', link);
+  }
 }
 
 async function deleteOutbound(id) {
@@ -1947,8 +2011,12 @@ async function loadNetworkDiag() {
 }
 
 function copyLogs() {
-  navigator.clipboard.writeText(document.getElementById('logViewer').textContent || '');
-  showAlert('已复制到剪贴板', 'success');
+  const txt = document.getElementById('logViewer').textContent || '';
+  if (copyTextToClipboard(txt)) {
+    showAlert('✅ 已复制日志到剪贴板', 'success');
+  } else {
+    showAlert('复制失败，请手动选中复制', 'error');
+  }
 }
 
 async function doLogout() {
