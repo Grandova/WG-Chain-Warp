@@ -521,11 +521,11 @@ body {
         <div class="form-item">
           <label class="form-label">出站类型 (Protocol)</label>
           <select id="mMode" class="select" onchange="onModalModeChange()">
-            <option value="StandaloneWg">WireGuard 出站 (仅使用您自己的 WG 节点)</option>
-            <option value="WgChainWarp">WireGuard + WARP 链式出站 (前置 WG -> 出口 WARP)</option>
-            <option value="StandaloneWarp">Cloudflare WARP 免配置出站 (自动注册)</option>
-            <option value="SocksChainWarp">SOCKS5 + WARP 链式出站 (前置 SOCKS5 -> 出口 WARP)</option>
-            <option value="Socks5Server">本机 SOCKS5 服务端 (供外部客户端连接)</option>
+            <option value="standalone_wg">WireGuard 出站 (仅使用您自己的 WG 节点)</option>
+            <option value="wg_chain_warp">WireGuard + WARP 链式出站 (前置 WG -> 出口 WARP)</option>
+            <option value="standalone_warp">Cloudflare WARP 免配置出站 (自动注册)</option>
+            <option value="socks_chain_warp">SOCKS5 + WARP 链式出站 (前置 SOCKS5 -> 出口 WARP)</option>
+            <option value="socks5_server">本机 SOCKS5 服务端 (供外部客户端连接)</option>
           </select>
         </div>
       </div>
@@ -639,12 +639,24 @@ body {
 </div>
 
 <script>
+function normalizeMode(m) {
+  const map = {
+    StandaloneWarp: 'standalone_warp',
+    StandaloneWg: 'standalone_wg',
+    WgChainWarp: 'wg_chain_warp',
+    SocksChainWarp: 'socks_chain_warp',
+    Socks5Server: 'socks5_server',
+    StandaloneSocks: 'standalone_socks'
+  };
+  return map[m] || m || 'standalone_warp';
+}
+
 const MODE_META = {
-  StandaloneWarp: { label: 'WARP 免配置出站', tag: 'tag-orange' },
-  StandaloneWg:   { label: 'WireGuard 出站', tag: 'tag-blue' },
-  WgChainWarp:    { label: 'WG + WARP 链式', tag: 'tag-purple' },
-  SocksChainWarp: { label: 'SOCKS5 + WARP 链式', tag: 'tag-purple' },
-  Socks5Server:   { label: 'SOCKS5 服务端', tag: 'tag-green' }
+  standalone_warp:  { label: 'WARP 免配置出站', tag: 'tag-orange' },
+  standalone_wg:    { label: 'WireGuard 出站', tag: 'tag-blue' },
+  wg_chain_warp:    { label: 'WG + WARP 链式', tag: 'tag-purple' },
+  socks_chain_warp: { label: 'SOCKS5 + WARP 链式', tag: 'tag-purple' },
+  socks5_server:    { label: 'SOCKS5 服务端', tag: 'tag-green' }
 };
 
 let outbounds = [];
@@ -767,22 +779,23 @@ function importWgFile(input) {
 
 function getEndpointSummary(item) {
   const c = item.config || {};
-  if (c.mode === 'StandaloneWarp') {
+  const m = normalizeMode(c.mode);
+  if (m === 'standalone_warp') {
     const p = parseWgConfText(c.vpn2?.wireguard_config || '');
     return p.ep || 'engage.cloudflareclient.com:2408 (自动优选)';
   }
-  if (c.mode === 'StandaloneWg') {
+  if (m === 'standalone_wg') {
     return parseWgConfText(c.vpn1?.wireguard_config || '').ep || '未填写 Endpoint';
   }
-  if (c.mode === 'WgChainWarp') {
+  if (m === 'wg_chain_warp') {
     const ep1 = parseWgConfText(c.vpn1?.wireguard_config || '').ep || 'WG';
     return `${ep1} ➜ Cloudflare WARP`;
   }
-  if (c.mode === 'SocksChainWarp') {
+  if (m === 'socks_chain_warp') {
     const s = c.socks5 ? `${c.socks5.server}:${c.socks5.port}` : 'SOCKS5';
     return `${s} ➜ Cloudflare WARP`;
   }
-  if (c.mode === 'Socks5Server') {
+  if (m === 'socks5_server') {
     const s = c.socks5_server;
     return s ? `监听 ${s.listen}:${s.port}` : '0.0.0.0:10808';
   }
@@ -790,6 +803,7 @@ function getEndpointSummary(item) {
 }
 
 async function persistOutbounds() {
+  outbounds.forEach(o => { if (o.config) o.config.mode = normalizeMode(o.config.mode); });
   try { localStorage.setItem('sooya_outbounds_v2', JSON.stringify(outbounds)); } catch (_) {}
   try { await api('./panel/api/outbounds', 'POST', outbounds); } catch (_) {}
 }
@@ -800,10 +814,10 @@ function makeDefaultWarpItem() {
     remark: 'Cloudflare WARP 官方免配置',
     enabled: false,
     config: {
-      mode: 'StandaloneWarp',
+      mode: 'standalone_warp',
       vpn1: { name: 'Entry', wireguard_config: '' },
       vpn2: { name: 'Cloudflare WARP', wireguard_config: '' },
-      routing: { proxy_host_outbound: true, preserve_inbound_connections: true, ipv6: false }
+      routing: { proxy_host_outbound: true, preserve_inbound_connections: true, connection_mark: '0x88', ipv6: false }
     }
   };
 }
@@ -820,9 +834,11 @@ async function loadInitialData() {
         if (Array.isArray(local) && local.length > 0) outbounds = local;
       } catch (_) {}
     }
+    outbounds.forEach(o => { if (o.config) o.config.mode = normalizeMode(o.config.mode); });
 
     const d = await api('./panel/api/chain/config');
     const c = d.config || {};
+    c.mode = normalizeMode(c.mode);
     const isRunning = d.status === 'Running';
 
     if (outbounds.length === 0) {
@@ -830,13 +846,13 @@ async function loadInitialData() {
     }
 
     const hasCustomSaved =
-      (c.mode === 'StandaloneWg' && c.vpn1?.wireguard_config?.trim()) ||
-      (c.mode === 'WgChainWarp' && c.vpn1?.wireguard_config?.trim()) ||
-      (c.mode === 'SocksChainWarp' && c.socks5?.server) ||
-      (c.mode === 'Socks5Server' && c.socks5_server);
+      (c.mode === 'standalone_wg' && c.vpn1?.wireguard_config?.trim()) ||
+      (c.mode === 'wg_chain_warp' && c.vpn1?.wireguard_config?.trim()) ||
+      (c.mode === 'socks_chain_warp' && c.socks5?.server) ||
+      (c.mode === 'socks5_server' && c.socks5_server);
 
     if (hasCustomSaved) {
-      const exists = outbounds.some(o => o.config?.mode === c.mode &&
+      const exists = outbounds.some(o => normalizeMode(o.config?.mode) === c.mode &&
         (o.config?.vpn1?.wireguard_config || '').trim() === (c.vpn1?.wireguard_config || '').trim());
       if (!exists) {
         outbounds.push({
@@ -851,7 +867,7 @@ async function loadInitialData() {
     if (isRunning) {
       let matched = false;
       for (const o of outbounds) {
-        if (!matched && o.config?.mode === c.mode) {
+        if (!matched && normalizeMode(o.config?.mode) === c.mode) {
           o.enabled = true;
           o.config = c;
           matched = true;
@@ -891,7 +907,8 @@ function renderOutboundTable() {
   document.getElementById('ob-rx').textContent = fmtBytes(rxBytes);
 
   tbody.innerHTML = outbounds.map((item) => {
-    const meta = MODE_META[item.config?.mode] || { label: item.config?.mode || '未知', tag: 'tag-gray' };
+    const modeKey = normalizeMode(item.config?.mode);
+    const meta = MODE_META[modeKey] || { label: modeKey || '未知', tag: 'tag-gray' };
     const rowActive = isRunning && item.enabled;
     const busy = switchingId === item.id;
     let statusCell = '<span class="tag tag-gray">未启用</span>';
@@ -935,6 +952,7 @@ function escapeHtml(s) {
 async function onToggleOutbound(id, checked) {
   const item = outbounds.find(o => o.id === id);
   if (!item) return;
+  if (item.config) item.config.mode = normalizeMode(item.config.mode);
   switchingId = id;
   renderOutboundTable();
 
@@ -982,11 +1000,11 @@ async function deleteOutbound(id) {
 }
 
 function onModalModeChange() {
-  const m = document.getElementById('mMode').value;
-  document.getElementById('mBoxWg').style.display = (m === 'StandaloneWg' || m === 'WgChainWarp') ? 'block' : 'none';
-  document.getElementById('mBoxSocks').style.display = (m === 'SocksChainWarp') ? 'block' : 'none';
-  document.getElementById('mBoxWarp').style.display = (m === 'StandaloneWarp' || m === 'WgChainWarp' || m === 'SocksChainWarp') ? 'block' : 'none';
-  document.getElementById('mBoxS5Srv').style.display = (m === 'Socks5Server') ? 'block' : 'none';
+  const m = normalizeMode(document.getElementById('mMode').value);
+  document.getElementById('mBoxWg').style.display = (m === 'standalone_wg' || m === 'wg_chain_warp') ? 'block' : 'none';
+  document.getElementById('mBoxSocks').style.display = (m === 'socks_chain_warp') ? 'block' : 'none';
+  document.getElementById('mBoxWarp').style.display = (m === 'standalone_warp' || m === 'wg_chain_warp' || m === 'socks_chain_warp') ? 'block' : 'none';
+  document.getElementById('mBoxS5Srv').style.display = (m === 'socks5_server') ? 'block' : 'none';
 }
 
 function openOutboundModal(id) {
@@ -994,9 +1012,9 @@ function openOutboundModal(id) {
   document.getElementById('editId').value = item ? item.id : '';
   document.getElementById('modalTitle').textContent = item ? `编辑出站 — ${item.remark}` : '添加出站节点';
 
-  const c = item ? (item.config || {}) : { mode: 'StandaloneWg', routing: { ipv6: false } };
+  const c = item ? (item.config || {}) : { mode: 'standalone_wg', routing: { ipv6: false } };
   document.getElementById('mRemark').value = item ? item.remark : '';
-  document.getElementById('mMode').value = c.mode || 'StandaloneWg';
+  document.getElementById('mMode').value = normalizeMode(c.mode || 'standalone_wg');
   document.getElementById('mWgRaw').value = c.vpn1?.wireguard_config || '';
   document.getElementById('mWgPriv').value = '';
   document.getElementById('mWgAddr').value = '';
@@ -1025,7 +1043,7 @@ function closeOutboundModal() {
 }
 
 function buildConfigFromModal() {
-  const mode = document.getElementById('mMode').value;
+  const mode = normalizeMode(document.getElementById('mMode').value);
   const remark = document.getElementById('mRemark').value.trim() || MODE_META[mode]?.label || '出站节点';
   const cfg = {
     mode,
@@ -1034,11 +1052,11 @@ function buildConfigFromModal() {
     routing: {
       proxy_host_outbound: true,
       preserve_inbound_connections: true,
-      inbound_mark: '0x88',
+      connection_mark: '0x88',
       ipv6: document.getElementById('mIpv6').checked
     }
   };
-  if (mode === 'SocksChainWarp') {
+  if (mode === 'socks_chain_warp') {
     const u = document.getElementById('mS5User').value.trim();
     const p = document.getElementById('mS5Pass').value.trim();
     cfg.socks5 = {
@@ -1048,7 +1066,7 @@ function buildConfigFromModal() {
       password: p || null
     };
   }
-  if (mode === 'Socks5Server') {
+  if (mode === 'socks5_server') {
     cfg.socks5_server = {
       listen: document.getElementById('mSrvListen').value.trim() || '0.0.0.0',
       port: parseInt(document.getElementById('mSrvPort').value, 10) || 10808,
@@ -1063,7 +1081,7 @@ function buildConfigFromModal() {
 
 async function saveOutboundFromModal(applyNow) {
   const { remark, cfg } = buildConfigFromModal();
-  if ((cfg.mode === 'StandaloneWg' || cfg.mode === 'WgChainWarp') && !cfg.vpn1.wireguard_config) {
+  if ((cfg.mode === 'standalone_wg' || cfg.mode === 'wg_chain_warp') && !cfg.vpn1.wireguard_config) {
     showAlert('请粘贴或填写 WireGuard 节点配置', 'error');
     return;
   }
@@ -1108,7 +1126,8 @@ async function quickRekeyWarp() {
     const res = await api('./panel/api/warp/register', 'POST', {});
     let updated = false;
     for (const o of outbounds) {
-      if (['StandaloneWarp', 'WgChainWarp', 'SocksChainWarp'].includes(o.config?.mode)) {
+      const m = normalizeMode(o.config?.mode);
+      if (['standalone_warp', 'wg_chain_warp', 'socks_chain_warp'].includes(m)) {
         o.config.vpn2 = { name: 'Cloudflare WARP', wireguard_config: res.wireguard_config };
         updated = true;
       }
@@ -1118,7 +1137,7 @@ async function quickRekeyWarp() {
     }
     await persistOutbounds();
     const active = outbounds.find(o => o.enabled && lastChainStatus?.state === 'Running');
-    if (active && ['StandaloneWarp', 'WgChainWarp', 'SocksChainWarp'].includes(active.config?.mode)) {
+    if (active && ['standalone_warp', 'wg_chain_warp', 'socks_chain_warp'].includes(normalizeMode(active.config?.mode))) {
       await onToggleOutbound(active.id, true);
     } else {
       showAlert(`已生成全新 Cloudflare WARP 账号 (${res.ipv4})，开启出站开关即可生效`, 'success');

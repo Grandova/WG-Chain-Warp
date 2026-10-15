@@ -62,11 +62,17 @@ impl Socks5ServerConfig {
 #[serde(rename_all = "snake_case")]
 pub enum ProxyMode {
     #[default]
+    #[serde(alias = "WgChainWarp")]
     WgChainWarp,
+    #[serde(alias = "SocksChainWarp")]
     SocksChainWarp,
+    #[serde(alias = "StandaloneWg")]
     StandaloneWg,
+    #[serde(alias = "StandaloneSocks")]
     StandaloneSocks,
+    #[serde(alias = "StandaloneWarp")]
     StandaloneWarp,
+    #[serde(alias = "Socks5Server")]
     Socks5Server,
 }
 
