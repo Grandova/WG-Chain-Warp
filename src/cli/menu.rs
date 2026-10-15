@@ -17,12 +17,11 @@ const RESET: &str = "\x1b[0m";
 pub struct ConsoleMenu {
     api_url: String,
     data_dir: PathBuf,
-    _singbox_bin: String,
     client: reqwest::Client,
 }
 
 impl ConsoleMenu {
-    pub fn new(api_url: &str, data_dir: PathBuf, singbox_bin: &str) -> Self {
+    pub fn new(api_url: &str, data_dir: PathBuf) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
@@ -31,7 +30,6 @@ impl ConsoleMenu {
         Self {
             api_url: api_url.to_string(),
             data_dir,
-            _singbox_bin: singbox_bin.to_string(),
             client,
         }
     }
@@ -89,10 +87,7 @@ impl ConsoleMenu {
         } else {
             panel.listen.as_str()
         };
-        println!(
-            "  Web 面板地址: {}{}http://{}:{}{}{}",
-            BOLD, CYAN, display_ip, panel.port, panel.base_path, RESET
-        );
+        println!("  Web 面板地址: {}{}http://{}:{}{}{}", BOLD, CYAN, display_ip, panel.port, panel.base_path, RESET);
         match status {
             Some(st) => {
                 let proxy_badge = match st.state {
@@ -100,14 +95,9 @@ impl ConsoleMenu {
                     ServiceState::Failed => format!("{}异常{}", RED, RESET),
                     _ => format!("{}待机中{}", YELLOW, RESET),
                 };
-                println!(
-                    "  面板状态: {}运行中{}  |  sing-box 引擎: {}",
-                    GREEN, RESET, proxy_badge
-                );
+                println!("  面板状态: {}运行中{}  |  WarpKernel 内核: {}", GREEN, RESET, proxy_badge);
             }
-            None => {
-                println!("  面板状态: {}未运行{}", RED, RESET);
-            }
+            None => println!("  面板状态: {}未运行{}", RED, RESET),
         }
     }
 
@@ -133,11 +123,9 @@ impl ConsoleMenu {
     }
 
     async fn fetch_status(&self) -> Option<ChainStatus> {
-        let url = format!("{}/api/v1/status", self.api_url);
-        let resp = self.client.get(&url).send().await.ok()?;
+        let resp = self.client.get(format!("{}/api/v1/status", self.api_url)).send().await.ok()?;
         let json: serde_json::Value = resp.json().await.ok()?;
-        let data = json.get("data")?.clone();
-        serde_json::from_value(data).ok()
+        serde_json::from_value(json.get("data")?.clone()).ok()
     }
 
     async fn update_sooya(&self) -> Result<()> {
@@ -155,10 +143,9 @@ impl ConsoleMenu {
     }
 
     async fn uninstall_sooya(&self) -> Result<()> {
-        let confirm = self.prompt("\n确定要卸载面板吗，sing-box 代理规则也将自动恢复? [y/N]: ")?;
+        let confirm = self.prompt("\n确定要卸载面板吗，代理规则也将自动恢复? [y/N]: ")?;
         if confirm.trim().eq_ignore_ascii_case("y") {
-            let stop_url = format!("{}/api/v1/stop", self.api_url);
-            let _ = self.client.post(&stop_url).send().await;
+            let _ = self.client.post(format!("{}/api/v1/stop", self.api_url)).send().await;
             let _ = Command::new("systemctl").args(["stop", "sooya"]).status();
             let _ = Command::new("systemctl").args(["disable", "sooya"]).status();
             let _ = std::fs::remove_file("/etc/systemd/system/sooya.service");
@@ -174,47 +161,33 @@ impl ConsoleMenu {
 
     async fn start_panel_service(&self) -> Result<()> {
         println!("\n正在启动 Sooya 面板服务...");
-        let status = Command::new("systemctl")
-            .args(["start", "sooya"])
-            .status();
-        match status {
+        match Command::new("systemctl").args(["start", "sooya"]).status() {
             Ok(s) if s.success() => {
                 tokio::time::sleep(Duration::from_millis(600)).await;
                 println!("{}✅ Sooya 启动成功！{}", GREEN, RESET);
             }
-            _ => {
-                println!("{}⚠️ 面板启动失败，请使用日志功能查看原因。{}", RED, RESET);
-            }
+            _ => println!("{}⚠️ 面板启动失败，请使用日志功能查看原因。{}", RED, RESET),
         }
         self.pause()
     }
 
     async fn stop_panel_service(&self) -> Result<()> {
         println!("\n正在停止代理链路并恢复宿主机原始网络...");
-        let stop_url = format!("{}/api/v1/stop", self.api_url);
-        let _ = self.client.post(&stop_url).send().await;
-
+        let _ = self.client.post(format!("{}/api/v1/stop", self.api_url)).send().await;
         println!("正在停止 Sooya 守护服务...");
-        let _ = Command::new("systemctl")
-            .args(["stop", "sooya"])
-            .status();
+        let _ = Command::new("systemctl").args(["stop", "sooya"]).status();
         println!("{}✅ 停止成功，原始网络已恢复。{}", GREEN, RESET);
         self.pause()
     }
 
     async fn restart_panel_service(&self) -> Result<()> {
         println!("\n正在重启 Sooya 面板服务...");
-        let status = Command::new("systemctl")
-            .args(["restart", "sooya"])
-            .status();
-        match status {
+        match Command::new("systemctl").args(["restart", "sooya"]).status() {
             Ok(s) if s.success() => {
                 tokio::time::sleep(Duration::from_millis(600)).await;
                 println!("{}✅ Sooya 重启成功！{}", GREEN, RESET);
             }
-            _ => {
-                println!("{}⚠️ 重启失败，请查看运行日志。{}", RED, RESET);
-            }
+            _ => println!("{}⚠️ 重启失败，请查看运行日志。{}", RED, RESET),
         }
         self.pause()
     }
@@ -232,10 +205,7 @@ impl ConsoleMenu {
         } else {
             println!("{}守护进程当前未运行。{}", YELLOW, RESET);
         }
-        if let Ok(out) = Command::new("systemctl")
-            .args(["status", "sooya", "--no-pager", "-n", "8"])
-            .output()
-        {
+        if let Ok(out) = Command::new("systemctl").args(["status", "sooya", "--no-pager", "-n", "8"]).output() {
             println!("\n{}", String::from_utf8_lossy(&out.stdout));
         }
         self.pause()
@@ -259,10 +229,7 @@ impl ConsoleMenu {
         panel.rotate_session_secret();
         panel.save(&self.data_dir)?;
         let _ = Command::new("systemctl").args(["restart", "sooya"]).status();
-        println!(
-            "{}✅ 账户用户名密码设定完成！新用户名: {}{}",
-            GREEN, panel.username, RESET
-        );
+        println!("{}✅ 账户用户名密码设定完成！新用户名: {}{}", GREEN, panel.username, RESET);
         self.pause()
     }
 
@@ -289,10 +256,7 @@ impl ConsoleMenu {
         panel.save(&self.data_dir)?;
         let _ = Command::new("systemctl").args(["restart", "sooya"]).status();
         let host_ip = Self::detect_server_ip();
-        println!(
-            "{}✅ 设置端口完毕！新访问地址: http://{}:{}{}{}",
-            GREEN, host_ip, panel.port, panel.base_path, RESET
-        );
+        println!("{}✅ 设置端口完毕！新访问地址: http://{}:{}{}{}", GREEN, host_ip, panel.port, panel.base_path, RESET);
         self.pause()
     }
 
@@ -310,17 +274,15 @@ impl ConsoleMenu {
     async fn reset_panel_settings(&self) -> Result<()> {
         let confirm = self.prompt("\n确定要将所有面板设置重置为默认值吗（端口 54321，账号密码 admin）？[y/N]: ")?;
         if confirm.trim().eq_ignore_ascii_case("y") {
-            let mut panel = PanelSetting::default();
-            panel.save(&self.data_dir)?;
+            PanelSetting::default().save(&self.data_dir)?;
             let _ = Command::new("systemctl").args(["restart", "sooya"]).status();
-            println!("{}✅ 所有面板设置已重置为默认值，请重启面板后使用默认端口 54321 访问。{}", GREEN, RESET);
+            println!("{}✅ 所有面板设置已重置为默认值，请使用默认端口 54321 访问。{}", GREEN, RESET);
         }
         self.pause()
     }
 
     async fn view_logs(&self) -> Result<()> {
-        let url = format!("{}/api/v1/logs", self.api_url);
-        if let Ok(resp) = self.client.get(&url).send().await {
+        if let Ok(resp) = self.client.get(format!("{}/api/v1/logs", self.api_url)).send().await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 if let Some(logs) = json.get("data").and_then(|d| d.as_str()) {
                     println!("\n{}", logs);
@@ -328,10 +290,7 @@ impl ConsoleMenu {
                 }
             }
         }
-        if let Ok(out) = Command::new("journalctl")
-            .args(["-u", "sooya", "-n", "40", "--no-pager"])
-            .output()
-        {
+        if let Ok(out) = Command::new("journalctl").args(["-u", "sooya", "-n", "40", "--no-pager"]).output() {
             println!("{}", String::from_utf8_lossy(&out.stdout));
         }
         self.pause()
@@ -339,10 +298,7 @@ impl ConsoleMenu {
 
     fn set_autostart(&self, enable: bool) -> Result<()> {
         let action = if enable { "enable" } else { "disable" };
-        let status = Command::new("systemctl")
-            .args([action, "sooya"])
-            .status();
-        match status {
+        match Command::new("systemctl").args([action, "sooya"]).status() {
             Ok(s) if s.success() => {
                 if enable {
                     println!("{}✅ 设置 Sooya 开机自启成功{}", GREEN, RESET);
@@ -350,9 +306,7 @@ impl ConsoleMenu {
                     println!("{}✅ 取消 Sooya 开机自启成功{}", GREEN, RESET);
                 }
             }
-            _ => {
-                println!("{}⚠️ 操作失败{}", RED, RESET);
-            }
+            _ => println!("{}⚠️ 操作失败{}", RED, RESET),
         }
         self.pause()
     }
@@ -361,12 +315,8 @@ impl ConsoleMenu {
         print!("{}", msg);
         io::stdout().flush()?;
         let mut buf = String::new();
-        let n = io::stdin().read_line(&mut buf)?;
-        if n == 0 {
-            return Err(ChainError::IoError(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "EOF",
-            )));
+        if io::stdin().read_line(&mut buf)? == 0 {
+            return Err(ChainError::IoError(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF")));
         }
         Ok(buf)
     }

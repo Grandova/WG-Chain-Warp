@@ -1,5 +1,5 @@
-use sooya::cli::{Cli, CliHandler, Commands};
 use clap::Parser;
+use sooya::cli::{Cli, CliHandler, Commands};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -15,12 +15,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = cli.command.unwrap_or(Commands::Menu);
 
     match &command {
-        Commands::Daemon { watchdog_timeout } => {
-            CliHandler::run_daemon(&cli.api, cli.data_dir, &cli.singbox, *watchdog_timeout).await?;
+        Commands::Daemon => {
+            CliHandler::run_daemon(&cli.api, cli.data_dir).await?;
         }
         cmd => {
             let handler = CliHandler::new(&cli.api);
-            if let Err(e) = handler.run_client_command(cmd, &cli.singbox, &cli.data_dir).await {
+            if let Err(e) = handler.run_client_command(cmd, &cli.data_dir).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

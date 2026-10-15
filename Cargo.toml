@@ -1,6 +1,6 @@
 [package]
 name = "sooya"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 description = "Sooya - Lightweight Linux Chained WireGuard & WARP Proxy with Web Panel"
 license = "MIT OR Apache-2.0"
@@ -17,21 +17,15 @@ clap = { version = "4.5", features = ["derive"] }
 base64 = "0.22"
 ipnet = { version = "2.10", features = ["serde"] }
 thiserror = "2.0"
-anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.13", features = ["v4", "serde"] }
 tempfile = "3.17"
 x25519-dalek = { version = "2.0", default-features = false, features = ["static_secrets"] }
 rand = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
-
-[dev-dependencies]
-tokio-test = "0.4"
 
 [profile.release]
 opt-level = 3

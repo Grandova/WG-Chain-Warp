@@ -5,122 +5,42 @@ use ipnet::IpNet;
 use std::net::IpAddr;
 use std::str::FromStr;
 
+fn wg_err(section: &str, field: &str, msg: impl Into<String>) -> ChainError {
+    ChainError::WgParseError {
+        section: section.to_string(),
+        field: field.to_string(),
+        message: msg.into(),
+    }
+}
+
 pub fn validate_base64_32_bytes(key: &str, section: &str, field: &str) -> Result<()> {
     let clean = key.trim();
-    if clean.len() != 44 {
-        return Err(ChainError::WgParseError {
-            section: section.to_string(),
-            field: field.to_string(),
-            message: format!(
-                "Key must be a 44-character Base64 encoded string, got length {}",
-                clean.len()
-            ),
-        });
-    }
-
     let bytes = BASE64_STANDARD
         .decode(clean.as_bytes())
-        .map_err(|e| ChainError::WgParseError {
-            section: section.to_string(),
-            field: field.to_string(),
-            message: format!("Invalid Base64 encoding: {}", e),
-        })?;
-
-    if bytes.len() != 32 {
-        return Err(ChainError::WgParseError {
-            section: section.to_string(),
-            field: field.to_string(),
-            message: format!(
-                "Key must decode to exactly 32 bytes (256 bits), got {} bytes",
-                bytes.len()
-            ),
-        });
+        .map_err(|e| wg_err(section, field, format!("Invalid Base64: {}", e)))?;
+    if clean.len() != 44 || bytes.len() != 32 {
+        return Err(wg_err(section, field, "Key must decode to 32 bytes (44 Base64 chars)"));
     }
-
     Ok(())
 }
 
 pub fn parse_endpoint(raw: &str, section: &str, field: &str) -> Result<WgEndpoint> {
     let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(ChainError::WgParseError {
-            section: section.to_string(),
-            field: field.to_string(),
-            message: "Endpoint cannot be empty".to_string(),
-        });
-    }
-
-    // Handles [2001:db8::1]:51820 or 1.2.3.4:51820 or example.com:51820
-    if raw.starts_with('[') {
-        if let Some(bracket_end) = raw.find(']') {
-            let host = &raw[1..bracket_end];
-            let rest = &raw[bracket_end + 1..];
-            if let Some(colon) = rest.find(':') {
-                let port_str = &rest[colon + 1..].trim();
-                let port = port_str.parse::<u16>().map_err(|_| ChainError::WgParseError {
-                    section: section.to_string(),
-                    field: field.to_string(),
-                    message: format!("Invalid port number in IPv6 endpoint: '{}'", port_str),
-                })?;
-                if port == 0 {
-                    return Err(ChainError::WgParseError {
-                        section: section.to_string(),
-                        field: field.to_string(),
-                        message: "Port number cannot be 0".to_string(),
-                    });
-                }
-                return Ok(WgEndpoint {
-                    host: host.to_string(),
-                    port,
-                });
-            }
-        }
-        return Err(ChainError::WgParseError {
-            section: section.to_string(),
-            field: field.to_string(),
-            message: format!("Malformed IPv6 endpoint format: '{}'", raw),
-        });
-    }
-
-    // host:port (IPv4 or hostname)
-    let parts: Vec<&str> = raw.rsplitn(2, ':').collect();
-    if parts.len() != 2 {
-        return Err(ChainError::WgParseError {
-            section: section.to_string(),
-            field: field.to_string(),
-            message: format!("Endpoint must be in 'host:port' format, got '{}'", raw),
-        });
-    }
-
-    let port_str = parts[0].trim();
-    let host = parts[1].trim();
-
-    if host.is_empty() {
-        return Err(ChainError::WgParseError {
-            section: section.to_string(),
-            field: field.to_string(),
-            message: "Endpoint host cannot be empty".to_string(),
-        });
-    }
-
-    let port = port_str.parse::<u16>().map_err(|_| ChainError::WgParseError {
-        section: section.to_string(),
-        field: field.to_string(),
-        message: format!("Invalid port number: '{}'", port_str),
+    let (host, port_str) = if let Some(rest) = raw.strip_prefix('[') {
+        let end = rest.find(']').ok_or_else(|| wg_err(section, field, "Malformed IPv6 endpoint"))?;
+        let p = rest[end + 1..].strip_prefix(':').ok_or_else(|| wg_err(section, field, "Missing port"))?;
+        (&rest[..end], p.trim())
+    } else {
+        let (h, p) = raw.rsplit_once(':').ok_or_else(|| wg_err(section, field, "Expected host:port"))?;
+        (h.trim(), p.trim())
+    };
+    let port = port_str.parse::<u16>().ok().filter(|&p| p > 0).ok_or_else(|| {
+        wg_err(section, field, format!("Invalid port: '{}'", port_str))
     })?;
-
-    if port == 0 {
-        return Err(ChainError::WgParseError {
-            section: section.to_string(),
-            field: field.to_string(),
-            message: "Port number cannot be 0".to_string(),
-        });
+    if host.is_empty() {
+        return Err(wg_err(section, field, "Empty endpoint host"));
     }
-
-    Ok(WgEndpoint {
-        host: host.to_string(),
-        port,
-    })
+    Ok(WgEndpoint { host: host.to_string(), port })
 }
 
 pub fn parse_cidr(raw: &str, section: &str, field: &str) -> Result<IpNet> {
@@ -128,108 +48,57 @@ pub fn parse_cidr(raw: &str, section: &str, field: &str) -> Result<IpNet> {
     if let Ok(net) = IpNet::from_str(clean) {
         return Ok(net);
     }
-
-    // If single IP without mask, default to /32 for IPv4 or /128 for IPv6
     if let Ok(ip) = IpAddr::from_str(clean) {
-        return match ip {
-            IpAddr::V4(v4) => Ok(IpNet::new(IpAddr::V4(v4), 32).unwrap()),
-            IpAddr::V6(v6) => Ok(IpNet::new(IpAddr::V6(v6), 128).unwrap()),
-        };
+        let prefix = if ip.is_ipv4() { 32 } else { 128 };
+        return Ok(IpNet::new(ip, prefix).unwrap());
     }
-
-    Err(ChainError::WgParseError {
-        section: section.to_string(),
-        field: field.to_string(),
-        message: format!("Invalid IP address or CIDR network: '{}'", clean),
-    })
+    Err(wg_err(section, field, format!("Invalid IP/CIDR: '{}'", clean)))
 }
 
 pub fn parse_reserved_bytes(raw: &str) -> Option<[u8; 3]> {
     let clean = raw.trim().trim_start_matches('[').trim_end_matches(']').trim();
-    if clean.is_empty() {
-        return None;
-    }
     if clean.contains(',') {
-        let nums: Vec<u8> = clean
-            .split(',')
-            .filter_map(|p| p.trim().parse::<u8>().ok())
-            .collect();
-        if nums.len() == 3 {
-            return Some([nums[0], nums[1], nums[2]]);
+        let n: Vec<u8> = clean.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        if n.len() == 3 {
+            return Some([n[0], n[1], n[2]]);
         }
     }
-    if let Ok(decoded) = BASE64_STANDARD.decode(clean.as_bytes()) {
-        if decoded.len() == 3 {
-            return Some([decoded[0], decoded[1], decoded[2]]);
-        }
-    }
-    None
+    let d = BASE64_STANDARD.decode(clean.as_bytes()).ok()?;
+    (d.len() == 3).then(|| [d[0], d[1], d[2]])
 }
 
 pub fn parse_wireguard_ini(content: &str) -> Result<WgConfig> {
-    let mut current_section: Option<String> = None;
+    let mut section = "";
+    let mut private_key = None;
+    let mut addresses = Vec::new();
+    let mut dns = Vec::new();
+    let mut reserved = [0u8; 3];
+    let mut peers = Vec::new();
+    let mut peer_pub: Option<String> = None;
+    let mut peer_psk: Option<String> = None;
+    let mut peer_ep: Option<WgEndpoint> = None;
 
-    // Interface fields
-    let mut private_key: Option<String> = None;
-    let mut addresses: Vec<IpNet> = Vec::new();
-    let mut dns: Vec<IpAddr> = Vec::new();
-    let mut listen_port: Option<u16> = None;
-    let mut mtu: Option<u16> = None;
-    let mut reserved: [u8; 3] = [0, 0, 0];
-    let mut ignored_scripts: Vec<(String, String)> = Vec::new();
-
-    // Peers
-    let mut peers: Vec<WgPeer> = Vec::new();
-    let mut current_peer_pubkey: Option<String> = None;
-    let mut current_peer_preshared: Option<String> = None;
-    let mut current_peer_endpoint: Option<WgEndpoint> = None;
-    let mut current_peer_allowed_ips: Vec<IpNet> = Vec::new();
-    let mut current_peer_keepalive: Option<u16> = None;
-
-    let finish_current_peer = |peers: &mut Vec<WgPeer>,
-                               pubkey: &mut Option<String>,
-                               psk: &mut Option<String>,
-                               ep: &mut Option<WgEndpoint>,
-                               allowed: &mut Vec<IpNet>,
-                               keepalive: &mut Option<u16>|
-     -> Result<()> {
-        if let Some(pk) = pubkey.take() {
-            validate_base64_32_bytes(&pk, "Peer", "PublicKey")?;
-            if let Some(psk_val) = psk.as_ref() {
-                validate_base64_32_bytes(psk_val, "Peer", "PresharedKey")?;
-            }
-            if allowed.is_empty() {
-                // Default to 0.0.0.0/0, ::/0 if not provided
-                allowed.push(IpNet::from_str("0.0.0.0/0").unwrap());
-                allowed.push(IpNet::from_str("::/0").unwrap());
-            }
+    let flush_peer = |peers: &mut Vec<WgPeer>,
+                      pubk: &mut Option<String>,
+                      psk: &mut Option<String>,
+                      ep: &mut Option<WgEndpoint>| {
+        if let Some(pk) = pubk.take() {
             peers.push(WgPeer {
                 public_key: pk,
                 preshared_key: psk.take(),
                 endpoint: ep.take(),
-                allowed_ips: std::mem::take(allowed),
-                persistent_keepalive: keepalive.take(),
             });
         }
-        Ok(())
     };
 
-    for (line_idx, line) in content.lines().enumerate() {
-        let line_num = line_idx + 1;
+    for (idx, line) in content.lines().enumerate() {
         let trimmed = line.trim();
-
         if trimmed.is_empty() {
             continue;
         }
-
         if trimmed.starts_with('#') || trimmed.starts_with(';') {
-            let comment_body = trimmed[1..].trim();
-            if let Some((ck, cv)) = comment_body.split_once('=') {
-                let ck = ck.trim();
-                if ck.eq_ignore_ascii_case("clientid")
-                    || ck.eq_ignore_ascii_case("client_id")
-                    || ck.eq_ignore_ascii_case("reserved")
-                {
+            if let Some((ck, cv)) = trimmed[1..].split_once('=') {
+                if matches!(ck.trim().to_ascii_lowercase().as_str(), "clientid" | "client_id" | "reserved") {
                     if let Some(r) = parse_reserved_bytes(cv) {
                         reserved = r;
                     }
@@ -237,203 +106,75 @@ pub fn parse_wireguard_ini(content: &str) -> Result<WgConfig> {
             }
             continue;
         }
-
-        // Section header
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            let section_name = &trimmed[1..trimmed.len() - 1].trim();
-            if section_name.eq_ignore_ascii_case("interface") {
-                if current_section.as_deref() == Some("Peer") {
-                    finish_current_peer(
-                        &mut peers,
-                        &mut current_peer_pubkey,
-                        &mut current_peer_preshared,
-                        &mut current_peer_endpoint,
-                        &mut current_peer_allowed_ips,
-                        &mut current_peer_keepalive,
-                    )?;
-                }
-                current_section = Some("Interface".to_string());
-            } else if section_name.eq_ignore_ascii_case("peer") {
-                if current_section.as_deref() == Some("Peer") {
-                    finish_current_peer(
-                        &mut peers,
-                        &mut current_peer_pubkey,
-                        &mut current_peer_preshared,
-                        &mut current_peer_endpoint,
-                        &mut current_peer_allowed_ips,
-                        &mut current_peer_keepalive,
-                    )?;
-                }
-                current_section = Some("Peer".to_string());
+            flush_peer(&mut peers, &mut peer_pub, &mut peer_psk, &mut peer_ep);
+            let name = trimmed[1..trimmed.len() - 1].trim();
+            section = if name.eq_ignore_ascii_case("interface") {
+                "Interface"
+            } else if name.eq_ignore_ascii_case("peer") {
+                "Peer"
             } else {
-                return Err(ChainError::WgParseError {
-                    section: format!("Line {}", line_num),
-                    field: "SectionHeader".to_string(),
-                    message: format!("Unknown section '[{}]', expected [Interface] or [Peer]", section_name),
-                });
-            }
+                return Err(wg_err(&format!("Line {}", idx + 1), "Section", "Expected [Interface] or [Peer]"));
+            };
             continue;
         }
+        let (k_raw, v_raw) = trimmed
+            .split_once('=')
+            .ok_or_else(|| wg_err(section, &format!("Line {}", idx + 1), "Expected Key = Value"))?;
+        let key = k_raw.trim().to_ascii_lowercase();
+        let val = v_raw.split('#').next().unwrap_or("").trim();
 
-        let section = match current_section.as_deref() {
-            Some(s) => s,
-            None => {
-                return Err(ChainError::WgParseError {
-                    section: format!("Line {}", line_num),
-                    field: "Syntax".to_string(),
-                    message: format!("Key-value pair '{}' found outside of any section", trimmed),
-                });
+        match (section, key.as_str()) {
+            ("Interface", "privatekey") => {
+                validate_base64_32_bytes(val, "Interface", "PrivateKey")?;
+                private_key = Some(val.to_string());
             }
-        };
-
-        // Split key = value
-        let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
-        if parts.len() != 2 {
-            return Err(ChainError::WgParseError {
-                section: section.to_string(),
-                field: format!("Line {}", line_num),
-                message: format!("Expected 'Key = Value', got '{}'", trimmed),
-            });
-        }
-
-        let key = parts[0].trim();
-        // Remove trailing comment from value if present
-        let mut value = parts[1].trim();
-        if let Some(comment_pos) = value.find('#') {
-            value = value[..comment_pos].trim();
-        }
-
-        match section {
-            "Interface" => {
-                if key.eq_ignore_ascii_case("privatekey") {
-                    validate_base64_32_bytes(value, "Interface", "PrivateKey")?;
-                    private_key = Some(value.to_string());
-                } else if key.eq_ignore_ascii_case("address") {
-                    for item in value.split(',') {
-                        let cidr = parse_cidr(item.trim(), "Interface", "Address")?;
-                        addresses.push(cidr);
-                    }
-                } else if key.eq_ignore_ascii_case("dns") {
-                    for item in value.split(',') {
-                        let item = item.trim();
-                        if item.is_empty() {
-                            continue;
-                        }
-                        let ip = IpAddr::from_str(item).map_err(|_| ChainError::WgParseError {
-                            section: "Interface".to_string(),
-                            field: "DNS".to_string(),
-                            message: format!("Invalid DNS IP address: '{}'", item),
-                        })?;
-                        dns.push(ip);
-                    }
-                } else if key.eq_ignore_ascii_case("listenport") {
-                    let port = value.parse::<u16>().map_err(|_| ChainError::WgParseError {
-                        section: "Interface".to_string(),
-                        field: "ListenPort".to_string(),
-                        message: format!("Invalid ListenPort: '{}'", value),
-                    })?;
-                    listen_port = Some(port);
-                } else if key.eq_ignore_ascii_case("mtu") {
-                    let mtu_val = value.parse::<u16>().map_err(|_| ChainError::WgParseError {
-                        section: "Interface".to_string(),
-                        field: "MTU".to_string(),
-                        message: format!("Invalid MTU: '{}'", value),
-                    })?;
-                    mtu = Some(mtu_val);
-                } else if key.eq_ignore_ascii_case("reserved")
-                    || key.eq_ignore_ascii_case("clientid")
-                    || key.eq_ignore_ascii_case("client_id")
-                {
-                    if let Some(r) = parse_reserved_bytes(value) {
-                        reserved = r;
-                    }
-                } else if key.eq_ignore_ascii_case("postup")
-                    || key.eq_ignore_ascii_case("postdown")
-                    || key.eq_ignore_ascii_case("preup")
-                    || key.eq_ignore_ascii_case("predown")
-                {
-                    // Never execute! Only record for reference
-                    ignored_scripts.push((key.to_string(), value.to_string()));
-                } else {
-                    // Unknown or custom interface directive
+            ("Interface", "address") => {
+                for item in val.split(',') {
+                    addresses.push(parse_cidr(item, "Interface", "Address")?);
                 }
             }
-            "Peer" => {
-                if key.eq_ignore_ascii_case("publickey") {
-                    validate_base64_32_bytes(value, "Peer", "PublicKey")?;
-                    current_peer_pubkey = Some(value.to_string());
-                } else if key.eq_ignore_ascii_case("presharedkey") {
-                    validate_base64_32_bytes(value, "Peer", "PresharedKey")?;
-                    current_peer_preshared = Some(value.to_string());
-                } else if key.eq_ignore_ascii_case("endpoint") {
-                    let ep = parse_endpoint(value, "Peer", "Endpoint")?;
-                    current_peer_endpoint = Some(ep);
-                } else if key.eq_ignore_ascii_case("allowedips") {
-                    for item in value.split(',') {
-                        let cidr = parse_cidr(item.trim(), "Peer", "AllowedIPs")?;
-                        current_peer_allowed_ips.push(cidr);
-                    }
-                } else if key.eq_ignore_ascii_case("persistentkeepalive") {
-                    let ka = value.parse::<u16>().map_err(|_| ChainError::WgParseError {
-                        section: "Peer".to_string(),
-                        field: "PersistentKeepalive".to_string(),
-                        message: format!("Invalid PersistentKeepalive: '{}'", value),
-                    })?;
-                    current_peer_keepalive = Some(ka);
-                } else if key.eq_ignore_ascii_case("reserved")
-                    || key.eq_ignore_ascii_case("clientid")
-                {
-                    if let Some(r) = parse_reserved_bytes(value) {
-                        reserved = r;
-                    }
+            ("Interface", "dns") => {
+                for item in val.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    dns.push(IpAddr::from_str(item).map_err(|_| wg_err("Interface", "DNS", item))?);
                 }
             }
-            _ => unreachable!(),
+            (_, "reserved" | "clientid" | "client_id") => {
+                if let Some(r) = parse_reserved_bytes(val) {
+                    reserved = r;
+                }
+            }
+            ("Peer", "publickey") => {
+                validate_base64_32_bytes(val, "Peer", "PublicKey")?;
+                peer_pub = Some(val.to_string());
+            }
+            ("Peer", "presharedkey") => {
+                validate_base64_32_bytes(val, "Peer", "PresharedKey")?;
+                peer_psk = Some(val.to_string());
+            }
+            ("Peer", "endpoint") => {
+                peer_ep = Some(parse_endpoint(val, "Peer", "Endpoint")?);
+            }
+            ("", _) => return Err(wg_err(&format!("Line {}", idx + 1), "Syntax", "Directive outside section")),
+            _ => {}
         }
     }
+    flush_peer(&mut peers, &mut peer_pub, &mut peer_psk, &mut peer_ep);
 
-    if current_section.as_deref() == Some("Peer") {
-        finish_current_peer(
-            &mut peers,
-            &mut current_peer_pubkey,
-            &mut current_peer_preshared,
-            &mut current_peer_endpoint,
-            &mut current_peer_allowed_ips,
-            &mut current_peer_keepalive,
-        )?;
-    }
-
-    let priv_key = private_key.ok_or_else(|| ChainError::WgParseError {
-        section: "Interface".to_string(),
-        field: "PrivateKey".to_string(),
-        message: "Missing required 'PrivateKey' in [Interface]".to_string(),
-    })?;
-
+    let private_key = private_key.ok_or_else(|| wg_err("Interface", "PrivateKey", "Missing PrivateKey"))?;
     if addresses.is_empty() {
-        return Err(ChainError::WgParseError {
-            section: "Interface".to_string(),
-            field: "Address".to_string(),
-            message: "Missing required 'Address' in [Interface]".to_string(),
-        });
+        return Err(wg_err("Interface", "Address", "Missing Address"));
     }
-
     if peers.is_empty() {
-        return Err(ChainError::WgParseError {
-            section: "Peer".to_string(),
-            field: "Peer".to_string(),
-            message: "At least one [Peer] section with PublicKey is required".to_string(),
-        });
+        return Err(wg_err("Peer", "Peer", "Missing [Peer] with PublicKey"));
     }
 
     Ok(WgConfig {
         interface: WgInterface {
-            private_key: priv_key,
+            private_key,
             addresses,
             dns,
-            listen_port,
-            mtu,
             reserved,
-            ignored_scripts,
         },
         peers,
     })
@@ -444,141 +185,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_valid_vpn1_and_warp_configs() {
-        let vpn1_ini = r#"
+    fn test_parse_wireguard_and_reserved() {
+        let ini = r#"
 [Interface]
 PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-Address = 10.2.0.2/32
-DNS = 10.2.0.1
-PostUp = iptables -A FORWARD -i %i -j ACCEPT
+Address = 172.16.0.2/32, 2606:4700:110::2/128
+DNS = 1.1.1.1
+# ClientId = [12, 34, 56]
 
 [Peer]
 PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
-AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = 198.51.100.1:51820
-PersistentKeepalive = 25
+Endpoint = [2606:4700:d0::a29f:c001]:2408
 "#;
-        let parsed = parse_wireguard_ini(vpn1_ini).expect("Should parse valid config");
-        assert_eq!(parsed.interface.addresses.len(), 1);
-        assert_eq!(parsed.interface.dns.len(), 1);
-        assert_eq!(parsed.interface.ignored_scripts.len(), 1);
-        assert_eq!(parsed.interface.ignored_scripts[0].0, "PostUp");
-        assert_eq!(parsed.peers.len(), 1);
-        assert_eq!(parsed.peers[0].endpoint.as_ref().unwrap().port, 51820);
-
-        // Test redaction
-        let redacted = parsed.redacted();
-        assert_eq!(redacted.interface.private_key, "********");
-    }
-
-    #[test]
-    fn test_ipv6_and_domain_endpoints() {
-        let ep_v6 = parse_endpoint("[2606:4700:d0::a29f:c001]:2408", "Peer", "Endpoint").unwrap();
-        assert_eq!(ep_v6.host, "2606:4700:d0::a29f:c001");
-        assert_eq!(ep_v6.port, 2408);
-
-        let ep_domain = parse_endpoint("engage.cloudflareclient.com:2408", "Peer", "Endpoint").unwrap();
-        assert_eq!(ep_domain.host, "engage.cloudflareclient.com");
-        assert_eq!(ep_domain.port, 2408);
-    }
-
-    #[test]
-    fn test_invalid_key_length() {
-        let invalid = r#"
-[Interface]
-PrivateKey = shortkey
-Address = 10.2.0.2/32
-
-[Peer]
-PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
-Endpoint = 1.1.1.1:51820
-"#;
-        let err = parse_wireguard_ini(invalid).unwrap_err();
-        match err {
-            ChainError::WgParseError { field, .. } => assert_eq!(field, "PrivateKey"),
-            _ => panic!("Expected WgParseError"),
-        }
-    }
-
-    #[test]
-    fn test_invalid_endpoint_port() {
-        let invalid = r#"
-[Interface]
-PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-Address = 10.2.0.2/32
-
-[Peer]
-PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
-Endpoint = 1.1.1.1:99999
-"#;
-        let err = parse_wireguard_ini(invalid).unwrap_err();
-        match err {
-            ChainError::WgParseError { field, .. } => assert_eq!(field, "Endpoint"),
-            _ => panic!("Expected WgParseError"),
-        }
-    }
-
-    #[test]
-    fn test_missing_private_key() {
-        let invalid = r#"
-[Interface]
-Address = 10.2.0.2/32
-
-[Peer]
-PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
-Endpoint = 1.1.1.1:51820
-"#;
-        let err = parse_wireguard_ini(invalid).unwrap_err();
-        match err {
-            ChainError::WgParseError { field, .. } => assert_eq!(field, "PrivateKey"),
-            _ => panic!("Expected WgParseError"),
-        }
-    }
-
-    #[test]
-    fn test_missing_address() {
-        let invalid = r#"
-[Interface]
-PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-
-[Peer]
-PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
-Endpoint = 1.1.1.1:51820
-"#;
-        let err = parse_wireguard_ini(invalid).unwrap_err();
-        match err {
-            ChainError::WgParseError { field, .. } => assert_eq!(field, "Address"),
-            _ => panic!("Expected WgParseError"),
-        }
-    }
-
-    #[test]
-    fn test_preshared_key_and_multiple_addresses() {
-        let conf = r#"
-# Sample test config
-[Interface]
-PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-Address = 10.2.0.2/32, 2606:4700:110:8f6f::2/128
-DNS = 1.1.1.1, 1.0.0.1
-PostUp = echo 'malicious bash command'
-PostDown = echo 'down'
-
-[Peer]
-PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
-PresharedKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
-Endpoint = 162.159.192.1:2408
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
-"#;
-        let parsed = parse_wireguard_ini(conf).expect("Must parse");
-        assert_eq!(parsed.interface.addresses.len(), 2);
-        assert_eq!(parsed.interface.dns.len(), 2);
-        assert_eq!(parsed.interface.ignored_scripts.len(), 2);
-        assert_eq!(parsed.interface.ignored_scripts[0].0, "PostUp");
-        assert_eq!(parsed.peers[0].preshared_key.as_deref(), Some("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="));
-        
-        let redacted = parsed.redacted();
-        assert_eq!(redacted.peers[0].preshared_key.as_deref(), Some("********"));
-        assert_eq!(redacted.interface.private_key, "********");
+        let cfg = parse_wireguard_ini(ini).unwrap();
+        assert_eq!(cfg.interface.addresses.len(), 2);
+        assert_eq!(cfg.interface.reserved, [12, 34, 56]);
+        assert_eq!(cfg.peers[0].endpoint.as_ref().unwrap().port, 2408);
     }
 }

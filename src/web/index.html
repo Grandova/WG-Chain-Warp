@@ -844,7 +844,6 @@
                             <button class="btn" onclick="validateCurrentForm()">🔍 校验配置语法</button>
                         </div>
                         <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                            <button class="btn" onclick="rollbackConfig()">⏪ 回滚上一可用版本</button>
                             <button class="btn btn-danger" onclick="stopProxyService()">🛑 停止代理并恢复原网络</button>
                         </div>
                     </div>
@@ -1445,22 +1444,6 @@
                 }
             } catch (e) {
                 showToast('请求失败: ' + e.message, 'err');
-            }
-        }
-
-        async function rollbackConfig() {
-            try {
-                showToast('正在回滚至上一历史可用配置...');
-                const res = await apiCall('./api/v1/rollback', { method: 'POST' });
-                if (res.success) {
-                    showToast('已成功回滚至上一可用版本！');
-                    await loadFullConfig();
-                    await refreshStatus();
-                } else {
-                    showToast('回滚失败: ' + (res.error || ''), 'err');
-                }
-            } catch (e) {
-                showToast('回滚异常: ' + e.message, 'err');
             }
         }
 

@@ -1,12 +1,10 @@
 use crate::engine::transaction::ChainEngine;
 use crate::error::{ChainError, Result};
-use crate::health::diagnose::SystemDiagnostician;
-use crate::model::config::ChainProxyConfig;
 use crate::model::panel::PanelSetting;
 use crate::model::state::ChainStatus;
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -28,16 +26,13 @@ pub struct Cli {
     #[arg(long, default_value = "/var/lib/sooya", global = true)]
     pub data_dir: PathBuf,
 
-    #[arg(long, default_value = "sing-box", global = true)]
-    pub singbox: String,
-
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// 显示 Sooya 管理菜单 (功能更多)
+    /// 显示 Sooya 管理菜单
     Menu,
     /// 修改或查看 Web 面板设置 (端口、登录用户名、密码、根路径)
     Setting {
@@ -75,27 +70,8 @@ pub enum Commands {
     Update,
     /// 卸载 Sooya 面板与服务
     Uninstall,
-    /// 自动向 Cloudflare 注册并输出 WARP WireGuard 配置
-    WarpReg,
     /// 启动后台守护服务 (Web 面板与 API)
-    Daemon {
-        #[arg(long, default_value = "30")]
-        watchdog_timeout: u64,
-    },
-    /// 校验配置文件语法
-    Validate {
-        config: PathBuf,
-    },
-    /// 应用指定 JSON 配置文件
-    Apply {
-        config: PathBuf,
-    },
-    /// 触发全链路分跳连通性测试
-    Test,
-    /// 回滚至上一可用版本
-    Rollback,
-    /// 输出系统网络诊断报告
-    Diagnose,
+    Daemon,
 }
 
 pub struct CliHandler {
@@ -112,24 +88,11 @@ impl CliHandler {
         Self { api_url: url }
     }
 
-    pub async fn run_client_command(
-        &self,
-        cmd: &Commands,
-        singbox_bin: &str,
-        data_dir: &std::path::Path,
-    ) -> Result<()> {
+    pub async fn run_client_command(&self, cmd: &Commands, data_dir: &Path) -> Result<()> {
         let client = reqwest::Client::new();
 
         match cmd {
-            Commands::Setting {
-                port,
-                listen,
-                username,
-                password,
-                base_path,
-                reset,
-                show,
-            } => {
+            Commands::Setting { port, listen, username, password, base_path, reset, show } => {
                 let mut panel = if *reset {
                     PanelSetting::default()
                 } else {
@@ -188,20 +151,10 @@ impl CliHandler {
                             let status: ChainStatus = serde_json::from_value(data.clone())?;
                             println!("=== SOOYA STATUS ===");
                             println!("State         : {:?}", status.state);
-                            println!(
-                                "Active Version: {}",
-                                status
-                                    .active_config_version
-                                    .unwrap_or_else(|| "none".to_string())
-                            );
+                            println!("Active Version: {}", status.active_config_version.unwrap_or_else(|| "none".to_string()));
                             println!("Uptime        : {} seconds", status.uptime_seconds);
                             println!("Topology      : {}", status.chain_visual);
-                            println!(
-                                "Physical Uplink: {} ({:?}) - {}",
-                                status.physical.interface,
-                                status.physical.gateway,
-                                status.physical.status
-                            );
+                            println!("Physical Uplink: {} ({:?}) - {}", status.physical.interface, status.physical.gateway, status.physical.status);
                             println!("Hop 1 ({})    : {}", status.vpn1.name, status.vpn1.status);
                             println!("Hop 2 ({})    : {}", status.vpn2.name, status.vpn2.status);
                             println!("Internet Exit : {}", status.final_hop.status);
@@ -210,71 +163,17 @@ impl CliHandler {
                         }
                     }
                     Err(e) => {
-                        eprintln!(
-                            "未能连接 Sooya 守护进程 ({}): {}",
-                            self.api_url, e
-                        );
-                        eprintln!(
-                            "提示: 请执行 'sooya start' 或 'systemctl start sooya' 启动服务。"
-                        );
+                        eprintln!("未能连接 Sooya 守护进程 ({}): {}", self.api_url, e);
+                        eprintln!("提示: 请执行 'sooya start' 或 'systemctl start sooya' 启动服务。");
                     }
                 }
-            }
-            Commands::Validate { config } => {
-                let content = fs::read_to_string(config)?;
-                let parsed_cfg: ChainProxyConfig = serde_json::from_str(&content)?;
-                match parsed_cfg.parse_and_validate() {
-                    Ok(parsed) => {
-                        println!("Configuration is VALID! Mode: {:?}", parsed_cfg.mode);
-                        if let Some(v1) = parsed.vpn1 {
-                            println!(
-                                "VPN1 ({}): {} addresses, peer endpoint: {:?}",
-                                parsed_cfg.vpn1.name,
-                                v1.interface.addresses.len(),
-                                v1.peers.first().and_then(|p| p.endpoint.as_ref())
-                            );
-                        }
-                        if let Some(v2) = parsed.vpn2 {
-                            println!(
-                                "VPN2 ({}): {} addresses, peer endpoint: {:?}",
-                                parsed_cfg.vpn2.name,
-                                v2.interface.addresses.len(),
-                                v2.peers.first().and_then(|p| p.endpoint.as_ref())
-                            );
-                        }
-                        if let Some(s5) = parsed.socks5 {
-                            println!("Socks5 Proxy: {}", s5.redacted_string());
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Validation FAILED: {}", e);
-                    }
-                }
-            }
-            Commands::Apply { config } => {
-                let content = fs::read_to_string(config)?;
-                let parsed_cfg: ChainProxyConfig = serde_json::from_str(&content)?;
-                let url = format!("{}/api/v1/config/apply", self.api_url);
-                let payload = serde_json::json!({ "config": parsed_cfg });
-                let resp = client
-                    .post(&url)
-                    .json(&payload)
-                    .send()
-                    .await
-                    .map_err(|e| ChainError::NetworkError(e.to_string()))?;
-                let json: serde_json::Value = resp
-                    .json()
-                    .await
-                    .map_err(|e| ChainError::NetworkError(e.to_string()))?;
-                println!("{}", serde_json::to_string_pretty(&json)?);
             }
             Commands::Start => {
                 let _ = Command::new("systemctl").args(["start", "sooya"]).status();
                 println!("✅ Sooya 服务已启动");
             }
             Commands::Stop => {
-                let url = format!("{}/api/v1/stop", self.api_url);
-                let _ = client.post(&url).send().await;
+                let _ = client.post(format!("{}/api/v1/stop", self.api_url)).send().await;
                 println!("✅ 代理链路已停止，宿主机网络已恢复");
             }
             Commands::Restart => {
@@ -299,8 +198,7 @@ impl CliHandler {
                     .status();
             }
             Commands::Uninstall => {
-                let url = format!("{}/api/v1/stop", self.api_url);
-                let _ = client.post(&url).send().await;
+                let _ = client.post(format!("{}/api/v1/stop", self.api_url)).send().await;
                 let _ = Command::new("systemctl").args(["stop", "sooya"]).status();
                 let _ = Command::new("systemctl").args(["disable", "sooya"]).status();
                 let _ = fs::remove_file("/etc/systemd/system/sooya.service");
@@ -308,33 +206,7 @@ impl CliHandler {
                 let _ = fs::remove_dir_all("/usr/local/sooya");
                 let _ = fs::remove_file("/usr/bin/sooya");
                 let _ = fs::remove_file("/usr/local/bin/sooya");
-                println!("✅ Sooya 已卸载完成 (配置文件保留在 /var/lib/sooya，如需彻底删除可执行 rm -rf /var/lib/sooya)");
-            }
-            Commands::Test => {
-                let url = format!("{}/api/v1/config/test", self.api_url);
-                let resp = client
-                    .post(&url)
-                    .send()
-                    .await
-                    .map_err(|e| ChainError::NetworkError(e.to_string()))?;
-                let json: serde_json::Value = resp
-                    .json()
-                    .await
-                    .map_err(|e| ChainError::NetworkError(e.to_string()))?;
-                println!("{}", serde_json::to_string_pretty(&json)?);
-            }
-            Commands::Rollback => {
-                let url = format!("{}/api/v1/rollback", self.api_url);
-                let resp = client
-                    .post(&url)
-                    .send()
-                    .await
-                    .map_err(|e| ChainError::NetworkError(e.to_string()))?;
-                let json: serde_json::Value = resp
-                    .json()
-                    .await
-                    .map_err(|e| ChainError::NetworkError(e.to_string()))?;
-                println!("{}", serde_json::to_string_pretty(&json)?);
+                println!("✅ Sooya 已卸载完成 (配置文件保留在 /var/lib/sooya)");
             }
             Commands::Logs => {
                 let url = format!("{}/api/v1/logs", self.api_url);
@@ -346,62 +218,25 @@ impl CliHandler {
                         }
                     }
                 }
-                let _ = Command::new("journalctl")
-                    .args(["-u", "sooya", "-n", "50", "--no-pager"])
-                    .status();
-            }
-            Commands::Diagnose => {
-                let report = SystemDiagnostician::generate_report(singbox_bin);
-                println!("{}", report);
+                let _ = Command::new("journalctl").args(["-u", "sooya", "-n", "50", "--no-pager"]).status();
             }
             Commands::Menu => {
-                let menu = crate::cli::menu::ConsoleMenu::new(
-                    &self.api_url,
-                    data_dir.to_path_buf(),
-                    singbox_bin,
-                );
+                let menu = crate::cli::menu::ConsoleMenu::new(&self.api_url, data_dir.to_path_buf());
                 menu.run().await?;
             }
-            Commands::WarpReg => {
-                println!("正在连接 Cloudflare API 自动注册 WARP 设备...");
-                match crate::wireguard::WarpRegistrar::register_warp().await {
-                    Ok(res) => {
-                        println!(
-                            "✅ 注册成功！分配 IPv4: {}, IPv6: {:?}",
-                            res.address_v4, res.address_v6
-                        );
-                        println!("==================== 生成的 WARP 配置 ====================");
-                        println!("{}", res.wireguard_config);
-                        println!("==========================================================");
-                    }
-                    Err(e) => {
-                        eprintln!("❌ 注册失败: {}", e);
-                    }
-                }
-            }
-            Commands::Daemon { .. } => unreachable!(),
+            Commands::Daemon => unreachable!(),
         }
 
         Ok(())
     }
 
-    pub async fn run_daemon(
-        api_addr: &str,
-        data_dir: PathBuf,
-        singbox_bin: &str,
-        watchdog_timeout: u64,
-    ) -> Result<()> {
-        if let Err(e) = fs::create_dir_all(&data_dir) {
-            eprintln!("Notice creating data_dir {:?}: {}", data_dir, e);
-        }
-
+    pub async fn run_daemon(api_addr: &str, data_dir: PathBuf) -> Result<()> {
+        let _ = fs::create_dir_all(&data_dir);
         let panel = PanelSetting::load_or_default(&data_dir);
         let panel_bind = panel.bind_addr();
 
-        let engine = Arc::new(Mutex::new(ChainEngine::new(&data_dir, singbox_bin)));
-        engine.lock().await.set_watchdog_timeout(watchdog_timeout);
-
-        let app = crate::api::create_router(engine, None);
+        let engine = Arc::new(Mutex::new(ChainEngine::new(&data_dir)));
+        let app = crate::api::create_router(engine);
 
         if api_addr != panel_bind {
             if let Ok(local_listener) = tokio::net::TcpListener::bind(api_addr).await {
@@ -413,20 +248,14 @@ impl CliHandler {
             }
         }
 
-        info!(
-            "Starting Sooya Web Console on http://{}{}",
-            panel_bind, panel.base_path
-        );
+        info!("Starting Sooya Web Console on http://{}{}", panel_bind, panel.base_path);
         let listener = match tokio::net::TcpListener::bind(&panel_bind).await {
             Ok(l) => l,
             Err(e) => {
-                eprintln!(
-                    "Warning: failed to bind web panel on {} ({}), falling back to {}",
-                    panel_bind, e, api_addr
-                );
-                tokio::net::TcpListener::bind(api_addr).await.map_err(|e2| {
-                    ChainError::NetworkError(format!("Failed to bind to {}: {}", api_addr, e2))
-                })?
+                eprintln!("Warning: failed to bind web panel on {} ({}), falling back to {}", panel_bind, e, api_addr);
+                tokio::net::TcpListener::bind(api_addr)
+                    .await
+                    .map_err(|e2| ChainError::NetworkError(format!("Failed to bind to {}: {}", api_addr, e2)))?
             }
         };
 

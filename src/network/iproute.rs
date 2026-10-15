@@ -3,7 +3,7 @@ use crate::model::config::ChainProxyConfig;
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::IpAddr;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 #[cfg(target_os = "linux")]
@@ -324,31 +324,6 @@ impl IpRouteManager {
         }
 
         ips
-    }
-
-    /// Resolve a hostname or IP string to a list of IpAddr
-    pub fn resolve_host_to_ips(host: &str) -> Vec<IpAddr> {
-        let clean = host.trim();
-        if clean.is_empty() {
-            return Vec::new();
-        }
-        if let Ok(ip) = clean.parse::<IpAddr>() {
-            return vec![ip];
-        }
-        let socket_str = format!("{}:0", clean);
-        if let Ok(addrs) = socket_str.to_socket_addrs() {
-            let mut ips: Vec<IpAddr> = Vec::new();
-            for addr in addrs {
-                let ip = addr.ip();
-                if !ips.contains(&ip) {
-                    ips.push(ip);
-                }
-            }
-            if !ips.is_empty() {
-                return ips;
-            }
-        }
-        Vec::new()
     }
 
     /// Check and automatically create /dev/net/tun if missing

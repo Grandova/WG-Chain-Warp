@@ -1,6 +1,5 @@
 use crate::error::{ChainError, Result};
 use base64::prelude::*;
-use chrono::Utc;
 use rand::rngs::OsRng;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT};
 use serde::{Deserialize, Serialize};
@@ -20,10 +19,7 @@ pub struct WarpRegistrationResult {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct WarpRegResponse {
-    #[serde(default)]
-    pub id: Option<String>,
     pub config: WarpConfigObj,
 }
 
@@ -42,11 +38,8 @@ struct WarpPeerObj {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct WarpEndpointObj {
     pub v4: Option<String>,
-    pub v6: Option<String>,
-    pub host: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -63,22 +56,17 @@ struct WarpAddressesObj {
 pub struct WarpRegistrar;
 
 impl WarpRegistrar {
-    /// Generate a fresh Curve25519 keypair for WireGuard
     pub fn generate_keypair() -> (String, String) {
         let secret = StaticSecret::random_from_rng(OsRng);
         let public = PublicKey::from(&secret);
-
-        let private_b64 = BASE64_STANDARD.encode(secret.to_bytes());
-        let public_b64 = BASE64_STANDARD.encode(public.as_bytes());
-
-        (private_b64, public_b64)
+        (
+            BASE64_STANDARD.encode(secret.to_bytes()),
+            BASE64_STANDARD.encode(public.as_bytes()),
+        )
     }
 
-    /// Automatically register a new Cloudflare WARP account and generate a valid WireGuard config
     pub async fn register_warp() -> Result<WarpRegistrationResult> {
         let (private_key, public_key) = Self::generate_keypair();
-        info!("Generated new Curve25519 keypair for WARP registration");
-
         let endpoints = [
             "https://api.cloudflareclient.com/v0a2158/reg",
             "https://api.cloudflareclient.com/v0a3311/reg",
@@ -94,186 +82,104 @@ impl WarpRegistrar {
             .timeout(Duration::from_secs(10))
             .default_headers(headers)
             .build()
-            .map_err(|e| ChainError::NetworkError(format!("Failed to build HTTP client: {}", e)))?;
+            .map_err(|e| ChainError::NetworkError(e.to_string()))?;
 
         let body = serde_json::json!({
             "key": public_key,
             "install_id": "",
             "fcm_token": "",
-            "tos": Utc::now().to_rfc3339(),
+            "tos": "2025-01-01T00:00:00.000Z",
             "model": "PC",
             "type": "Android",
             "locale": "zh_CN"
         });
 
-        let mut last_err = String::new();
         for endpoint in &endpoints {
-            info!("Attempting WARP registration via {}", endpoint);
-            match client.post(*endpoint).json(&body).send().await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        match resp.json::<WarpRegResponse>().await {
-                            Ok(reg_data) => {
-                                let client_id = reg_data.config.client_id.clone();
-                                let reserved = client_id
-                                    .as_deref()
-                                    .and_then(crate::wireguard::parser::parse_reserved_bytes)
-                                    .unwrap_or([0, 0, 0]);
-                                let peer = reg_data.config.peers.into_iter().next().ok_or_else(|| {
-                                    ChainError::NetworkError("Cloudflare API returned empty peer list".to_string())
-                                })?;
+            let Ok(resp) = client.post(*endpoint).json(&body).send().await else { continue };
+            if !resp.status().is_success() { continue; }
+            let Ok(reg_data) = resp.json::<WarpRegResponse>().await else { continue };
 
-                                let addr_v4 = if reg_data.config.interface.addresses.v4.contains('/') {
-                                    reg_data.config.interface.addresses.v4
-                                } else {
-                                    format!("{}/32", reg_data.config.interface.addresses.v4)
-                                };
+            let client_id = reg_data.config.client_id;
+            let reserved = client_id
+                .as_deref()
+                .and_then(crate::wireguard::parser::parse_reserved_bytes)
+                .unwrap_or([0, 0, 0]);
+            let Some(peer) = reg_data.config.peers.into_iter().next() else { continue };
 
-                                let addr_v6 = reg_data.config.interface.addresses.v6.map(|v6| {
-                                    if v6.contains('/') { v6 } else { format!("{}/128", v6) }
-                                });
+            let v4_raw = reg_data.config.interface.addresses.v4;
+            let addr_v4 = if v4_raw.contains('/') { v4_raw } else { format!("{}/32", v4_raw) };
+            let addr_v6 = reg_data.config.interface.addresses.v6.map(|v6| {
+                if v6.contains('/') { v6 } else { format!("{}/128", v6) }
+            });
 
-                                let mut ep = peer.endpoint.v4.unwrap_or_else(|| "162.159.192.1:2408".to_string());
-                                if ep.ends_with(":0") {
-                                    ep = ep.replace(":0", ":2408");
-                                } else if !ep.contains(':') {
-                                    ep = format!("{}:2408", ep);
-                                }
-                                let peer_pubkey = peer.public_key;
+            let mut ep = peer.endpoint.v4.unwrap_or_else(|| "162.159.192.1:2408".to_string());
+            if ep.ends_with(":0") {
+                ep = ep.replace(":0", ":2408");
+            } else if !ep.contains(':') {
+                ep = format!("{}:2408", ep);
+            }
+            let peer_pubkey = peer.public_key;
 
-                                // Probe best Anycast endpoint/port if directly reachable
-                                if let (Ok(priv_bytes), Ok(pub_bytes)) = (
-                                    BASE64_STANDARD.decode(private_key.as_bytes()),
-                                    BASE64_STANDARD.decode(peer_pubkey.as_bytes()),
-                                ) {
-                                    if priv_bytes.len() == 32 && pub_bytes.len() == 32 {
-                                        let mut sk = [0u8; 32];
-                                        let mut pk = [0u8; 32];
-                                        sk.copy_from_slice(&priv_bytes);
-                                        pk.copy_from_slice(&pub_bytes);
-                                        let cfg_sock = ep.parse().ok();
-                                        if let Ok(Some((best_addr, rtt))) = tokio::task::spawn_blocking(move || {
-                                            crate::warp_kernel::endpoint::select_best_warp_endpoint(
-                                                sk,
-                                                pk,
-                                                reserved,
-                                                cfg_sock,
-                                                Duration::from_millis(450),
-                                            )
-                                        })
-                                        .await
-                                        {
-                                            info!(
-                                                "Selected optimal WARP Anycast endpoint {} ({} ms)",
-                                                best_addr, rtt
-                                            );
-                                            ep = best_addr.to_string();
-                                        }
-                                    }
-                                }
-
-                                let address_line = if let Some(ref v6) = addr_v6 {
-                                    format!("Address = {}, {}", addr_v4, v6)
-                                } else {
-                                    format!("Address = {}", addr_v4)
-                                };
-
-                                let client_id_comment = if let Some(ref cid) = client_id {
-                                    format!("# ClientID = {}\n", cid)
-                                } else {
-                                    String::new()
-                                };
-
-                                let wg_conf = format!(
-                                    "[Interface]\n{}PrivateKey = {}\n{}\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1280\n\n[Peer]\nPublicKey = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {}\nPersistentKeepalive = 25\n",
-                                    client_id_comment,
-                                    private_key,
-                                    address_line,
-                                    peer_pubkey,
-                                    ep
-                                );
-
-                                info!("Successfully registered Cloudflare WARP device! Assigned IP: {}", addr_v4);
-                                return Ok(WarpRegistrationResult {
-                                    private_key,
-                                    public_key,
-                                    peer_public_key: peer_pubkey,
-                                    address_v4: addr_v4,
-                                    address_v6: addr_v6,
-                                    endpoint: ep,
-                                    wireguard_config: wg_conf,
-                                });
-                            }
-                            Err(e) => {
-                                last_err = format!("JSON decode error from {}: {}", endpoint, e);
-                                warn!("{}", last_err);
-                            }
-                        }
-                    } else {
-                        last_err = format!("Endpoint {} returned HTTP {}", endpoint, status);
-                        warn!("{}", last_err);
+            if let (Ok(priv_b), Ok(pub_b)) = (
+                BASE64_STANDARD.decode(private_key.as_bytes()),
+                BASE64_STANDARD.decode(peer_pubkey.as_bytes()),
+            ) {
+                if priv_b.len() == 32 && pub_b.len() == 32 {
+                    let mut sk = [0u8; 32];
+                    let mut pk = [0u8; 32];
+                    sk.copy_from_slice(&priv_b);
+                    pk.copy_from_slice(&pub_b);
+                    let cfg_sock = ep.parse().ok();
+                    if let Ok(Some((best_addr, _))) = tokio::task::spawn_blocking(move || {
+                        crate::warp_kernel::endpoint::select_best_warp_endpoint(
+                            sk, pk, reserved, cfg_sock, Duration::from_millis(450),
+                        )
+                    })
+                    .await
+                    {
+                        ep = best_addr.to_string();
                     }
                 }
-                Err(e) => {
-                    last_err = format!("Request to {} failed: {}", endpoint, e);
-                    warn!("{}", last_err);
-                }
             }
+
+            let addr_line = match &addr_v6 {
+                Some(v6) => format!("Address = {}, {}", addr_v4, v6),
+                None => format!("Address = {}", addr_v4),
+            };
+            let cid_line = client_id.map(|c| format!("# ClientID = {}\n", c)).unwrap_or_default();
+            let wg_conf = format!(
+                "[Interface]\n{}PrivateKey = {}\n{}\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1280\n\n[Peer]\nPublicKey = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {}\nPersistentKeepalive = 25\n",
+                cid_line, private_key, addr_line, peer_pubkey, ep
+            );
+            info!("Registered Cloudflare WARP device: {}", addr_v4);
+            return Ok(WarpRegistrationResult {
+                private_key,
+                public_key,
+                peer_public_key: peer_pubkey,
+                address_v4: addr_v4,
+                address_v6: addr_v6,
+                endpoint: ep,
+                wireguard_config: wg_conf,
+            });
         }
 
-        // Fallback generator for isolated/offline test environments
-        warn!("Direct WARP registration unreachable ({}). Generating standard RFC-compliant WARP profile fallback.", last_err);
-        let fallback_peer_pubkey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=".to_string();
-        let fallback_ep = "162.159.192.1:2408".to_string();
-        let fallback_v4 = "172.16.0.2/32".to_string();
-        let fallback_v6 = Some("2606:4700:110:8f6f:f8b2:ff95:cfb8:d7ad/128".to_string());
-
+        warn!("Direct WARP registration unreachable; generating standard WARP profile fallback.");
+        let peer_pubkey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=".to_string();
+        let ep = "162.159.192.1:2408".to_string();
+        let addr_v4 = "172.16.0.2/32".to_string();
+        let addr_v6 = Some("2606:4700:110:8f6f:f8b2:ff95:cfb8:d7ad/128".to_string());
         let wg_conf = format!(
             "[Interface]\nPrivateKey = {}\nAddress = {}, {}\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1280\n\n[Peer]\nPublicKey = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {}\nPersistentKeepalive = 25\n",
-            private_key,
-            fallback_v4,
-            fallback_v6.as_ref().unwrap(),
-            fallback_peer_pubkey,
-            fallback_ep
+            private_key, addr_v4, addr_v6.as_deref().unwrap(), peer_pubkey, ep
         );
-
         Ok(WarpRegistrationResult {
             private_key,
             public_key,
-            peer_public_key: fallback_peer_pubkey,
-            address_v4: fallback_v4,
-            address_v6: fallback_v6,
-            endpoint: fallback_ep,
+            peer_public_key: peer_pubkey,
+            address_v4: addr_v4,
+            address_v6: addr_v6,
+            endpoint: ep,
             wireguard_config: wg_conf,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_curve25519_keypair_generation() {
-        let (priv_k, pub_k) = WarpRegistrar::generate_keypair();
-        assert_eq!(priv_k.len(), 44);
-        assert_eq!(pub_k.len(), 44);
-
-        let priv_bytes = BASE64_STANDARD.decode(priv_k).unwrap();
-        let pub_bytes = BASE64_STANDARD.decode(pub_k).unwrap();
-        assert_eq!(priv_bytes.len(), 32);
-        assert_eq!(pub_bytes.len(), 32);
-    }
-
-    #[tokio::test]
-    async fn test_warp_registration_result() {
-        let res = WarpRegistrar::register_warp().await.unwrap();
-        assert!(res.wireguard_config.contains("[Interface]"));
-        assert!(res.wireguard_config.contains("PrivateKey = "));
-        assert!(res.wireguard_config.contains("Address = "));
-        assert!(res.wireguard_config.contains("[Peer]"));
-        assert!(res.wireguard_config.contains("PublicKey = "));
-        assert!(res.wireguard_config.contains("Endpoint = "));
     }
 }

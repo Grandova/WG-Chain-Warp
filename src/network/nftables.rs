@@ -1,7 +1,7 @@
 use crate::error::{ChainError, Result};
 use std::io::Write;
 use std::process::{Command, Stdio};
-use tracing::{info, warn};
+use tracing::info;
 
 pub const TABLE_NAME: &str = "chainproxy";
 pub const TABLE_FAMILY: &str = "inet";
@@ -26,9 +26,7 @@ impl NftablesManager {
             ));
         }
         script.push_str("    }\n    chain output {\n        type route hook output priority mangle; policy accept;\n");
-        script.push_str(&format!(
-            "        meta mark & {MARK_PHYSICAL_DIRECT:#x} != 0 return\n"
-        ));
+        script.push_str(&format!("        meta mark & {MARK_PHYSICAL_DIRECT:#x} != 0 return\n"));
         if config.routing.preserve_inbound_connections {
             script.push_str(&format!(
                 "        ct direction reply ct mark & {inbound:#x} == {inbound:#x} meta mark set (meta mark & {keep:#x}) | {inbound:#x} return\n"
@@ -36,11 +34,7 @@ impl NftablesManager {
         }
         script.push_str("        fib daddr type local return\n");
         if config.routing.proxy_host_outbound {
-            let family = if config.routing.ipv6 {
-                ""
-            } else {
-                "meta nfproto ipv4 "
-            };
+            let family = if config.routing.ipv6 { "" } else { "meta nfproto ipv4 " };
             script.push_str(&format!(
                 "        {family}meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"host-proxy\"\n"
             ));
@@ -59,10 +53,7 @@ impl NftablesManager {
                 .output()?;
             let error = String::from_utf8_lossy(&out.stderr);
             if !out.status.success() && !error.contains("0 flow entries") {
-                return Err(ChainError::NetworkError(format!(
-                    "conntrack mark cleanup: {}",
-                    error
-                )));
+                return Err(ChainError::NetworkError(format!("conntrack mark cleanup: {}", error)));
             }
         }
         Ok(())
@@ -71,14 +62,9 @@ impl NftablesManager {
     pub fn snapshot() -> Result<Option<String>> {
         let output = Command::new("nft").args(["list", "tables"]).output()?;
         if !output.status.success() {
-            return Err(ChainError::NetworkError(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
+            return Err(ChainError::NetworkError(String::from_utf8_lossy(&output.stderr).into_owned()));
         }
-        if String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .any(|l| l.trim() == "table inet chainproxy")
-        {
+        if String::from_utf8_lossy(&output.stdout).lines().any(|l| l.trim() == "table inet chainproxy") {
             Ok(Some(Self::list_table_rules()?))
         } else {
             Ok(None)
@@ -99,40 +85,10 @@ impl NftablesManager {
         Ok(())
     }
 
-    pub fn probe_nftables() -> Result<String> {
-        let output = Command::new("nft").arg("--version").output().map_err(|e| {
-            ChainError::CommandError {
-                cmd: "nft --version".to_string(),
-                message: format!("nftables not found or cannot execute: {}", e),
-            }
-        })?;
-
-        if !output.status.success() {
-            return Err(ChainError::SystemError("nft command failed".to_string()));
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    }
-
-    pub fn table_exists() -> bool {
-        let output = Command::new("nft")
-            .args(["list", "table", TABLE_FAMILY, TABLE_NAME])
-            .output();
-
-        match output {
-            Ok(out) => out.status.success(),
-            Err(_) => false,
-        }
-    }
-
     pub fn apply_ruleset(ruleset: &str) -> Result<()> {
-        info!(
-            "Applying nftables ruleset for table {} {}",
-            TABLE_FAMILY, TABLE_NAME
-        );
+        info!("Applying nftables ruleset for table {} {}", TABLE_FAMILY, TABLE_NAME);
         let mut child = Command::new("nft")
-            .arg("-f")
-            .arg("-")
+            .args(["-f", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -143,48 +99,24 @@ impl NftablesManager {
             })?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(ruleset.as_bytes())
-                .map_err(|e| ChainError::CommandError {
-                    cmd: "nft write stdin".to_string(),
-                    message: format!("Failed to write rules to nft stdin: {}", e),
-                })?;
+            stdin.write_all(ruleset.as_bytes()).map_err(|e| ChainError::CommandError {
+                cmd: "nft write stdin".to_string(),
+                message: format!("Failed to write rules to nft stdin: {}", e),
+            })?;
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| ChainError::CommandError {
-                cmd: "nft wait".to_string(),
-                message: format!("Failed waiting for nft process: {}", e),
-            })?;
+        let output = child.wait_with_output().map_err(|e| ChainError::CommandError {
+            cmd: "nft wait".to_string(),
+            message: format!("Failed waiting for nft process: {}", e),
+        })?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ChainError::CommandError {
                 cmd: "nft -f -".to_string(),
-                message: format!("nftables apply failed: {}", stderr),
+                message: format!("nftables apply failed: {}", String::from_utf8_lossy(&output.stderr)),
             });
         }
-
         Ok(())
-    }
-
-    pub fn delete_table() {
-        if Self::table_exists() {
-            info!("Deleting nftables table {} {}", TABLE_FAMILY, TABLE_NAME);
-            let output = Command::new("nft")
-                .args(["delete", "table", TABLE_FAMILY, TABLE_NAME])
-                .output();
-
-            if let Ok(out) = output {
-                if !out.status.success() {
-                    warn!(
-                        "Notice deleting table: {}",
-                        String::from_utf8_lossy(&out.stderr)
-                    );
-                }
-            }
-        }
     }
 
     pub fn list_table_rules() -> Result<String> {
@@ -197,11 +129,8 @@ impl NftablesManager {
             })?;
 
         if !output.status.success() {
-            return Err(ChainError::NetworkError(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
+            return Err(ChainError::NetworkError(String::from_utf8_lossy(&output.stderr).into_owned()));
         }
-
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 }
