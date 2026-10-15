@@ -241,7 +241,7 @@ body {
     <span class="logo-badge">S</span>
     <div>
       <div>Sooya 面板</div>
-      <div class="logo-ver" id="siderVersion">v1.5.3</div>
+      <div class="logo-ver" id="siderVersion">v1.5.5</div>
     </div>
   </div>
   <ul class="menu">
@@ -562,6 +562,10 @@ body {
             <label class="form-label">节点地址 (Endpoint IP:Port)</label>
             <input type="text" id="mWgEp" class="input" oninput="syncFieldsToRaw()" placeholder="例如 151.242.62.45:51820">
           </div>
+          <div class="form-item" style="margin-bottom:8px;grid-column:span 2;">
+            <label class="form-label">隧道内 DNS (全量 DNS 查询强制由该出站节点处理，默认 8.8.8.8, 1.1.1.1 支持就近 CDN 解析)</label>
+            <input type="text" id="mWgDns" class="input" oninput="syncFieldsToRaw()" value="8.8.8.8, 1.1.1.1" placeholder="8.8.8.8, 1.1.1.1">
+          </div>
         </div>
         <div class="form-help">提示：支持直接粘贴完整 `.conf` 配置或分项填写，两者会自动双向同步。</div>
       </div>
@@ -721,7 +725,7 @@ function switchMenu(page, el) {
 
 /* 解析/生成 WireGuard .conf */
 function parseWgConfText(raw) {
-  const res = { priv: '', addr: '', pub: '', ep: '', dns: '1.1.1.1' };
+  const res = { priv: '', addr: '', pub: '', ep: '', dns: '8.8.8.8, 1.1.1.1' };
   if (!raw) return res;
   for (const line of raw.split(/\r?\n/)) {
     const t = line.trim();
@@ -734,7 +738,7 @@ function parseWgConfText(raw) {
     else if (k === 'address') res.addr = v;
     else if (k === 'publickey') res.pub = v;
     else if (k === 'endpoint') res.ep = v;
-    else if (k === 'dns') res.dns = v;
+    else if (k === 'dns') res.dns = (v === '1.1.1.1') ? '8.8.8.8, 1.1.1.1' : v;
   }
   return res;
 }
@@ -744,18 +748,21 @@ function syncRawToFields() {
   if (p.addr) document.getElementById('mWgAddr').value = p.addr;
   if (p.pub) document.getElementById('mWgPub').value = p.pub;
   if (p.ep) document.getElementById('mWgEp').value = p.ep;
+  const dnsEl = document.getElementById('mWgDns');
+  if (dnsEl && p.dns) dnsEl.value = p.dns;
 }
 function syncFieldsToRaw() {
   const priv = document.getElementById('mWgPriv').value.trim();
   const addr = document.getElementById('mWgAddr').value.trim() || '10.0.0.2/32';
   const pub = document.getElementById('mWgPub').value.trim();
   const ep = document.getElementById('mWgEp').value.trim();
+  const dns = (document.getElementById('mWgDns')?.value || '').trim() || '8.8.8.8, 1.1.1.1';
   if (!priv && !pub && !ep) return;
   document.getElementById('mWgRaw').value =
 `[Interface]
 PrivateKey = ${priv}
 Address = ${addr}
-DNS = 1.1.1.1
+DNS = ${dns}
 
 [Peer]
 PublicKey = ${pub}
@@ -1020,6 +1027,7 @@ function openOutboundModal(id) {
   document.getElementById('mWgAddr').value = '';
   document.getElementById('mWgPub').value = '';
   document.getElementById('mWgEp').value = '';
+  document.getElementById('mWgDns').value = '8.8.8.8, 1.1.1.1';
   syncRawToFields();
 
   document.getElementById('mWarpRaw').value = c.vpn2?.wireguard_config || '';

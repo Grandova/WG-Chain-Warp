@@ -20,6 +20,9 @@ impl NftablesManager {
         script.push_str(
             "    chain prerouting {\n        type filter hook prerouting priority mangle; policy accept;\n",
         );
+        script.push_str(
+            "        iifname \"chain0\" fib daddr type != local drop comment \"prevent-tun-loop\"\n",
+        );
         script.push_str(&format!(
             "        iifname != \"chain0\" iifname != \"lo\" ct direction original ct mark & {mask:#x} == 0 ct mark set ct mark | {inbound:#x} comment \"inbound-return\"\n"
         ));
@@ -33,7 +36,25 @@ impl NftablesManager {
         ));
         script.push_str("        fib daddr type local return\n");
         if config.routing.proxy_host_outbound {
+            if !config.routing.ipv6 {
+                script.push_str("        meta nfproto ipv6 udp dport 53 drop comment \"block-ipv6-dns-leak\"\n");
+                script.push_str("        meta nfproto ipv6 tcp dport 53 drop comment \"block-ipv6-dns-leak\"\n");
+            }
             let family = if config.routing.ipv6 { "" } else { "meta nfproto ipv4 " };
+            script.push_str(&format!(
+                "        {family}udp dport 53 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} accept comment \"dns-udp-outbound\"\n"
+            ));
+            script.push_str(&format!(
+                "        {family}tcp dport 53 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} accept comment \"dns-tcp-outbound\"\n"
+            ));
+            script.push_str(
+                "        ip daddr { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 255.255.255.255/32 } return comment \"lan-bypass-v4\"\n",
+            );
+            if config.routing.ipv6 {
+                script.push_str(
+                    "        ip6 daddr { ::1/128, fc00::/7, fe80::/10, ff00::/8 } return comment \"lan-bypass-v6\"\n",
+                );
+            }
             script.push_str(&format!(
                 "        {family}ct direction original meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"host-proxy\"\n"
             ));

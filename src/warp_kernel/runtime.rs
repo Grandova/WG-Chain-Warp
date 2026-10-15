@@ -89,8 +89,9 @@ impl TunnelSpec {
             .interface
             .dns
             .iter()
-            .find_map(|d| match d { IpAddr::V4(v4) => Some(*v4), _ => None })
-            .unwrap_or(Ipv4Addr::new(1, 1, 1, 1));
+            .filter_map(|d| match d { IpAddr::V4(v4) => Some(*v4), _ => None })
+            .find(|v4| is_warp || *v4 != Ipv4Addr::new(1, 1, 1, 1))
+            .unwrap_or(if is_warp { Ipv4Addr::new(1, 1, 1, 1) } else { Ipv4Addr::new(8, 8, 8, 8) });
         let endpoint = peer
             .endpoint
             .as_ref()

@@ -184,11 +184,23 @@ impl L3NatTable {
         match pkt[0] >> 4 {
             4 => {
                 let ihl = ((pkt[0] & 0x0f) as usize) * 4;
-                if pkt.len() < ihl.max(20) { return false; }
+                if pkt.len() < ihl.max(20) || pkt[8] <= 1 { return false; }
                 let proto = pkt[9];
                 let orig_src = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
                 let orig_dst = Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
-                if orig_src.octets()[0..3] != [172, 31, 255] && !orig_src.is_loopback() {
+                if orig_dst.is_loopback()
+                    || orig_dst.is_multicast()
+                    || orig_dst.is_broadcast()
+                    || orig_dst.is_unspecified()
+                    || orig_dst == tun_v4
+                {
+                    return false;
+                }
+                if orig_src.octets()[0..3] != [172, 31, 255]
+                    && !orig_src.is_loopback()
+                    && !orig_src.is_unspecified()
+                    && orig_src != tun_v4
+                {
                     self.default_local_v4 = orig_src;
                 }
                 let mut actual_dst = orig_dst;
@@ -196,7 +208,19 @@ impl L3NatTable {
                     let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
                     let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
                     if dport == 53 {
-                        if let Some(dns) = self.dns_override_v4 { actual_dst = dns; }
+                        if let Some(dns) = self.dns_override_v4 {
+                            let is_standard_public = matches!(
+                                orig_dst.octets(),
+                                [8, 8, 8, 8] | [8, 8, 4, 4] | [1, 1, 1, 1] | [1, 0, 0, 1]
+                            );
+                            let is_custom_override = !matches!(
+                                dns.octets(),
+                                [8, 8, 8, 8] | [8, 8, 4, 4] | [1, 1, 1, 1] | [1, 0, 0, 1]
+                            );
+                            if is_custom_override || !is_standard_public {
+                                actual_dst = dns;
+                            }
+                        }
                     }
                     if self.entries.len() >= 4096 {
                         let cut = Instant::now() - Duration::from_secs(60);
@@ -206,6 +230,16 @@ impl L3NatTable {
                         (proto, sport, actual_dst, dport),
                         NatEntry { orig_local_ip: orig_src, orig_remote_ip: orig_dst, last_seen: Instant::now() },
                     );
+                } else if proto == 1 && pkt.len() >= ihl + 8 {
+                    let icmp_id = u16::from_be_bytes([pkt[ihl + 4], pkt[ihl + 5]]);
+                    if self.entries.len() >= 4096 {
+                        let cut = Instant::now() - Duration::from_secs(60);
+                        self.entries.retain(|_, v| v.last_seen > cut);
+                    }
+                    self.entries.insert(
+                        (1, icmp_id, actual_dst, 0),
+                        NatEntry { orig_local_ip: orig_src, orig_remote_ip: orig_dst, last_seen: Instant::now() },
+                    );
                 }
                 pkt[12..16].copy_from_slice(&tun_v4.octets());
                 pkt[16..20].copy_from_slice(&actual_dst.octets());
@@ -213,7 +247,11 @@ impl L3NatTable {
                 true
             }
             6 => {
-                let Some(v6) = tun_v6.filter(|_| pkt.len() >= 40) else { return false };
+                let Some(v6) = tun_v6.filter(|_| pkt.len() >= 40 && pkt[7] > 1) else { return false };
+                let dst_v6 = Ipv6Addr::from(<[u8; 16]>::try_from(&pkt[24..40]).unwrap());
+                if dst_v6.is_loopback() || dst_v6.is_multicast() || dst_v6.is_unspecified() || dst_v6 == v6 {
+                    return false;
+                }
                 self.default_local_v6 = Some(Ipv6Addr::from(<[u8; 16]>::try_from(&pkt[8..24]).unwrap()));
                 pkt[8..24].copy_from_slice(&v6.octets());
                 recompute_ipv6_checksums(pkt);
@@ -236,6 +274,14 @@ impl L3NatTable {
                     let rport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
                     let lport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
                     if let Some(e) = self.entries.get_mut(&(proto, lport, remote_ip, rport)) {
+                        e.last_seen = Instant::now();
+                        (e.orig_local_ip, e.orig_remote_ip)
+                    } else {
+                        (self.default_local_v4, remote_ip)
+                    }
+                } else if proto == 1 && pkt.len() >= ihl + 8 {
+                    let icmp_id = u16::from_be_bytes([pkt[ihl + 4], pkt[ihl + 5]]);
+                    if let Some(e) = self.entries.get_mut(&(1, icmp_id, remote_ip, 0)) {
                         e.last_seen = Instant::now();
                         (e.orig_local_ip, e.orig_remote_ip)
                     } else {

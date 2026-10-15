@@ -16,6 +16,7 @@ pub const MARK_HOST_PROXY: u32 = 0x0800;
 pub const MARK_MASK: u32 = 0x0c88;
 pub const DIRECT_RULE_PRIORITY: u32 = 70;
 pub const SSH_BYPASS_PRIORITY: u32 = 80;
+pub const ENDPOINT_BYPASS_PRIORITY: u32 = 85;
 pub const INBOUND_RULE_PRIORITY: u32 = 90;
 pub const LOCAL_RULE_PRIORITY: u32 = 100;
 pub const HOST_RULE_PRIORITY: u32 = 120;
@@ -135,10 +136,63 @@ impl IpRouteManager {
             .ok_or_else(|| ChainError::NetworkError(format!("No IPv4 address on {}", iface)))
     }
 
+    fn extract_outer_endpoint_ips(config: &ChainProxyConfig) -> Vec<IpAddr> {
+        use crate::model::config::ProxyMode;
+        use crate::warp_kernel::endpoint::resolve_endpoint_addr;
+        use crate::wireguard::parser::parse_wireguard_ini;
+
+        let mut ips = Vec::new();
+        let mut push_ip = |ip: IpAddr| {
+            if !ip.is_loopback() && !ip.is_unspecified() && !ips.contains(&ip) {
+                ips.push(ip);
+            }
+        };
+        match config.mode {
+            ProxyMode::StandaloneWg | ProxyMode::WgChainWarp => {
+                if let Ok(wg) = parse_wireguard_ini(&config.vpn1.wireguard_config) {
+                    for peer in wg.peers {
+                        if let Some(ep) = peer.endpoint {
+                            if let Ok(ip) = ep.host.parse::<IpAddr>() {
+                                push_ip(ip);
+                            } else if let Some(sa) = resolve_endpoint_addr(&ep.host, ep.port) {
+                                push_ip(sa.ip());
+                            }
+                        }
+                    }
+                }
+            }
+            ProxyMode::SocksChainWarp | ProxyMode::StandaloneSocks => {
+                if let Some(ref s5) = config.socks5 {
+                    if let Ok(ip) = s5.server.parse::<IpAddr>() {
+                        push_ip(ip);
+                    } else if let Some(sa) = resolve_endpoint_addr(&s5.server, s5.port) {
+                        push_ip(sa.ip());
+                    }
+                }
+            }
+            ProxyMode::StandaloneWarp => {
+                if let Ok(wg) = parse_wireguard_ini(&config.vpn2.wireguard_config) {
+                    for peer in wg.peers {
+                        if let Some(ep) = peer.endpoint {
+                            if let Ok(ip) = ep.host.parse::<IpAddr>() {
+                                push_ip(ip);
+                            } else if let Some(sa) = resolve_endpoint_addr(&ep.host, ep.port) {
+                                push_ip(sa.ip());
+                            }
+                        }
+                    }
+                }
+            }
+            ProxyMode::Socks5Server => {}
+        }
+        ips
+    }
+
     pub fn route_plan(config: &ChainProxyConfig, ssh_ips: &[IpAddr]) -> Result<RoutePlan> {
         let mut plan = RoutePlan::default();
         let inbound = config.routing.inbound_mark()?;
         let mask = MARK_MASK | inbound;
+        let outer_ep_ips = Self::extract_outer_endpoint_ips(config);
         for family in ["-4", "-6"] {
             let ipv6 = family == "-6";
             let mut rules = vec![
@@ -157,24 +211,14 @@ impl IpRouteManager {
                     SSH_BYPASS_PRIORITY, ip
                 ));
             }
+            for ip in outer_ep_ips.iter().filter(|ip| ip.is_ipv6() == ipv6) {
+                rules.push(format!(
+                    "priority {} to {} lookup main",
+                    ENDPOINT_BYPASS_PRIORITY, ip
+                ));
+            }
             if !ipv6 || config.routing.ipv6 {
                 let mut bypass = config.routing.exclude_destinations.clone();
-                bypass.extend(
-                    [
-                        "10.0.0.0/8",
-                        "172.16.0.0/12",
-                        "192.168.0.0/16",
-                        "127.0.0.0/8",
-                        "169.254.0.0/16",
-                        "224.0.0.0/4",
-                        "255.255.255.255/32",
-                        "::1/128",
-                        "fe80::/10",
-                        "fc00::/7",
-                        "ff00::/8",
-                    ]
-                    .map(str::to_string),
-                );
                 bypass.sort();
                 bypass.dedup();
                 if config.routing.proxy_host_outbound {
@@ -192,12 +236,6 @@ impl IpRouteManager {
                             ));
                         }
                     }
-                    rules.push(format!(
-                        "priority {} fwmark {:#x}/{:#x} lookup main suppress_prefixlength 0",
-                        LOCAL_RULE_PRIORITY + 1,
-                        MARK_HOST_PROXY,
-                        mask
-                    ));
                     rules.push(format!(
                         "priority {} iif lo fwmark {:#x}/{:#x} lookup {}",
                         HOST_RULE_PRIORITY, MARK_HOST_PROXY, mask, HOST_TABLE
@@ -235,7 +273,7 @@ impl IpRouteManager {
     pub fn cleanup_stale() {
         for family in ["-4", "-6"] {
             let _ = Self::run(&[family, "route", "flush", "table", "2023"]);
-            for prio in ["70", "80", "90", "100", "101", "120", "121"] {
+            for prio in ["70", "80", "85", "90", "100", "101", "120", "121"] {
                 for _ in 0..32 {
                     if Self::run(&[family, "rule", "del", "priority", prio]).is_err() {
                         break;
