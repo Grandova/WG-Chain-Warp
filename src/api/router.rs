@@ -50,6 +50,7 @@ fn build_core_routes() -> Router<AppState> {
         .route("/", get(web_index_handler))
         .route("/login", get(web_login_page_handler).post(web_login_submit_handler))
         .route("/logout", post(web_logout_handler))
+        .route("/panel/api/bootstrap", get(panel_bootstrap_handler))
         .route("/panel/api/server/status", get(panel_server_status_handler))
         .route("/panel/api/chain/config", get(panel_get_config_handler))
         .route("/panel/api/chain/save", post(panel_save_config_handler))
@@ -161,6 +162,42 @@ async fn web_logout_handler() -> Response {
 struct CombinedDashboardStatus {
     system: ServerSystemStatus,
     chain: ChainStatus,
+}
+
+async fn panel_bootstrap_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    if !is_authenticated(&headers, &state).await {
+        return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
+    }
+    let system = state.sysinfo.collect();
+    let chain = state.reader.get_status();
+    let config = state.reader.get_active_config().unwrap_or_default();
+    let path = state.data_dir.join("outbounds.json");
+    let outbounds = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or_else(|| serde_json::json!([]));
+    let panel = state.panel.lock().await;
+    let setting = serde_json::json!({
+        "listen": panel.listen,
+        "port": panel.port,
+        "base_path": panel.base_path,
+        "username": panel.username,
+    });
+    drop(panel);
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse::ok(serde_json::json!({
+            "system": system,
+            "chain": chain,
+            "config": config,
+            "outbounds": outbounds,
+            "setting": setting,
+        }))),
+    )
 }
 
 async fn panel_server_status_handler(

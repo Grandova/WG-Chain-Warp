@@ -1,197 +1,219 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>登录 - Sooya Web 管理面板</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body {
-            width: 100%;
-            height: 100%;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
-            background-color: #f0f2f5;
-            background-image: radial-gradient(circle at 50% 30%, #e6f7ff 0%, #f0f2f5 70%);
-            color: rgba(0, 0, 0, 0.85);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .login-card {
-            width: 92%;
-            max-width: 420px;
-            background: #ffffff;
-            border-radius: 16px;
-            padding: 40px 36px 36px;
-            box-shadow: 0 10px 30px rgba(0, 21, 41, 0.08);
-            text-align: center;
-            transition: all 0.3s ease;
-        }
-        .login-logo {
-            width: 56px;
-            height: 56px;
-            border-radius: 14px;
-            background: linear-gradient(135deg, #1890ff 0%, #096dd9 100%);
-            color: #fff;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 26px;
-            font-weight: 700;
-            margin-bottom: 16px;
-            box-shadow: 0 6px 16px rgba(24, 144, 255, 0.3);
-        }
-        .login-title {
-            font-size: 22px;
-            font-weight: 600;
-            color: #001529;
-            margin-bottom: 6px;
-        }
-        .login-subtitle {
-            font-size: 13px;
-            color: rgba(0, 0, 0, 0.45);
-            margin-bottom: 28px;
-        }
-        .form-item {
-            margin-bottom: 20px;
-            text-align: left;
-        }
-        .input-wrap {
-            position: relative;
-            display: flex;
-            align-items: center;
-        }
-        .input-icon {
-            position: absolute;
-            left: 14px;
-            color: rgba(0, 0, 0, 0.35);
-            font-size: 15px;
-            pointer-events: none;
-        }
-        .ant-input {
-            width: 100%;
-            height: 42px;
-            padding: 6px 14px 6px 40px;
-            font-size: 14px;
-            line-height: 1.5;
-            color: rgba(0, 0, 0, 0.85);
-            background-color: #fff;
-            border: 1px solid #d9d9d9;
-            border-radius: 8px;
-            outline: none;
-            transition: all 0.25s;
-        }
-        .ant-input:hover {
-            border-color: #40a9ff;
-        }
-        .ant-input:focus {
-            border-color: #1890ff;
-            box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
-        }
-        .ant-btn-primary {
-            width: 100%;
-            height: 42px;
-            background: #1890ff;
-            border: none;
-            border-radius: 8px;
-            color: #fff;
-            font-size: 15px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.25s;
-            box-shadow: 0 4px 12px rgba(24, 144, 255, 0.25);
-        }
-        .ant-btn-primary:hover {
-            background: #40a9ff;
-        }
-        .ant-btn-primary:active {
-            background: #096dd9;
-        }
-        .ant-btn-primary:disabled {
-            background: #bae7ff;
-            cursor: not-allowed;
-        }
-        .error-msg {
-            display: none;
-            margin-bottom: 16px;
-            padding: 10px 14px;
-            border-radius: 8px;
-            background: #fff2f0;
-            border: 1px solid #ffccc7;
-            color: #cf1322;
-            font-size: 13px;
-            text-align: left;
-        }
-        .login-footer {
-            margin-top: 24px;
-            font-size: 12px;
-            color: rgba(0, 0, 0, 0.35);
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 — Sooya Console</title>
+<style>
+:root {
+  --bg-outer: #09090b;
+  --bg-stage: #121214;
+  --card: rgba(24, 24, 27, 0.78);
+  --text: #fafafa;
+  --muted: #a1a1aa;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-highlight: rgba(255, 255, 255, 0.14);
+  --accent: #FC4C01;
+  --accent-hover: #ff611d;
+  --accent-glow: rgba(252, 76, 1, 0.28);
+  --input-bg: rgba(9, 9, 11, 0.65);
+  --spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+html.light {
+  --bg-outer: #ebebf0;
+  --bg-stage: #F5F5F7;
+  --card: rgba(255, 255, 255, 0.88);
+  --text: #0a0a0a;
+  --muted: #71717a;
+  --border: rgba(0, 0, 0, 0.07);
+  --border-highlight: rgba(0, 0, 0, 0.14);
+  --input-bg: #ffffff;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  width: 100%; height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg-outer); color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+body { padding: 10px; display: flex; }
+.stage {
+  position: relative; flex: 1; border-radius: 36px;
+  background: var(--bg-stage);
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 0 var(--border-highlight);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; padding: 20px;
+}
+/* Rare UI Fluid Orb ambient glow */
+.fluid-orb {
+  position: absolute; width: 420px; height: 420px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, rgba(252, 76, 1, 0.22), rgba(252, 76, 1, 0.04) 55%, transparent 72%);
+  filter: blur(36px); pointer-events: none;
+  transform: translate3d(0, -15%, 0);
+  animation: orbFloat 8s ease-in-out infinite alternate;
+  will-change: transform;
+}
+@keyframes orbFloat {
+  0% { transform: translate3d(-40px, -30px, 0) scale(0.96); }
+  100% { transform: translate3d(40px, 20px, 0) scale(1.06); }
+}
+.login-card {
+  position: relative; z-index: 2;
+  width: 100%; max-width: 410px;
+  background: var(--card);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.35), inset 0 1px 0 0 var(--border-highlight);
+  border-radius: 28px; padding: 38px 34px 32px;
+  animation: cardIn 0.42s var(--spring);
+}
+@keyframes cardIn {
+  from { opacity: 0; transform: translate3d(0, 16px, 0) scale(0.97); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+.brand-row {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px;
+}
+.brand-pill {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 6px 14px 6px 8px; border-radius: 999px;
+  background: rgba(252, 76, 1, 0.1); border: 1px solid rgba(252, 76, 1, 0.24);
+}
+.brand-dot {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: linear-gradient(135deg, #FC4C01, #ff7a3d);
+  color: #fff; font-weight: 700; font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 10px var(--accent-glow);
+}
+.brand-name { font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: 0.02em; }
+.theme-btn {
+  width: 34px; height: 34px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--input-bg);
+  color: var(--text); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  transition: transform 0.25s var(--bounce), border-color 0.2s;
+}
+.theme-btn:hover { transform: scale(1.08); border-color: var(--accent); }
+.login-title { font-size: 24px; font-weight: 700; letter-spacing: -0.025em; margin-bottom: 6px; }
+.login-sub { font-size: 13px; color: var(--muted); margin-bottom: 26px; line-height: 1.5; }
+.field { margin-bottom: 16px; }
+.field-label { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 7px; }
+.input {
+  width: 100%; height: 44px; padding: 0 15px;
+  font-size: 14px; color: var(--text); background: var(--input-bg);
+  border: 1px solid var(--border); border-radius: 14px; outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(252, 76, 1, 0.16);
+}
+.btn-submit {
+  width: 100%; height: 46px; margin-top: 8px;
+  border: none; border-radius: 999px;
+  background: var(--accent); color: #fff;
+  font-size: 14.5px; font-weight: 600; letter-spacing: 0.01em;
+  cursor: pointer;
+  box-shadow: 0 8px 24px -4px var(--accent-glow), inset 0 1px 0 0 rgba(255,255,255,0.25);
+  transition: transform 0.25s var(--bounce), background 0.2s, opacity 0.2s;
+}
+.btn-submit:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-1px) scale(1.01); }
+.btn-submit:active:not(:disabled) { transform: scale(0.98); }
+.btn-submit:disabled { opacity: 0.6; cursor: wait; }
+.err-box {
+  display: none; margin-bottom: 16px; padding: 11px 14px;
+  border-radius: 14px; background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171;
+  font-size: 13px;
+}
+.footer-tip {
+  margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--muted); text-align: center;
+}
+.footer-tip code {
+  font-family: "JetBrains Mono", Consolas, monospace;
+  padding: 2px 7px; border-radius: 6px; background: var(--input-bg);
+  border: 1px solid var(--border); color: var(--text);
+}
+</style>
 </head>
 <body>
-    <div class="login-card">
-        <div class="login-logo">S</div>
-        <h1 class="login-title">Sooya 面板登录</h1>
-        <p class="login-subtitle">链式 WireGuard · SOCKS5 · Cloudflare WARP 控制台</p>
-
-        <div id="errBox" class="error-msg"></div>
-
-        <form id="loginForm" onsubmit="doLogin(event)">
-            <div class="form-item">
-                <div class="input-wrap">
-                    <span class="input-icon">👤</span>
-                    <input id="username" type="text" class="ant-input" placeholder="用户名" autocomplete="username" required autofocus>
-                </div>
-            </div>
-            <div class="form-item">
-                <div class="input-wrap">
-                    <span class="input-icon">🔒</span>
-                    <input id="password" type="password" class="ant-input" placeholder="密码" autocomplete="current-password" required>
-                </div>
-            </div>
-            <div class="form-item" style="margin-bottom: 0;">
-                <button id="loginBtn" type="submit" class="ant-btn-primary">登 录</button>
-            </div>
-        </form>
-        <div class="login-footer">
-            可通过终端命令 <code>sooya</code> 随时重置账号或端口
-        </div>
+<div class="stage">
+  <div class="fluid-orb"></div>
+  <div class="login-card">
+    <div class="brand-row">
+      <div class="brand-pill">
+        <span class="brand-dot">S</span>
+        <span class="brand-name">SOOYA · RARE UI</span>
+      </div>
+      <button type="button" class="theme-btn" onclick="toggleTheme()" title="切换深浅主题" id="themeBtn">☀️</button>
     </div>
+    <h1 class="login-title">欢迎回来</h1>
+    <p class="login-sub">轻量级 Rust 原生 WireGuard · SOCKS5 · WARP 链式出站控制台</p>
 
-    <script>
-        async function doLogin(e) {
-            e.preventDefault();
-            const errBox = document.getElementById('errBox');
-            const btn = document.getElementById('loginBtn');
-            const username = document.getElementById('username').value.trim();
-            const password = document.getElementById('password').value;
+    <div id="errBox" class="err-box"></div>
 
-            errBox.style.display = 'none';
-            btn.disabled = true;
-            btn.textContent = '正在登录...';
+    <form id="loginForm" onsubmit="doLogin(event)">
+      <div class="field">
+        <label class="field-label">管理员账号</label>
+        <input id="username" type="text" class="input" placeholder="输入用户名" autocomplete="username" required autofocus>
+      </div>
+      <div class="field">
+        <label class="field-label">安全密码</label>
+        <input id="password" type="password" class="input" placeholder="输入密码" autocomplete="current-password" required>
+      </div>
+      <button id="loginBtn" type="submit" class="btn-submit">进入控制台 →</button>
+    </form>
 
-            try {
-                const resp = await fetch('./login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password })
-                });
-                const data = await resp.json();
-                if (data.success) {
-                    window.location.href = './';
-                } else {
-                    errBox.textContent = data.error || '用户名或密码错误';
-                    errBox.style.display = 'block';
-                }
-            } catch (err) {
-                errBox.textContent = '网络请求失败: ' + err.message;
-                errBox.style.display = 'block';
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '登 录';
-            }
-        }
-    </script>
+    <div class="footer-tip">
+      终端可执行 <code>sooya</code> 随时查看或重置凭据
+    </div>
+  </div>
+</div>
+<script>
+(function initTheme() {
+  const saved = localStorage.getItem('sooya_theme') || 'dark';
+  document.documentElement.className = saved;
+  document.getElementById('themeBtn').textContent = saved === 'dark' ? '☀️' : '🌙';
+})();
+function toggleTheme() {
+  const next = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
+  document.documentElement.className = next;
+  localStorage.setItem('sooya_theme', next);
+  document.getElementById('themeBtn').textContent = next === 'dark' ? '☀️' : '🌙';
+}
+async function doLogin(e) {
+  e.preventDefault();
+  const errBox = document.getElementById('errBox');
+  const btn = document.getElementById('loginBtn');
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  errBox.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = '正在验证...';
+  try {
+    const resp = await fetch('./login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      window.location.href = './';
+    } else {
+      errBox.textContent = data.error || '用户名或密码错误';
+      errBox.style.display = 'block';
+    }
+  } catch (err) {
+    errBox.textContent = '网络请求失败: ' + err.message;
+    errBox.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '进入控制台 →';
+  }
+}
+</script>
 </body>
 </html>

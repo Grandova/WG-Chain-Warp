@@ -1,454 +1,695 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sooya 面板 — 出站链式代理管理</title>
+<title>Sooya Console — Rare UI Edition</title>
 <style>
 :root {
-  --sider-bg: #001529;
-  --sider-active: #1890ff;
-  --bg: #f0f2f5;
-  --card: #ffffff;
-  --text: rgba(0,0,0,0.85);
-  --muted: rgba(0,0,0,0.45);
-  --border: #f0f0f0;
-  --primary: #1890ff;
-  --primary-hover: #40a9ff;
-  --success: #52c41a;
-  --warning: #faad14;
-  --danger: #ff4d4f;
+  --bg-outer: #09090b;
+  --bg-stage: #121214;
+  --card: #18181b;
+  --card-hover: #1f1f23;
+  --card-subtle: rgba(255, 255, 255, 0.03);
+  --nav-bg: rgba(15, 15, 18, 0.82);
+  --text: #fafafa;
+  --text-secondary: #d4d4d8;
+  --muted: #71717a;
+  --border: rgba(255, 255, 255, 0.075);
+  --border-apple: rgba(255, 255, 255, 0.12);
+  --input-bg: #0f0f12;
+  --accent: #FC4C01;
+  --accent-hover: #ff621f;
+  --accent-soft: rgba(252, 76, 1, 0.14);
+  --accent-glow: rgba(252, 76, 1, 0.28);
+  --emerald: #10b981;
+  --emerald-soft: rgba(16, 185, 129, 0.14);
+  --blue: #3b82f6;
+  --blue-soft: rgba(59, 130, 246, 0.14);
+  --purple: #a855f7;
+  --purple-soft: rgba(168, 85, 247, 0.14);
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.14);
+  --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.35), inset 0 1px 0 0 rgba(255, 255, 255, 0.07);
+  --spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
+
+html.light {
+  --bg-outer: #e4e4e9;
+  --bg-stage: #F5F5F7;
+  --card: #ffffff;
+  --card-hover: #fafafa;
+  --card-subtle: #f4f4f6;
+  --nav-bg: rgba(255, 255, 255, 0.85);
+  --text: #0a0a0a;
+  --text-secondary: #27272a;
+  --muted: #71717a;
+  --border: rgba(0, 0, 0, 0.065);
+  --border-apple: rgba(0, 0, 0, 0.1);
+  --input-bg: #f8f8fa;
+  --shadow-card: 0 2px 10px -2px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03), inset 0 1px 0 0 rgba(255, 255, 255, 0.8);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: var(--bg); color: var(--text); font-size: 14px;
-  display: flex; min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg-outer); color: var(--text); font-size: 13.5px;
+  min-height: 100vh; padding: 10px;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
-.sider {
-  width: 210px; background: var(--sider-bg); color: #fff;
-  flex-shrink: 0; display: flex; flex-direction: column;
-  box-shadow: 2px 0 8px rgba(0,21,41,0.18); z-index: 20;
-}
-.logo {
-  height: 60px; display: flex; align-items: center; padding: 0 20px;
-  font-size: 17px; font-weight: 600; color: #fff;
-  background: #002140; gap: 10px; border-bottom: 1px solid rgba(255,255,255,0.06);
-}
-.logo-badge {
-  width: 28px; height: 28px; border-radius: 6px; background: var(--primary);
-  display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px;
-}
-.logo-ver { font-size: 11px; color: rgba(255,255,255,0.55); font-weight: 400; margin-top: 2px; }
-.menu { list-style: none; padding: 10px 0; flex: 1; }
-.menu-item {
-  padding: 0 22px; height: 46px; display: flex; align-items: center; gap: 10px;
-  color: rgba(255,255,255,0.68); cursor: pointer; transition: all 0.2s; font-size: 14px;
-}
-.menu-item:hover { color: #fff; background: rgba(255,255,255,0.06); }
-.menu-item.active { color: #fff; background: var(--sider-active); font-weight: 500; }
 
-.layout-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.header {
-  height: 56px; background: #fff; padding: 0 24px;
+/* Rare UI Squircle Stage */
+.rare-stage {
+  position: relative;
+  min-height: calc(100vh - 20px);
+  border-radius: 34px;
+  background: var(--bg-stage);
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 0 var(--border-apple);
+  padding: 18px 24px 36px;
+  overflow: hidden;
+}
+
+/* Ambient Fluid Orb Background */
+.ambient-orb {
+  position: absolute; top: -160px; left: 50%; width: 680px; height: 320px;
+  transform: translate3d(-50%, 0, 0);
+  background: radial-gradient(ellipse at center, rgba(252, 76, 1, 0.11) 0%, rgba(16, 185, 129, 0.04) 45%, transparent 72%);
+  filter: blur(40px); pointer-events: none; z-index: 0;
+}
+
+.container {
+  position: relative; z-index: 1;
+  max-width: 1280px; margin: 0 auto;
+}
+
+/* ==================== Rare UI Gooey Floating Navbar ==================== */
+.gooey-header {
   display: flex; align-items: center; justify-content: space-between;
-  box-shadow: 0 1px 4px rgba(0,21,41,0.06); z-index: 10;
+  gap: 12px; margin-bottom: 22px; flex-wrap: wrap;
 }
-.header-left { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; }
-.header-right { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
-.content { padding: 20px 24px; max-width: 1320px; width: 100%; margin: 0 auto; }
+.brand-cluster {
+  display: flex; align-items: center; gap: 11px;
+}
+.brand-orb {
+  width: 36px; height: 36px; border-radius: 12px;
+  background: linear-gradient(135deg, #FC4C01 0%, #ff7b3d 100%);
+  color: #fff; font-weight: 800; font-size: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 6px 18px -3px var(--accent-glow), inset 0 1px 0 0 rgba(255,255,255,0.35);
+}
+.brand-title { font-size: 16px; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; gap: 7px; }
+.brand-ver {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  padding: 2px 7px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent);
+  border: 1px solid rgba(252, 76, 1, 0.25);
+}
 
-.card {
-  background: var(--card); border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 16px;
-  border: 1px solid var(--border); overflow: hidden;
+.gooey-nav {
+  position: relative;
+  display: inline-flex; align-items: center; padding: 5px;
+  background: var(--nav-bg);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: 999px; gap: 2px;
 }
-.card-header {
-  padding: 14px 20px; border-bottom: 1px solid var(--border);
-  font-weight: 600; font-size: 15px; display: flex; align-items: center; justify-content: space-between;
+.gooey-indicator {
+  position: absolute; top: 5px; bottom: 5px; left: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 4px 14px -2px var(--accent-glow), inset 0 1px 0 0 rgba(255,255,255,0.28);
+  transition: transform 0.36s var(--spring), width 0.36s var(--spring);
+  pointer-events: none; z-index: 0;
+  will-change: transform, width;
+}
+.nav-tab {
+  position: relative; z-index: 1;
+  border: none; background: transparent;
+  color: var(--muted); font-size: 13px; font-weight: 600;
+  padding: 7px 16px; border-radius: 999px;
+  cursor: pointer; transition: color 0.2s ease, transform 0.2s var(--bounce);
+  white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;
+}
+.nav-tab:hover { color: var(--text); }
+.nav-tab.active { color: #ffffff; }
+
+.header-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.live-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 36px; padding: 0 14px; border-radius: 999px;
+  background: var(--nav-bg); border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  box-shadow: var(--shadow-card);
+}
+.pulse-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted);
+  transition: background 0.3s, box-shadow 0.3s;
+}
+.pulse-dot.running {
+  background: var(--emerald);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.2);
+}
+.pulse-dot.starting {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(252, 76, 1, 0.25);
+}
+
+/* ==================== Bento Cards & Layout ==================== */
+.bento-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: 22px;
+  margin-bottom: 16px;
+  overflow: hidden;
+  transition: border-color 0.25s ease;
+}
+.bento-header {
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
   flex-wrap: wrap; gap: 10px;
 }
-.card-body { padding: 18px 20px; }
-
-.row { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; margin-bottom: 16px; }
-.col-3 { grid-column: span 3; }
-.col-6 { grid-column: span 6; }
-.col-12 { grid-column: span 12; }
-@media (max-width: 960px) {
-  body { flex-direction: column; }
-  .sider { width: 100%; }
-  .menu { display: flex; overflow-x: auto; padding: 0; }
-  .menu-item { padding: 0 14px; white-space: nowrap; height: 44px; }
-  .col-3, .col-6 { grid-column: span 12; }
-  .content { padding: 14px; }
+.bento-title {
+  font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em;
+  display: flex; align-items: center; gap: 8px;
 }
+.bento-body { padding: 18px 22px; }
 
-.gauge-card { text-align: center; padding: 18px 12px; margin-bottom: 0; }
-.gauge-wrap { position: relative; width: 108px; height: 108px; margin: 0 auto 10px; }
-.gauge-svg { transform: rotate(-90deg); width: 108px; height: 108px; }
-.gauge-bg { fill: none; stroke: #f5f5f5; stroke-width: 8; }
-.gauge-bar { fill: none; stroke: var(--primary); stroke-width: 8; stroke-linecap: round; transition: stroke-dashoffset 0.4s ease; }
-.gauge-text {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 18px; font-weight: 600;
-}
-.gauge-title { font-size: 13px; color: var(--muted); font-weight: 500; }
-.gauge-sub { font-size: 12px; color: #8c8c8c; margin-top: 3px; font-family: monospace; }
-
-.status-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 20px; border-bottom: 1px solid var(--border); font-size: 13.5px; gap: 12px;
-}
-.status-row:last-child { border-bottom: none; }
-.status-label { color: var(--muted); font-weight: 500; flex-shrink: 0; }
-.status-val { font-family: "SFMono-Regular", Consolas, monospace; font-weight: 500; text-align: right; }
-
-.tag {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 2px 9px; border-radius: 4px; font-size: 12px; border: 1px solid transparent;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 500;
-}
-.tag-green { color: #389e0d; background: #f6ffed; border-color: #b7eb8f; }
-.tag-red { color: #cf1322; background: #fff1f0; border-color: #ffa39e; }
-.tag-blue { color: #096dd9; background: #e6f7ff; border-color: #91d5ff; }
-.tag-orange { color: #d46b08; background: #fff7e6; border-color: #ffd591; }
-.tag-purple { color: #531dab; background: #f9f0ff; border-color: #d3adf7; }
-.tag-gray { color: #595959; background: #fafafa; border-color: #d9d9d9; }
-
-/* x-ui stat summary pills */
-.stat-Strip {
+/* Gauge Bento Strip */
+.gauge-grid {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px;
 }
+@media (max-width: 960px) { .gauge-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) {
+  .gauge-grid { grid-template-columns: 1fr; }
+  body { padding: 4px; }
+  .rare-stage { border-radius: 22px; padding: 14px 12px 24px; }
+}
+
+.metric-card {
+  background: var(--card); border: 1px solid var(--border);
+  box-shadow: var(--shadow-card); border-radius: 22px;
+  padding: 18px 20px; display: flex; align-items: center; gap: 16px;
+  transition: transform 0.25s var(--bounce), border-color 0.2s;
+}
+.metric-card:hover { transform: translateY(-2px); border-color: var(--border-apple); }
+.ring-wrap { position: relative; width: 68px; height: 68px; flex-shrink: 0; }
+.ring-svg { transform: rotate(-90deg); width: 68px; height: 68px; }
+.ring-bg { fill: none; stroke: var(--card-subtle); stroke-width: 7.5; }
+html.light .ring-bg { stroke: #ececf0; }
+.ring-bar {
+  fill: none; stroke: var(--accent); stroke-width: 7.5; stroke-linecap: round;
+  transition: stroke-dashoffset 0.45s var(--spring), stroke 0.3s;
+}
+.ring-pct {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 13.5px; font-weight: 700;
+}
+.metric-info { flex: 1; min-width: 0; }
+.metric-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.metric-val { font-size: 15px; font-weight: 700; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.metric-sub { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+
+/* ==================== Rare UI Mode Dock (Segmented Pills) ==================== */
+.mode-dock-wrap {
+  background: var(--card); border: 1px solid var(--border);
+  box-shadow: var(--shadow-card); border-radius: 22px;
+  padding: 14px 18px; margin-bottom: 16px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.mode-dock-label {
+  font-size: 12.5px; font-weight: 700; color: var(--muted);
+  display: flex; align-items: center; gap: 6px;
+}
+.mode-dock {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+}
+.dock-pill {
+  height: 34px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--card-subtle);
+  color: var(--text-secondary); font-size: 12.5px; font-weight: 600;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  transition: transform 0.22s var(--bounce), background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.2s;
+  white-space: nowrap;
+}
+.dock-pill:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--border-apple);
+  color: var(--text);
+}
+.dock-pill:active:not(:disabled) { transform: scale(0.96); }
+.dock-pill.active-tunnel {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  box-shadow: 0 4px 14px -2px var(--accent-glow), inset 0 1px 0 0 rgba(255,255,255,0.25);
+}
+.dock-pill.active-s5 {
+  background: var(--emerald); border-color: var(--emerald); color: #fff;
+  box-shadow: 0 4px 14px -2px rgba(16, 185, 129, 0.35), inset 0 1px 0 0 rgba(255,255,255,0.25);
+}
+
+/* ==================== Hero Status & Topology Pipeline ==================== */
+.status-grid {
+  display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; margin-bottom: 16px;
+}
+.col-7 { grid-column: span 7; }
+.col-5 { grid-column: span 5; }
+.col-6 { grid-column: span 6; }
+@media (max-width: 960px) { .col-7, .col-5, .col-6 { grid-column: span 12; } }
+
+.kv-list { display: flex; flex-direction: column; }
+.kv-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 22px; border-bottom: 1px solid var(--border); gap: 12px;
+}
+.kv-row:last-child { border-bottom: none; }
+.kv-key { font-size: 13px; color: var(--muted); font-weight: 500; flex-shrink: 0; }
+.kv-val { font-family: var(--mono); font-size: 13px; font-weight: 600; text-align: right; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* Topology Interactive Nodes */
+.topo-flow {
+  padding: 16px 20px; background: var(--card-subtle);
+  border-top: 1px solid var(--border);
+  font-family: var(--mono); font-size: 12px; color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+}
+
+/* ==================== Tags & Buttons ==================== */
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.tag-green { color: #10b981; background: var(--emerald-soft); border-color: rgba(16, 185, 129, 0.28); }
+.tag-orange { color: var(--accent); background: var(--accent-soft); border-color: rgba(252, 76, 1, 0.28); }
+.tag-blue { color: #3b82f6; background: var(--blue-soft); border-color: rgba(59, 130, 246, 0.28); }
+.tag-purple { color: #a855f7; background: var(--purple-soft); border-color: rgba(168, 85, 247, 0.28); }
+.tag-red { color: #ef4444; background: var(--danger-soft); border-color: rgba(239, 68, 68, 0.28); }
+.tag-gray { color: var(--muted); background: var(--card-subtle); border-color: var(--border); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 34px; padding: 0 15px; font-size: 12.5px; font-weight: 600;
+  border-radius: 999px; border: 1px solid var(--border);
+  background: var(--card); color: var(--text);
+  cursor: pointer; white-space: nowrap;
+  transition: transform 0.2s var(--bounce), border-color 0.2s, background 0.2s;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+.btn:active:not(:disabled) { transform: scale(0.97); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-sm { height: 29px; padding: 0 11px; font-size: 12px; }
+.btn-primary {
+  background: var(--accent); border-color: var(--accent); color: #fff !important;
+  box-shadow: 0 4px 14px -2px var(--accent-glow), inset 0 1px 0 0 rgba(255,255,255,0.22);
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-success {
+  background: var(--emerald); border-color: var(--emerald); color: #fff !important;
+  box-shadow: 0 4px 14px -2px rgba(16, 185, 129, 0.3);
+}
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff !important; }
+.btn-danger-ghost { color: #f87171; border-color: rgba(239, 68, 68, 0.3); background: var(--danger-soft); }
+.btn-danger-ghost:hover:not(:disabled) { background: var(--danger); color: #fff !important; border-color: var(--danger); }
+
+/* ==================== Outbound Summary Strip & Table ==================== */
+.stat-strip {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px;
+}
+@media (max-width: 768px) { .stat-strip { grid-template-columns: repeat(2, 1fr); } }
 .stat-pill {
-  background: #fff; border: 1px solid var(--border); border-radius: 8px;
-  padding: 14px 18px; display: flex; flex-direction: column; gap: 4px;
+  background: var(--card); border: 1px solid var(--border);
+  box-shadow: var(--shadow-card); border-radius: 20px;
+  padding: 16px 20px; display: flex; flex-direction: column; gap: 5px;
 }
-.stat-pill-label { font-size: 12px; color: var(--muted); }
-.stat-pill-val { font-size: 16px; font-weight: 600; font-family: monospace; }
-@media (max-width: 768px) { .stat-Strip { grid-template-columns: repeat(2, 1fr); } }
+.stat-pill-label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.stat-pill-val { font-size: 17px; font-weight: 700; font-family: var(--mono); }
 
-/* x-ui Table */
 .table-wrap { width: 100%; overflow-x: auto; }
-.x-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-.x-table th {
-  background: #fafafa; color: rgba(0,0,0,0.75); font-weight: 600; text-align: left;
-  padding: 12px 14px; border-bottom: 1px solid var(--border); white-space: nowrap;
+.rare-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rare-table th {
+  background: var(--card-subtle); color: var(--muted); font-weight: 600;
+  text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--border);
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap;
 }
-.x-table td {
-  padding: 13px 14px; border-bottom: 1px solid var(--border); vertical-align: middle;
+.rare-table td {
+  padding: 14px 16px; border-bottom: 1px solid var(--border); vertical-align: middle;
+  transition: background 0.18s ease;
 }
-.x-table tr:hover td { background: #fafafa; }
-.x-table tr.active-row td { background: #f0f9ff; }
+.rare-table tr:last-child td { border-bottom: none; }
+.rare-table tr:hover td { background: var(--card-hover); }
+.rare-table tr.active-row td { background: rgba(16, 185, 129, 0.06); }
 
-/* x-ui Toggle Switch */
+/* Rare UI Spring Toggle Switch */
 .x-switch {
-  position: relative; display: inline-block; width: 44px; height: 22px; cursor: pointer;
+  position: relative; display: inline-block; width: 46px; height: 24px; cursor: pointer;
 }
 .x-switch input { opacity: 0; width: 0; height: 0; }
 .x-slider {
-  position: absolute; inset: 0; background-color: #bfbfbf; border-radius: 22px; transition: 0.25s;
+  position: absolute; inset: 0; background-color: rgba(113, 113, 122, 0.35);
+  border: 1px solid var(--border); border-radius: 999px;
+  transition: background-color 0.25s ease, border-color 0.25s ease;
 }
 .x-slider:before {
   position: absolute; content: ""; height: 18px; width: 18px; left: 2px; bottom: 2px;
-  background-color: white; border-radius: 50%; transition: 0.25s; box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  background-color: #ffffff; border-radius: 50%;
+  transition: transform 0.32s var(--bounce);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+  will-change: transform;
 }
-.x-switch input:checked + .x-slider { background-color: var(--primary); }
-.x-switch input:checked + .x-slider:before { transform: translateX(22px); }
+.x-switch input:checked + .x-slider {
+  background-color: var(--emerald); border-color: var(--emerald);
+}
+.x-switch input:checked + .x-slider:before { transform: translate3d(22px, 0, 0); }
 .x-switch input:disabled + .x-slider { opacity: 0.55; cursor: wait; }
 
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-  height: 32px; padding: 0 13px; font-size: 13px; border-radius: 4px;
-  border: 1px solid #d9d9d9; background: #fff; color: var(--text);
-  cursor: pointer; transition: all 0.2s; font-weight: 500; white-space: nowrap;
-}
-.btn:hover:not(:disabled) { color: var(--primary); border-color: var(--primary); }
-.btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn-sm { height: 26px; padding: 0 9px; font-size: 12px; }
-.btn-primary { background: var(--primary); border-color: var(--primary); color: #fff !important; }
-.btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
-.btn-success { background: var(--success); border-color: var(--success); color: #fff !important; }
-.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff !important; }
-.btn-danger-ghost { color: var(--danger); border-color: #ffa39e; background: #fff1f0; }
-.btn-danger-ghost:hover:not(:disabled) { background: var(--danger); color: #fff !important; border-color: var(--danger); }
-
+/* Forms & Inputs */
 .form-item { margin-bottom: 14px; }
-.form-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-weight: 500; font-size: 13px; }
-.form-help { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.45; }
+.form-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-weight: 600; font-size: 12.5px; color: var(--text-secondary); }
+.form-help { font-size: 12px; color: var(--muted); margin-top: 5px; line-height: 1.45; }
 .input, .select, .textarea {
-  width: 100%; padding: 6px 11px; font-size: 13.5px; line-height: 1.5;
-  color: var(--text); background: #fff; border: 1px solid #d9d9d9;
-  border-radius: 4px; transition: all 0.2s; outline: none;
+  width: 100%; padding: 8px 13px; font-size: 13px; line-height: 1.5;
+  color: var(--text); background: var(--input-bg); border: 1px solid var(--border);
+  border-radius: 12px; transition: border-color 0.2s, box-shadow 0.2s; outline: none;
 }
 .input:focus, .select:focus, .textarea:focus {
-  border-color: var(--primary); box-shadow: 0 0 0 2px rgba(24,144,255,0.16);
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.textarea { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12.5px; resize: vertical; }
+.textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
 
-/* x-ui Modal Dialog */
+/* Modal */
 .modal-mask {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   display: none; align-items: center; justify-content: center; z-index: 1000; padding: 16px;
 }
 .modal-mask.open { display: flex; }
 .modal-dialog {
-  background: #fff; border-radius: 8px; width: 100%; max-width: 650px;
+  background: var(--card); border: 1px solid var(--border-apple);
+  border-radius: 26px; width: 100%; max-width: 660px;
   max-height: 92vh; display: flex; flex-direction: column;
-  box-shadow: 0 8px 28px rgba(0,0,0,0.22); animation: modalIn 0.18s ease-out;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  animation: modalPop 0.26s var(--spring);
 }
-@keyframes modalIn { from { transform: translateY(-12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes modalPop {
+  from { transform: translate3d(0, 14px, 0) scale(0.96); opacity: 0; }
+  to { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
+}
 .modal-header {
-  padding: 15px 20px; border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 15.5px;
+  padding: 18px 24px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; font-weight: 700; font-size: 16px;
 }
-.modal-close { background: none; border: none; font-size: 20px; color: var(--muted); cursor: pointer; line-height: 1; }
-.modal-body { padding: 18px 20px; overflow-y: auto; flex: 1; }
+.modal-close {
+  width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border);
+  background: var(--card-subtle); color: var(--muted); cursor: pointer; font-size: 17px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.modal-close:hover { color: var(--text); border-color: var(--accent); }
+.modal-body { padding: 20px 24px; overflow-y: auto; flex: 1; }
 .modal-footer {
-  padding: 12px 20px; border-top: 1px solid var(--border); background: #fafafa;
-  display: flex; justify-content: flex-end; gap: 10px; border-radius: 0 0 8px 8px;
+  padding: 14px 24px; border-top: 1px solid var(--border); background: var(--card-subtle);
+  display: flex; justify-content: flex-end; gap: 10px; border-radius: 0 0 26px 26px;
 }
-
 .sub-box {
-  background: #fafafa; border: 1px solid #e8e8e8; border-radius: 6px; padding: 14px; margin-bottom: 14px;
+  background: var(--card-subtle); border: 1px solid var(--border);
+  border-radius: 16px; padding: 15px; margin-bottom: 14px;
 }
 .sub-box-title {
-  font-weight: 600; font-size: 13px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;
+  font-weight: 700; font-size: 13px; margin-bottom: 11px;
+  display: flex; justify-content: space-between; align-items: center;
 }
 
+/* Alert Toast Banner */
 .alert {
-  padding: 11px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 13px;
+  padding: 12px 18px; border-radius: 16px; margin-bottom: 16px; font-size: 13px; font-weight: 500;
   display: none; align-items: center; justify-content: space-between; gap: 10px;
+  animation: modalPop 0.22s var(--spring);
 }
-.alert-success { background: #f6ffed; border: 1px solid #b7eb8f; color: #237804; }
-.alert-error { background: #fff2f0; border: 1px solid #ffccc7; color: #a8071a; }
-.alert-info { background: #e6f7ff; border: 1px solid #91d5ff; color: #0050b3; }
+.alert-success { background: var(--emerald-soft); border: 1px solid rgba(16, 185, 129, 0.35); color: #10b981; }
+.alert-error { background: var(--danger-soft); border: 1px solid rgba(239, 68, 68, 0.35); color: #f87171; }
+.alert-info { background: var(--accent-soft); border: 1px solid rgba(252, 76, 1, 0.35); color: var(--accent); }
 
-.page { display: none; }
+.page { display: none; animation: fadeIn 0.2s ease-out; }
 .page.active { display: block; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
 .log-viewer {
-  background: #0d1117; color: #c9d1d9; padding: 14px; border-radius: 6px;
-  font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px;
-  line-height: 1.55; max-height: 520px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  background: #09090b; color: #d4d4d8; border: 1px solid var(--border);
+  padding: 16px; border-radius: 16px; font-family: var(--mono); font-size: 12px;
+  line-height: 1.6; max-height: 540px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
 }
 </style>
 </head>
 <body>
+<div class="rare-stage">
+  <div class="ambient-orb"></div>
 
-<aside class="sider">
-  <div class="logo">
-    <span class="logo-badge">S</span>
-    <div>
-      <div>Sooya 面板</div>
-      <div class="logo-ver" id="siderVersion">v1.5.7</div>
-    </div>
-  </div>
-  <ul class="menu">
-    <li class="menu-item active" onclick="switchMenu('status', this)">📊 系统状态</li>
-    <li class="menu-item" onclick="switchMenu('outbounds', this)">📋 出站列表</li>
-    <li class="menu-item" onclick="switchMenu('setting', this)">⚙️ 面板设置</li>
-    <li class="menu-item" onclick="switchMenu('logs', this)">📜 运行日志</li>
-    <li class="menu-item" onclick="doLogout()">🚪 退出登录</li>
-  </ul>
-</aside>
+  <div class="container">
+    <!-- ==================== Rare UI Gooey Floating Header ==================== -->
+    <header class="gooey-header">
+      <div class="brand-cluster">
+        <div class="brand-orb">S</div>
+        <div>
+          <div class="brand-title">
+            <span>Sooya</span>
+            <span class="brand-ver" id="siderVersion">v1.5.8</span>
+          </div>
+          <div style="font-size:11.5px;color:var(--muted);">仅接管出站 (0x800) · 入站 100% 原路返回</div>
+        </div>
+      </div>
 
-<div class="layout-main">
-  <header class="header">
-    <div class="header-left">
-      <span id="pageTitle">系统状态</span>
-      <span id="topStateBadge" class="tag tag-gray">检测中</span>
-    </div>
-    <div class="header-right">
-      <span class="tag tag-blue">仅接管出站 · 不影响入站</span>
-      <span id="topExitText" style="font-family:monospace;">直连模式</span>
-      <button class="btn btn-sm" onclick="refreshStatus(true)">🔄 刷新</button>
-    </div>
-  </header>
+      <nav class="gooey-nav" id="gooeyNav">
+        <div class="gooey-indicator" id="navPillIndicator"></div>
+        <button type="button" class="nav-tab active" data-page="status" onclick="switchMenu('status', this)">📊 系统状态</button>
+        <button type="button" class="nav-tab" data-page="outbounds" onclick="switchMenu('outbounds', this)">📋 出站列表</button>
+        <button type="button" class="nav-tab" data-page="setting" onclick="switchMenu('setting', this)">⚙️ 面板设置</button>
+        <button type="button" class="nav-tab" data-page="logs" onclick="switchMenu('logs', this)">📜 运行日志</button>
+      </nav>
 
-  <main class="content">
+      <div class="header-actions">
+        <div class="live-pill">
+          <span class="pulse-dot" id="topPulseDot"></span>
+          <span id="topStateBadge">检测中</span>
+          <span style="color:var(--border-apple);">|</span>
+          <span id="topExitText" style="color:var(--muted);">直连模式</span>
+        </div>
+        <button class="btn btn-sm" onclick="toggleTheme()" id="themeBtn" title="切换深色/浅色模式">☀️</button>
+        <button class="btn btn-sm" onclick="refreshStatus(true)">🔄 刷新</button>
+        <button class="btn btn-sm btn-danger-ghost" onclick="doLogout()" title="退出登录">退出</button>
+      </div>
+    </header>
+
+    <!-- Notification Banner -->
     <div id="alertBox" class="alert">
       <span id="alertText"></span>
-      <button onclick="hideAlert()" style="background:none;border:none;cursor:pointer;font-size:15px;">✕</button>
+      <button onclick="hideAlert()" style="background:none;border:none;color:inherit;cursor:pointer;font-size:15px;">✕</button>
     </div>
 
-    <!-- ==================== 1. 系统状态 (x-ui index.html 风格) ==================== -->
+    <!-- ==================== Global Mode Dock (Rare UI Interactive Pills) ==================== -->
+    <div class="mode-dock-wrap">
+      <div class="mode-dock-label">⚡ 出站模式与 SOCKS5 服务一键切换</div>
+      <div class="mode-dock" id="globalModeBar">
+        <button class="dock-pill" data-mode="direct" onclick="quickSwitchMode('direct')">🚫 直连 (关闭出站隧道)</button>
+        <button class="dock-pill" data-mode="standalone_wg" onclick="quickSwitchMode('standalone_wg')">🛡️ 仅 WireGuard 出站</button>
+        <button class="dock-pill" data-mode="wg_chain_warp" onclick="quickSwitchMode('wg_chain_warp')">🔗 WG + WARP 链式</button>
+        <button class="dock-pill" data-mode="standalone_warp" onclick="quickSwitchMode('standalone_warp')">☁️ 仅 WARP 出站</button>
+        <button class="dock-pill" data-mode="socks_chain_warp" onclick="quickSwitchMode('socks_chain_warp')">🧦 SOCKS5 + WARP</button>
+        <button class="dock-pill" data-mode="socks5_server" onclick="quickSwitchMode('socks5_server')">🔌 本机 SOCKS5 服务端</button>
+      </div>
+    </div>
+
+    <!-- ==================== 1. 系统状态 (Bento Grid) ==================== -->
     <section id="page-status" class="page active">
-      <div class="row">
-        <div class="col-3">
-          <div class="card gauge-card">
-            <div class="gauge-wrap">
-              <svg class="gauge-svg" viewBox="0 0 100 100">
-                <circle class="gauge-bg" cx="50" cy="50" r="42"></circle>
-                <circle id="bar-cpu" class="gauge-bar" cx="50" cy="50" r="42" stroke-dasharray="264" stroke-dashoffset="264"></circle>
-              </svg>
-              <div class="gauge-text" id="txt-cpu">0%</div>
-            </div>
-            <div class="gauge-title">CPU</div>
-            <div class="gauge-sub" id="sub-cpu">0 Cores</div>
+      <div class="gauge-grid">
+        <div class="metric-card">
+          <div class="ring-wrap">
+            <svg class="ring-svg" viewBox="0 0 100 100">
+              <circle class="ring-bg" cx="50" cy="50" r="40"></circle>
+              <circle id="bar-cpu" class="ring-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="251.2"></circle>
+            </svg>
+            <div class="ring-pct" id="txt-cpu">0%</div>
+          </div>
+          <div class="metric-info">
+            <div class="metric-label">CPU 负载</div>
+            <div class="metric-val" id="sub-cpu">1 Core</div>
+            <div class="metric-sub" id="sub-load">Load: 0.00</div>
           </div>
         </div>
-        <div class="col-3">
-          <div class="card gauge-card">
-            <div class="gauge-wrap">
-              <svg class="gauge-svg" viewBox="0 0 100 100">
-                <circle class="gauge-bg" cx="50" cy="50" r="42"></circle>
-                <circle id="bar-mem" class="gauge-bar" cx="50" cy="50" r="42" stroke-dasharray="264" stroke-dashoffset="264"></circle>
-              </svg>
-              <div class="gauge-text" id="txt-mem">0%</div>
-            </div>
-            <div class="gauge-title">内存</div>
-            <div class="gauge-sub" id="sub-mem">0 / 0</div>
+
+        <div class="metric-card">
+          <div class="ring-wrap">
+            <svg class="ring-svg" viewBox="0 0 100 100">
+              <circle class="ring-bg" cx="50" cy="50" r="40"></circle>
+              <circle id="bar-mem" class="ring-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="251.2"></circle>
+            </svg>
+            <div class="ring-pct" id="txt-mem">0%</div>
+          </div>
+          <div class="metric-info">
+            <div class="metric-label">物理内存</div>
+            <div class="metric-val" id="sub-mem">0 / 0</div>
+            <div class="metric-sub">Rust Native 极低占用</div>
           </div>
         </div>
-        <div class="col-3">
-          <div class="card gauge-card">
-            <div class="gauge-wrap">
-              <svg class="gauge-svg" viewBox="0 0 100 100">
-                <circle class="gauge-bg" cx="50" cy="50" r="42"></circle>
-                <circle id="bar-swap" class="gauge-bar" cx="50" cy="50" r="42" stroke-dasharray="264" stroke-dashoffset="264"></circle>
-              </svg>
-              <div class="gauge-text" id="txt-swap">0%</div>
-            </div>
-            <div class="gauge-title">Swap</div>
-            <div class="gauge-sub" id="sub-swap">0 / 0</div>
+
+        <div class="metric-card">
+          <div class="ring-wrap">
+            <svg class="ring-svg" viewBox="0 0 100 100">
+              <circle class="ring-bg" cx="50" cy="50" r="40"></circle>
+              <circle id="bar-swap" class="ring-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="251.2"></circle>
+            </svg>
+            <div class="ring-pct" id="txt-swap">0%</div>
+          </div>
+          <div class="metric-info">
+            <div class="metric-label">交换分区 Swap</div>
+            <div class="metric-val" id="sub-swap">0 / 0</div>
+            <div class="metric-sub" id="sub-conn">TCP 0 · UDP 0</div>
           </div>
         </div>
-        <div class="col-3">
-          <div class="card gauge-card">
-            <div class="gauge-wrap">
-              <svg class="gauge-svg" viewBox="0 0 100 100">
-                <circle class="gauge-bg" cx="50" cy="50" r="42"></circle>
-                <circle id="bar-disk" class="gauge-bar" cx="50" cy="50" r="42" stroke-dasharray="264" stroke-dashoffset="264"></circle>
-              </svg>
-              <div class="gauge-text" id="txt-disk">0%</div>
-            </div>
-            <div class="gauge-title">硬盘</div>
-            <div class="gauge-sub" id="sub-disk">0 / 0</div>
+
+        <div class="metric-card">
+          <div class="ring-wrap">
+            <svg class="ring-svg" viewBox="0 0 100 100">
+              <circle class="ring-bg" cx="50" cy="50" r="40"></circle>
+              <circle id="bar-disk" class="ring-bar" cx="50" cy="50" r="40" stroke-dasharray="251.2" stroke-dashoffset="251.2"></circle>
+            </svg>
+            <div class="ring-pct" id="txt-disk">0%</div>
+          </div>
+          <div class="metric-info">
+            <div class="metric-label">磁盘存储</div>
+            <div class="metric-val" id="sub-disk">0 / 0</div>
+            <div class="metric-sub" id="sub-uptime">运行 0 秒</div>
           </div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <span>📡 系统与出站运行状态</span>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-sm btn-primary" onclick="switchMenu('outbounds', document.querySelectorAll('.menu-item')[1])">📋 管理出站列表</button>
-            <button class="btn btn-sm" id="btnStatusTest" onclick="testActiveChain()">🔍 测速检测</button>
+      <div class="status-grid">
+        <div class="col-7">
+          <div class="bento-card" style="margin-bottom:0;height:100%;display:flex;flex-direction:column;">
+            <div class="bento-header">
+              <span class="bento-title">🚀 隧道内核与出站路由状态</span>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-sm btn-primary" onclick="switchMenu('outbounds', document.querySelector('[data-page=outbounds]'))">📋 节点与 SOCKS5 管理</button>
+                <button class="btn btn-sm" id="btnStatusTest" onclick="testActiveChain()">🔍 出口测速</button>
+              </div>
+            </div>
+            <div class="kv-list" style="flex:1;">
+              <div class="kv-row">
+                <span class="kv-key">引擎运行状态</span>
+                <span class="kv-val" id="st-engine"><span class="tag tag-gray">未启用 (直连)</span></span>
+              </div>
+              <div class="kv-row">
+                <span class="kv-key">当前生效节点 / 服务</span>
+                <span class="kv-val" id="st-active-node">无 (物理网卡直连)</span>
+              </div>
+              <div class="kv-row">
+                <span class="kv-key">公网出口 IP / 地区</span>
+                <span class="kv-val" id="st-exit">直连模式 (未开启出站代理)</span>
+              </div>
+              <div class="kv-row">
+                <span class="kv-key">本机 SOCKS5 服务端</span>
+                <span class="kv-val" id="st-socks5-info"><span class="tag tag-gray">未开启</span></span>
+              </div>
+              <div class="kv-row">
+                <span class="kv-key">流量隔离策略</span>
+                <span class="kv-val"><span class="tag tag-green">入站 (0x88) 原路返回 · 主动出站 (0x800) + DNS 走隧道</span></span>
+              </div>
+            </div>
+            <div class="topo-flow">
+              <span>🔗 实时拓扑链路:</span>
+              <span id="st-topology" style="color:var(--accent);font-weight:600;">-</span>
+            </div>
           </div>
         </div>
-        <div class="status-row" style="flex-wrap:wrap;gap:8px;">
-          <span class="status-label">⚡ 出站模式切换</span>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;" id="statusModeBar">
-            <button class="btn btn-sm" data-mode="direct" onclick="quickSwitchMode('direct')">🚫 直连 (关闭出站)</button>
-            <button class="btn btn-sm" data-mode="standalone_wg" onclick="quickSwitchMode('standalone_wg')">🛡️ 仅 WireGuard 出站</button>
-            <button class="btn btn-sm" data-mode="wg_chain_warp" onclick="quickSwitchMode('wg_chain_warp')">🔗 WG + WARP 链式</button>
-            <button class="btn btn-sm" data-mode="standalone_warp" onclick="quickSwitchMode('standalone_warp')">☁️ 仅 WARP 出站</button>
-            <button class="btn btn-sm" data-mode="socks_chain_warp" onclick="quickSwitchMode('socks_chain_warp')">🧦 SOCKS5 + WARP</button>
-            <button class="btn btn-sm" data-mode="socks5_server" onclick="quickSwitchMode('socks5_server')">🔌 本机 SOCKS5 服务端</button>
+
+        <div class="col-5">
+          <div class="bento-card" style="margin-bottom:0;height:100%;">
+            <div class="bento-header">
+              <span class="bento-title">📈 实时吞吐与网络遥测</span>
+              <span class="tag tag-orange">WarpKernel Userspace</span>
+            </div>
+            <div class="kv-list">
+              <div class="kv-row">
+                <span class="kv-key">实时吞吐速率 (↑ / ↓)</span>
+                <span class="kv-val" id="st-speed">↑ 0 B/s &nbsp; ↓ 0 B/s</span>
+              </div>
+              <div class="kv-row">
+                <span class="kv-key">网卡累计总流量</span>
+                <span class="kv-val" id="st-traffic">↑ 0 B &nbsp; ↓ 0 B</span>
+              </div>
+              <div class="kv-row">
+                <span class="kv-key">系统负载 / 活跃套接字</span>
+                <span class="kv-val" id="st-load">0.00 | 0.00 | 0.00 · TCP 0 / UDP 0</span>
+              </div>
+              <div class="kv-row">
+                <span class="kv-key">物理主网卡 / 在线时长</span>
+                <span class="kv-val" id="st-uptime">-</span>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="status-row">
-          <span class="status-label">出站运行状态</span>
-          <span class="status-val" id="st-engine"><span class="tag tag-gray">未启用 (直连)</span></span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">当前启用出站</span>
-          <span class="status-val" id="st-active-node">无 (物理网卡直连)</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">公网出口 IP / 地区</span>
-          <span class="status-val" id="st-exit">未启用代理出站</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">出站接管范围</span>
-          <span class="status-val"><span class="tag tag-green">仅接管本机主动出站 (0x800) + 隧道 DNS · 入站连接 (SSH/Web/业务端口) 100% 原路返回</span></span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">拓扑链路状态</span>
-          <span class="status-val" id="st-topology">-</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">系统负载 / 连接数</span>
-          <span class="status-val" id="st-load">0.00 | 0.00 | 0.00 · TCP 0 / UDP 0</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">实时网速 (↑ / ↓)</span>
-          <span class="status-val" id="st-speed">↑ 0 B/s &nbsp; ↓ 0 B/s</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">累计流量 (↑ / ↓)</span>
-          <span class="status-val" id="st-traffic">↑ 0 B &nbsp; ↓ 0 B</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">物理网卡 / 运行时间</span>
-          <span class="status-val" id="st-uptime">-</span>
         </div>
       </div>
     </section>
 
-    <!-- ==================== 2. 出站列表 (x-ui 入站列表风格: 列表 + 启用开关 + 弹窗添加/编辑) ==================== -->
+    <!-- ==================== 2. 出站与服务列表 ==================== -->
     <section id="page-outbounds" class="page">
-      <div class="stat-Strip">
+      <div class="stat-strip">
         <div class="stat-pill">
-          <span class="stat-pill-label">出站节点总数</span>
-          <span class="stat-pill-val" id="ob-count">1</span>
+          <span class="stat-pill-label">节点与服务总数</span>
+          <span class="stat-pill-val" id="ob-count">2</span>
         </div>
         <div class="stat-pill">
-          <span class="stat-pill-label">当前启用出站</span>
-          <span class="stat-pill-val" id="ob-active-name" style="color:var(--primary);">未启用 (直连)</span>
+          <span class="stat-pill-label">当前并行启用项</span>
+          <span class="stat-pill-val" id="ob-active-name" style="color:var(--accent);font-size:14.5px;">未启用 (本机直连)</span>
         </div>
         <div class="stat-pill">
-          <span class="stat-pill-label">隧道累计上传 ↑</span>
-          <span class="stat-pill-val" id="ob-tx">0 B</span>
+          <span class="stat-pill-label">隧道/代理累计上传 ↑</span>
+          <span class="stat-pill-val" id="ob-tx" style="color:var(--blue);">0 B</span>
         </div>
         <div class="stat-pill">
-          <span class="stat-pill-label">隧道累计下载 ↓</span>
-          <span class="stat-pill-val" id="ob-rx">0 B</span>
+          <span class="stat-pill-label">隧道/代理累计下载 ↓</span>
+          <span class="stat-pill-val" id="ob-rx" style="color:var(--emerald);">0 B</span>
         </div>
       </div>
 
-      <div class="card" style="margin-bottom:14px;">
-        <div class="card-body" style="padding:12px 18px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;" id="outboundModeBar">
-            <span style="font-size:13px;font-weight:600;color:var(--muted);">⚡ 快速切换出站模式：</span>
-            <button class="btn btn-sm" data-mode="direct" onclick="quickSwitchMode('direct')">🚫 直连 (关闭出站)</button>
-            <button class="btn btn-sm" data-mode="standalone_wg" onclick="quickSwitchMode('standalone_wg')">🛡️ 仅 WireGuard 出站</button>
-            <button class="btn btn-sm" data-mode="wg_chain_warp" onclick="quickSwitchMode('wg_chain_warp')">🔗 WG + WARP 链式</button>
-            <button class="btn btn-sm" data-mode="standalone_warp" onclick="quickSwitchMode('standalone_warp')">☁️ 仅 WARP 出站</button>
-            <button class="btn btn-sm" data-mode="socks_chain_warp" onclick="quickSwitchMode('socks_chain_warp')">🧦 SOCKS5 + WARP</button>
-            <button class="btn btn-sm" data-mode="socks5_server" onclick="quickSwitchMode('socks5_server')">🔌 本机 SOCKS5 服务端</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <span>📋 出站与服务列表</span>
-            <button class="btn btn-primary" onclick="openOutboundModal(null)">+ 添加出站 / SOCKS5 服务端</button>
-            <button class="btn" id="btnQuickRekey" onclick="quickRekeyWarp()">⚡ 一键刷新 WARP 账号</button>
-            <button class="btn" onclick="testActiveChain()">🔍 检测当前出口</button>
+      <div class="bento-card">
+        <div class="bento-header">
+          <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+            <span class="bento-title">📋 出站节点与本机 SOCKS5 服务列表</span>
+            <button class="btn btn-primary btn-sm" onclick="openOutboundModal(null)">+ 添加出站 / SOCKS5 服务</button>
+            <button class="btn btn-sm" id="btnQuickRekey" onclick="quickRekeyWarp()">⚡ 一键刷新 WARP 账号</button>
+            <button class="btn btn-sm" onclick="testActiveChain()">🔍 检测当前出口</button>
           </div>
           <div>
-            <button class="btn btn-danger-ghost btn-sm" id="btnStopAll" onclick="stopChain()" style="display:none;">🛑 停止全部 (恢复直连)</button>
+            <button class="btn btn-danger-ghost btn-sm" id="btnStopAll" onclick="stopChain()" style="display:none;">🛑 停止全部服务 (恢复直连)</button>
           </div>
         </div>
         <div class="table-wrap">
-          <table class="x-table">
+          <table class="rare-table">
             <thead>
               <tr>
-                <th style="width:140px;">操作</th>
-                <th style="width:76px;">启用</th>
-                <th>备注</th>
-                <th style="width:210px;">出站模式 (可直接切换)</th>
-                <th>节点地址 / 监听端口</th>
-                <th>隧道流量 (↑ / ↓)</th>
-                <th>状态 / 出口 IP</th>
+                <th style="width:148px;">操作</th>
+                <th style="width:76px;">启用开关</th>
+                <th>备注名称</th>
+                <th style="width:220px;">工作模式 (可直接切换)</th>
+                <th>节点 Endpoint / 监听端口</th>
+                <th>实时流量 (↑ / ↓)</th>
+                <th>运行状态 / 出口链路</th>
               </tr>
             </thead>
-            <tbody id="outboundTableBody">
-            </tbody>
+            <tbody id="outboundTableBody"></tbody>
           </table>
         </div>
       </div>
@@ -456,14 +697,14 @@ body {
 
     <!-- ==================== 3. 面板设置 ==================== -->
     <section id="page-setting" class="page">
-      <div class="row">
+      <div class="status-grid">
         <div class="col-6">
-          <div class="card">
-            <div class="card-header">
-              <span>🌐 面板监听设置</span>
+          <div class="bento-card">
+            <div class="bento-header">
+              <span class="bento-title">🌐 面板监听设置</span>
               <button class="btn btn-primary btn-sm" onclick="savePanelSetting()">💾 保存设置</button>
             </div>
-            <div class="card-body">
+            <div class="bento-body">
               <div class="form-item">
                 <label class="form-label">面板监听 IP</label>
                 <input type="text" id="setListen" class="input" value="0.0.0.0">
@@ -482,12 +723,12 @@ body {
         </div>
 
         <div class="col-6">
-          <div class="card">
-            <div class="card-header">
-              <span>🔐 修改管理员账号密码</span>
+          <div class="bento-card">
+            <div class="bento-header">
+              <span class="bento-title">🔐 修改管理员账号密码</span>
               <button class="btn btn-primary btn-sm" onclick="updateUserCreds()">🔑 确认修改</button>
             </div>
-            <div class="card-body">
+            <div class="bento-body">
               <div class="form-item">
                 <label class="form-label">原用户名</label>
                 <input type="text" id="oldUser" class="input">
@@ -512,24 +753,24 @@ body {
 
     <!-- ==================== 4. 运行日志 ==================== -->
     <section id="page-logs" class="page">
-      <div class="card">
-        <div class="card-header">
-          <span>📜 运行日志与路由诊断</span>
-          <div style="display:flex;gap:8px;align-items:center;">
+      <div class="bento-card">
+        <div class="bento-header">
+          <span class="bento-title">📜 运行日志与策略路由诊断</span>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <button class="btn btn-sm" onclick="loadLogs()">🔄 刷新日志</button>
             <button class="btn btn-sm" onclick="loadNetworkDiag()">🩺 路由表与防火墙检查</button>
-            <button class="btn btn-sm" onclick="copyLogs()">📋 复制</button>
+            <button class="btn btn-sm" onclick="copyLogs()">📋 复制内容</button>
           </div>
         </div>
-        <div class="card-body">
+        <div class="bento-body">
           <div id="logViewer" class="log-viewer">正在加载日志...</div>
         </div>
       </div>
     </section>
-  </main>
+  </div>
 </div>
 
-<!-- ==================== x-ui 风格 添加/编辑出站 模态框 ==================== -->
+<!-- ==================== 添加/编辑出站 模态框 ==================== -->
 <div id="outboundModal" class="modal-mask" onclick="if(event.target===this)closeOutboundModal()">
   <div class="modal-dialog">
     <div class="modal-header">
@@ -541,16 +782,16 @@ body {
       <div class="grid-2">
         <div class="form-item">
           <label class="form-label">备注 (Remark)</label>
-          <input type="text" id="mRemark" class="input" placeholder="例如: 香港 WireGuard 节点 / WARP 出站">
+          <input type="text" id="mRemark" class="input" placeholder="例如: 日本 WireGuard 节点 / WARP 出站">
         </div>
         <div class="form-item">
-          <label class="form-label">出站类型 (Protocol)</label>
+          <label class="form-label">类型与工作模式 (Protocol)</label>
           <select id="mMode" class="select" onchange="onModalModeChange()">
             <option value="standalone_wg">WireGuard 出站 (仅使用您自己的 WG 节点)</option>
             <option value="wg_chain_warp">WireGuard + WARP 链式出站 (前置 WG -> 出口 WARP)</option>
             <option value="standalone_warp">Cloudflare WARP 免配置出站 (自动注册)</option>
             <option value="socks_chain_warp">SOCKS5 + WARP 链式出站 (前置 SOCKS5 -> 出口 WARP)</option>
-            <option value="socks5_server">本机 SOCKS5 服务端 (供外部客户端连接)</option>
+            <option value="socks5_server">本机 SOCKS5 服务端 (供外部设备连接共享出站)</option>
           </select>
         </div>
       </div>
@@ -565,9 +806,7 @@ body {
           </div>
         </div>
         <div class="form-item">
-          <label class="form-label">
-            <span>方式一：直接粘贴完整 WireGuard 配置 (.conf) — 粘贴后自动提取下方参数</span>
-          </label>
+          <label class="form-label">方式一：直接粘贴完整 WireGuard 配置 (.conf) — 自动双向同步</label>
           <textarea id="mWgRaw" class="textarea" rows="5" oninput="syncRawToFields()" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.0.0.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = 1.2.3.4:51820&#10;AllowedIPs = 0.0.0.0/0"></textarea>
         </div>
         <div class="grid-2">
@@ -587,12 +826,11 @@ body {
             <label class="form-label">节点地址 (Endpoint IP:Port)</label>
             <input type="text" id="mWgEp" class="input" oninput="syncFieldsToRaw()" placeholder="例如 151.242.62.45:51820">
           </div>
-          <div class="form-item" style="margin-bottom:8px;grid-column:span 2;">
-            <label class="form-label">隧道内 DNS (全量 DNS 查询强制由该出站节点处理，默认 8.8.8.8, 1.1.1.1 支持就近 CDN 解析)</label>
+          <div class="form-item" style="margin-bottom:4px;grid-column:span 2;">
+            <label class="form-label">隧道内 DNS (由出站节点解析，默认 8.8.8.8, 1.1.1.1 支持就近 CDN 解析)</label>
             <input type="text" id="mWgDns" class="input" oninput="syncFieldsToRaw()" value="8.8.8.8, 1.1.1.1" placeholder="8.8.8.8, 1.1.1.1">
           </div>
         </div>
-        <div class="form-help">提示：支持直接粘贴完整 `.conf` 配置或分项填写，两者会自动双向同步。</div>
       </div>
 
       <!-- 前置 SOCKS5 客户端配置区 -->
@@ -626,7 +864,6 @@ body {
         </div>
         <div class="form-item" style="margin-bottom:4px;">
           <textarea id="mWarpRaw" class="textarea" rows="4" placeholder="留空即可！启用时系统会自动向 Cloudflare 免费申请 WARP 密钥并保存。"></textarea>
-          <div class="form-help">完全免配置：保持为空即可在启用时自动注册 Cloudflare WARP，也可点击右上角按钮预先生成。</div>
         </div>
       </div>
 
@@ -646,19 +883,19 @@ body {
             <input type="number" id="mSrvPort" class="input" value="10808">
           </div>
           <div class="form-item">
-            <label class="form-label">认证用户名 (留空则为免密模式)</label>
+            <label class="form-label">认证用户名 (留空则为免密)</label>
             <input type="text" id="mSrvUser" class="input" placeholder="可选，留空无需密码">
           </div>
           <div class="form-item">
-            <label class="form-label">认证密码 (留空则为免密模式)</label>
+            <label class="form-label">认证密码 (留空则为免密)</label>
             <input type="text" id="mSrvPass" class="input" placeholder="可选，留空无需密码">
           </div>
         </div>
-        <div class="form-help">提示：支持单独开启，也支持与任意出站隧道（WireGuard / WARP）同时开启！同时开启时，外部连接此 SOCKS5 的流量将自动走当前出站隧道出口。</div>
+        <div class="form-help">提示：支持与任意 WireGuard / WARP 出站同时开启！同时开启时，外部设备连接此 SOCKS5 的全部流量（TCP/UDP/DNS）自动走当前出站节点。</div>
       </div>
 
       <div style="display:flex;align-items:center;gap:16px;padding-top:4px;">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px;">
           <input type="checkbox" id="mIpv6"> 同时接管本机 IPv6 主动出站流量
         </label>
       </div>
@@ -672,6 +909,47 @@ body {
 </div>
 
 <script>
+/* ==================== Theme & Gooey Nav Pill Physics ==================== */
+(function initTheme() {
+  const saved = localStorage.getItem('sooya_theme') || 'dark';
+  document.documentElement.className = saved;
+  const btn = document.getElementById('themeBtn');
+  if (btn) btn.textContent = saved === 'dark' ? '☀️' : '🌙';
+})();
+
+function toggleTheme() {
+  const next = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
+  document.documentElement.className = next;
+  localStorage.setItem('sooya_theme', next);
+  document.getElementById('themeBtn').textContent = next === 'dark' ? '☀️' : '🌙';
+}
+
+function moveNavIndicator(el) {
+  const ind = document.getElementById('navPillIndicator');
+  if (!ind || !el) return;
+  ind.style.width = el.offsetWidth + 'px';
+  ind.style.transform = `translate3d(${el.offsetLeft}px, 0, 0)`;
+}
+
+function switchMenu(page, el) {
+  document.querySelectorAll('.nav-tab').forEach(i => i.classList.remove('active'));
+  const targetBtn = el || document.querySelector(`.nav-tab[data-page="${page}"]`);
+  if (targetBtn) {
+    targetBtn.classList.add('active');
+    moveNavIndicator(targetBtn);
+  }
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  if (page === 'logs') loadLogs();
+  if (page === 'outbounds') renderOutboundTable();
+}
+
+window.addEventListener('resize', () => {
+  const act = document.querySelector('.nav-tab.active');
+  if (act) moveNavIndicator(act);
+});
+
+/* ==================== State & Helpers ==================== */
 function normalizeMode(m) {
   const map = {
     StandaloneWarp: 'standalone_warp',
@@ -695,6 +973,8 @@ const MODE_META = {
 let outbounds = [];
 let lastChainStatus = null;
 let switchingId = null;
+let lastRenderedSignature = '';
+let alertTimer = null;
 
 function fmtBytes(b) {
   if (!b || b <= 0) return '0 B';
@@ -705,26 +985,31 @@ function fmtBytes(b) {
 function fmtUptime(s) {
   if (!s) return '0 秒';
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d} 天 ${h} 小时`;
-  if (h > 0) return `${h} 小时 ${m} 分`;
-  return `${m} 分 ${s % 60} 秒`;
+  if (d > 0) return `${d}天 ${h}小时`;
+  if (h > 0) return `${h}小时 ${m}分`;
+  return `${m}分 ${s % 60}秒`;
 }
 function setGauge(id, pct, sub) {
   const p = Math.min(100, Math.max(0, Math.round(pct || 0)));
   const el = document.getElementById('bar-' + id);
   if (el) {
-    el.style.strokeDashoffset = 264 - (264 * p) / 100;
-    el.style.stroke = p > 85 ? 'var(--danger)' : (p > 70 ? 'var(--warning)' : 'var(--primary)');
+    el.style.strokeDashoffset = (251.2 - (251.2 * p) / 100).toFixed(1);
+    el.style.stroke = p > 85 ? 'var(--danger)' : (p > 70 ? 'var(--warning)' : 'var(--accent)');
   }
-  document.getElementById('txt-' + id).textContent = p + '%';
-  if (sub !== undefined) document.getElementById('sub-' + id).textContent = sub;
+  const txt = document.getElementById('txt-' + id);
+  if (txt) txt.textContent = p + '%';
+  if (sub !== undefined) {
+    const subEl = document.getElementById('sub-' + id);
+    if (subEl) subEl.textContent = sub;
+  }
 }
 function showAlert(msg, type = 'info') {
   const b = document.getElementById('alertBox');
   b.className = 'alert alert-' + type;
   document.getElementById('alertText').textContent = msg;
   b.style.display = 'flex';
-  if (type === 'success') setTimeout(hideAlert, 5000);
+  if (alertTimer) clearTimeout(alertTimer);
+  if (type === 'success') alertTimer = setTimeout(hideAlert, 5000);
 }
 function hideAlert() { document.getElementById('alertBox').style.display = 'none'; }
 
@@ -741,18 +1026,11 @@ async function api(url, method = 'GET', body = null) {
   return d.data;
 }
 
-function switchMenu(page, el) {
-  document.querySelectorAll('.menu-item').forEach(i => i.classList.remove('active'));
-  if (el) el.classList.add('active');
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById('page-' + page).classList.add('active');
-  const titles = { status: '系统状态', outbounds: '出站列表', setting: '面板设置', logs: '运行日志' };
-  document.getElementById('pageTitle').textContent = titles[page] || 'Sooya 面板';
-  if (page === 'logs') loadLogs();
-  if (page === 'outbounds') renderOutboundTable();
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
 }
 
-/* 解析/生成 WireGuard .conf */
+/* ==================== WireGuard .conf Parser ==================== */
 function parseWgConfText(raw) {
   const res = { priv: '', addr: '', pub: '', ep: '', dns: '8.8.8.8, 1.1.1.1' };
   if (!raw) return res;
@@ -875,30 +1153,33 @@ function makeDefaultSocks5Item() {
   };
 }
 
-async function loadInitialData() {
+/* ==================== Instant 1-Request Bootstrap & Cache Hydration ==================== */
+function hydrateFromLocalCache() {
   try {
-    let serverList = [];
-    try { serverList = await api('./panel/api/outbounds'); } catch (_) {}
+    const cached = JSON.parse(localStorage.getItem('sooya_outbounds_v2') || '[]');
+    if (Array.isArray(cached) && cached.length > 0) {
+      outbounds = cached;
+      outbounds.forEach(o => { if (o.config) o.config.mode = normalizeMode(o.config.mode); });
+      renderOutboundTable();
+    }
+  } catch (_) {}
+}
+
+async function bootstrapDashboard() {
+  try {
+    const boot = await api('./panel/api/bootstrap');
+    const serverList = boot.outbounds || [];
     if (Array.isArray(serverList) && serverList.length > 0) {
       outbounds = serverList;
-    } else {
-      try {
-        const local = JSON.parse(localStorage.getItem('sooya_outbounds_v2') || '[]');
-        if (Array.isArray(local) && local.length > 0) outbounds = local;
-      } catch (_) {}
     }
     outbounds.forEach(o => { if (o.config) o.config.mode = normalizeMode(o.config.mode); });
 
-    const d = await api('./panel/api/chain/config');
-    const c = d.config || {};
+    const ch = boot.chain || {};
+    const c = boot.config || {};
     c.mode = normalizeMode(c.mode);
-    const isTunnelRunning = d.status === 'Running';
-    const isSocks5Running = !!d.socks5_running;
-    lastChainStatus = {
-      state: d.status || 'Stopped',
-      socks5_running: isSocks5Running,
-      socks5_listen: d.socks5_listen || null
-    };
+    const isTunnelRunning = ch.state === 'Running';
+    const isSocks5Running = !!ch.socks5_running;
+    lastChainStatus = ch;
 
     if (!outbounds.some(o => normalizeMode(o.config?.mode) === 'standalone_warp')) {
       outbounds.unshift(makeDefaultWarpItem());
@@ -945,9 +1226,9 @@ async function loadInitialData() {
     }
 
     persistOutbounds();
-    renderOutboundTable();
+    applyStatusToDom(boot.system || {}, ch);
 
-    const s = await api('./panel/api/setting/all');
+    const s = boot.setting || {};
     document.getElementById('setListen').value = s.listen || '0.0.0.0';
     document.getElementById('setPort').value = s.port || 5000;
     document.getElementById('setBasePath').value = s.base_path || '/';
@@ -962,21 +1243,20 @@ function updateModeHighlight() {
   const activeTunnel = isTunnelRunning ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
   const activeTunnelMode = activeTunnel ? normalizeMode(activeTunnel.config?.mode) : 'direct';
 
-  ['statusModeBar', 'outboundModeBar'].forEach(barId => {
-    const bar = document.getElementById(barId);
-    if (!bar) return;
-    bar.querySelectorAll('button[data-mode]').forEach(btn => {
-      const m = btn.getAttribute('data-mode');
-      if (m === 'socks5_server') {
-        btn.className = isSocks5Running ? 'btn btn-sm btn-success' : 'btn btn-sm';
-        btn.textContent = isSocks5Running ? '🔌 本机 SOCKS5 服务端 (已开启)' : '🔌 本机 SOCKS5 服务端';
-      } else {
-        btn.className = (m === activeTunnelMode) ? 'btn btn-sm btn-primary' : 'btn btn-sm';
-      }
-    });
+  const bar = document.getElementById('globalModeBar');
+  if (!bar) return;
+  bar.querySelectorAll('button[data-mode]').forEach(btn => {
+    const m = btn.getAttribute('data-mode');
+    if (m === 'socks5_server') {
+      btn.className = isSocks5Running ? 'dock-pill active-s5' : 'dock-pill';
+      btn.textContent = isSocks5Running ? '🔌 本机 SOCKS5 服务端 (运行中)' : '🔌 本机 SOCKS5 服务端';
+    } else {
+      btn.className = (m === activeTunnelMode) ? 'dock-pill active-tunnel' : 'dock-pill';
+    }
   });
 }
 
+/* ==================== Zero-Flicker In-Place Table Renderer ==================== */
 function renderOutboundTable() {
   const tbody = document.getElementById('outboundTableBody');
   if (!tbody) return;
@@ -989,82 +1269,107 @@ function renderOutboundTable() {
 
   const activeNames = [];
   if (activeTunnel) activeNames.push(activeTunnel.remark);
-  if (activeS5) activeNames.push(activeS5.remark);
+  if (activeS5) activeNames.push(`${activeS5.remark} (${lastChainStatus?.socks5_listen || '10808'})`);
   document.getElementById('ob-active-name').textContent = activeNames.length > 0 ? activeNames.join(' + ') : '未启用 (本机直连)';
   document.getElementById('btnStopAll').style.display = (isTunnelRunning || isSocks5Running) ? 'inline-flex' : 'none';
   updateModeHighlight();
-
-  const txBytes = (isTunnelRunning ? ((lastChainStatus.vpn2?.bytes_sent || 0) + (lastChainStatus.vpn1?.bytes_sent || 0)) : 0) + (lastChainStatus?.socks5_tx || 0);
-  const rxBytes = (isTunnelRunning ? ((lastChainStatus.vpn2?.bytes_received || 0) + (lastChainStatus.vpn1?.bytes_received || 0)) : 0) + (lastChainStatus?.socks5_rx || 0);
-  document.getElementById('ob-tx').textContent = fmtBytes(txBytes);
-  document.getElementById('ob-rx').textContent = fmtBytes(rxBytes);
 
   const tunTx = isTunnelRunning ? ((lastChainStatus.vpn2?.bytes_sent || 0) + (lastChainStatus.vpn1?.bytes_sent || 0)) : 0;
   const tunRx = isTunnelRunning ? ((lastChainStatus.vpn2?.bytes_received || 0) + (lastChainStatus.vpn1?.bytes_received || 0)) : 0;
   const s5Tx = lastChainStatus?.socks5_tx || 0;
   const s5Rx = lastChainStatus?.socks5_rx || 0;
+  document.getElementById('ob-tx').textContent = fmtBytes(tunTx + s5Tx);
+  document.getElementById('ob-rx').textContent = fmtBytes(tunRx + s5Rx);
 
-  tbody.innerHTML = outbounds.map((item) => {
+  // Only rebuild DOM skeleton if item IDs/remarks/endpoints changed
+  const sig = outbounds.map(o => `${o.id}:${o.remark}:${normalizeMode(o.config?.mode)}:${getEndpointSummary(o)}`).join('|');
+  if (sig !== lastRenderedSignature) {
+    lastRenderedSignature = sig;
+    tbody.innerHTML = outbounds.map((item) => {
+      const modeKey = normalizeMode(item.config?.mode);
+      const meta = MODE_META[modeKey] || { label: modeKey || '未知', tag: 'tag-gray' };
+      const isS5Row = modeKey === 'socks5_server';
+      const isBuiltin = item.id === 'builtin-warp' || item.id === 'builtin-socks5';
+
+      let modeCell = `<span class="tag ${meta.tag}">${meta.label}</span>`;
+      if (modeKey === 'standalone_wg' || modeKey === 'wg_chain_warp') {
+        modeCell = `<select class="select" data-mode-select="${item.id}" style="height:30px;padding:0 10px;font-size:12px;width:auto;" onchange="changeItemMode('${item.id}', this.value)">
+          <option value="standalone_wg" ${modeKey === 'standalone_wg' ? 'selected' : ''}>🛡️ WireGuard 出站 (直出)</option>
+          <option value="wg_chain_warp" ${modeKey === 'wg_chain_warp' ? 'selected' : ''}>🔗 WG + WARP 链式出站</option>
+        </select>`;
+      }
+
+      return `<tr data-row-id="${item.id}">
+        <td>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-sm" onclick="openOutboundModal('${item.id}')">编辑</button>
+            ${isS5Row ? `<button class="btn btn-sm" onclick="copySocks5Link('${item.id}')">📋 链接</button>` : ''}
+            ${isBuiltin ? '' : `<button class="btn btn-sm btn-danger-ghost" onclick="deleteOutbound('${item.id}')">删除</button>`}
+          </div>
+        </td>
+        <td>
+          <label class="x-switch" title="点击启用或关闭">
+            <input type="checkbox" data-switch="${item.id}" onchange="onToggleOutbound('${item.id}', this.checked)">
+            <span class="x-slider"></span>
+          </label>
+        </td>
+        <td style="font-weight:700;">${escapeHtml(item.remark || '未命名节点')}</td>
+        <td>${modeCell}</td>
+        <td style="font-family:var(--mono);font-size:12px;color:var(--text-secondary);">${escapeHtml(getEndpointSummary(item))}</td>
+        <td data-traffic="${item.id}"></td>
+        <td data-status="${item.id}"></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Fine-grained in-place updates (zero DOM destruction / zero flicker)
+  for (const item of outbounds) {
     const modeKey = normalizeMode(item.config?.mode);
-    const meta = MODE_META[modeKey] || { label: modeKey || '未知', tag: 'tag-gray' };
     const isS5Row = modeKey === 'socks5_server';
     const rowActive = isS5Row ? isSocks5Running : (isTunnelRunning && item.enabled);
     const busy = switchingId === item.id;
-    let statusCell = '<span class="tag tag-gray">未启用</span>';
-    let trafficCell = '<span style="color:var(--muted);font-family:monospace;">0 B / 0 B</span>';
+
+    const tr = tbody.querySelector(`tr[data-row-id="${item.id}"]`);
+    if (tr) tr.className = rowActive ? 'active-row' : '';
+
+    const sw = tbody.querySelector(`input[data-switch="${item.id}"]`);
+    if (sw) {
+      sw.checked = rowActive;
+      sw.disabled = busy;
+    }
+
+    const sel = tbody.querySelector(`select[data-mode-select="${item.id}"]`);
+    if (sel && document.activeElement !== sel) {
+      sel.value = modeKey;
+    }
+
+    let statusHtml = '<span class="tag tag-gray">未启用</span>';
+    let trafficHtml = '<span style="color:var(--muted);font-family:var(--mono);">0 B / 0 B</span>';
 
     if (busy) {
-      statusCell = `<span class="tag tag-blue">⏳ 正在极速切换...</span>`;
+      statusHtml = `<span class="tag tag-orange">⏳ 正在极速切换...</span>`;
     } else if (rowActive) {
       const f = lastChainStatus?.final_hop || {};
       if (isS5Row) {
         const s = item.config?.socks5_server || { port: 10808 };
         const viaTxt = activeTunnel ? `走 [${escapeHtml(activeTunnel.remark)}] 出站` : '物理网卡直连';
-        statusCell = `<span class="tag tag-green">● 运行中 (端口 ${s.port} · ${viaTxt})</span>`;
-        trafficCell = `<span style="font-family:monospace;color:#096dd9;">↑ ${fmtBytes(s5Tx)}</span> / <span style="font-family:monospace;color:#389e0d;">↓ ${fmtBytes(s5Rx)}</span>`;
+        statusHtml = `<span class="tag tag-green">● 运行中 (端口 ${s.port} · ${viaTxt})</span>`;
+        trafficHtml = `<span style="font-family:var(--mono);color:var(--blue);">↑ ${fmtBytes(s5Tx)}</span> / <span style="font-family:var(--mono);color:var(--emerald);">↓ ${fmtBytes(s5Rx)}</span>`;
       } else {
         const ipStr = f.exit_ip ? `${f.exit_ip} ${f.exit_country ? '(' + f.exit_country + ')' : ''}` : '已握手连通';
-        statusCell = `<span class="tag tag-green">● 运行中 · ${ipStr}</span>`;
-        trafficCell = `<span style="font-family:monospace;color:#096dd9;">↑ ${fmtBytes(tunTx)}</span> / <span style="font-family:monospace;color:#389e0d;">↓ ${fmtBytes(tunRx)}</span>`;
+        statusHtml = `<span class="tag tag-green">● 运行中 · ${escapeHtml(ipStr)}</span>`;
+        trafficHtml = `<span style="font-family:var(--mono);color:var(--blue);">↑ ${fmtBytes(tunTx)}</span> / <span style="font-family:var(--mono);color:var(--emerald);">↓ ${fmtBytes(tunRx)}</span>`;
       }
     }
 
-    let modeCell = `<span class="tag ${meta.tag}">${meta.label}</span>`;
-    if (modeKey === 'standalone_wg' || modeKey === 'wg_chain_warp') {
-      modeCell = `<select class="select" style="height:28px;padding:0 8px;font-size:12px;width:auto;" onchange="changeItemMode('${item.id}', this.value)">
-        <option value="standalone_wg" ${modeKey === 'standalone_wg' ? 'selected' : ''}>🛡️ WireGuard 出站 (直出)</option>
-        <option value="wg_chain_warp" ${modeKey === 'wg_chain_warp' ? 'selected' : ''}>🔗 WG + WARP 链式出站</option>
-      </select>`;
-    }
-
-    const isBuiltin = item.id === 'builtin-warp' || item.id === 'builtin-socks5';
-    return `<tr class="${rowActive ? 'active-row' : ''}">
-      <td>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button class="btn btn-sm" onclick="openOutboundModal('${item.id}')">编辑</button>
-          ${isS5Row ? `<button class="btn btn-sm" onclick="copySocks5Link('${item.id}')">📋 链接</button>` : ''}
-          ${isBuiltin ? '' : `<button class="btn btn-sm btn-danger-ghost" onclick="deleteOutbound('${item.id}')">删除</button>`}
-        </div>
-      </td>
-      <td>
-        <label class="x-switch" title="点击启用或关闭">
-          <input type="checkbox" ${rowActive ? 'checked' : ''} ${busy ? 'disabled' : ''} onchange="onToggleOutbound('${item.id}', this.checked)">
-          <span class="x-slider"></span>
-        </label>
-      </td>
-      <td style="font-weight:600;">${escapeHtml(item.remark || '未命名节点')}</td>
-      <td>${modeCell}</td>
-      <td style="font-family:monospace;font-size:12.5px;">${escapeHtml(getEndpointSummary(item))}</td>
-      <td>${trafficCell}</td>
-      <td>${statusCell}</td>
-    </tr>`;
-  }).join('');
+    const stEl = tbody.querySelector(`td[data-status="${item.id}"]`);
+    if (stEl && stEl.innerHTML !== statusHtml) stEl.innerHTML = statusHtml;
+    const tfEl = tbody.querySelector(`td[data-traffic="${item.id}"]`);
+    if (tfEl && tfEl.innerHTML !== trafficHtml) tfEl.innerHTML = trafficHtml;
+  }
 }
 
-function escapeHtml(s) {
-  return String(s || '').replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
-}
-
+/* ==================== Actions & Mode Switching ==================== */
 async function changeItemMode(id, newMode) {
   const item = outbounds.find(o => o.id === id);
   if (!item || !item.config) return;
@@ -1074,7 +1379,7 @@ async function changeItemMode(id, newMode) {
   if (item.enabled && lastChainStatus?.state === 'Running') {
     await onToggleOutbound(id, true);
   } else {
-    showAlert(`已将 [${item.remark}] 出站模式切换为「${MODE_META[item.config.mode]?.label || newMode}」，开启右侧开关即可生效`, 'info');
+    showAlert(`已将 [${item.remark}] 模式切换为「${MODE_META[item.config.mode]?.label || newMode}」，打开开关即可生效`, 'info');
   }
 }
 
@@ -1150,7 +1455,7 @@ async function onToggleOutbound(id, checked) {
       if (checked) {
         await api('./api/v1/socks5/apply', 'POST', { socks5_server: srvCfg });
         const activeTunnel = isTunnelRunning ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
-        const viaMsg = activeTunnel ? `，外部设备连接后将自动走 [${activeTunnel.remark}] 出站！` : ' (当前为直连出口，开启任意 WG/WARP 节点后将自动走代理出站)';
+        const viaMsg = activeTunnel ? `，外部设备连接后流量将自动走 [${activeTunnel.remark}] 出站！` : ' (当前为直连出口，开启任意 WG/WARP 节点后将自动走代理出站)';
         showAlert(`✅ 本机 SOCKS5 服务端已开启 (端口 ${srvCfg.port})${viaMsg}`, 'success');
       } else {
         await api('./api/v1/socks5/stop', 'POST', {});
@@ -1163,7 +1468,6 @@ async function onToggleOutbound(id, checked) {
       showAlert(`❌ 操作 SOCKS5 服务端失败: ${e.message}`, 'error');
     } finally {
       await refreshStatus(false);
-      renderOutboundTable();
     }
     return;
   }
@@ -1215,10 +1519,159 @@ async function onToggleOutbound(id, checked) {
   } finally {
     switchingId = null;
     await refreshStatus(false);
-    renderOutboundTable();
   }
 }
 
+/* ==================== Status Telemetry Renderer ==================== */
+function applyStatusToDom(sys, ch) {
+  lastChainStatus = ch;
+
+  const ver = sys.chainproxy_version || sys.app_version;
+  if (ver) document.getElementById('siderVersion').textContent = 'v' + ver;
+
+  const memUsed = sys.mem ? sys.mem.current : (sys.mem_used || 0);
+  const memTotal = sys.mem ? sys.mem.total : (sys.mem_total || 0);
+  const swapUsed = sys.swap ? sys.swap.current : (sys.swap_used || 0);
+  const swapTotal = sys.swap ? sys.swap.total : (sys.swap_total || 0);
+  const diskUsed = sys.disk ? sys.disk.current : (sys.disk_used || 0);
+  const diskTotal = sys.disk ? sys.disk.total : (sys.disk_total || 0);
+  const cpuVal = sys.cpu !== undefined ? sys.cpu : (sys.cpu_usage || 0);
+  const loads = Array.isArray(sys.loads) ? sys.loads : [sys.load_1 || 0, sys.load_5 || 0, sys.load_15 || 0];
+  const upSpeed = sys.net_io ? sys.net_io.up : (sys.net_up_speed || 0);
+  const downSpeed = sys.net_io ? sys.net_io.down : (sys.net_down_speed || 0);
+  const sentTot = sys.net_traffic ? sys.net_traffic.sent : (sys.net_sent_total || 0);
+  const recvTot = sys.net_traffic ? sys.net_traffic.recv : (sys.net_recv_total || 0);
+  const uptimeSecs = sys.uptime !== undefined ? sys.uptime : (sys.uptime_seconds || 0);
+
+  setGauge('cpu', cpuVal, `${sys.cpu_cores || 1} Cores`);
+  setGauge('mem', memTotal ? (memUsed / memTotal) * 100 : 0, `${fmtBytes(memUsed)} / ${fmtBytes(memTotal)}`);
+  setGauge('swap', swapTotal ? (swapUsed / swapTotal) * 100 : 0, `${fmtBytes(swapUsed)} / ${fmtBytes(swapTotal)}`);
+  setGauge('disk', diskTotal ? (diskUsed / diskTotal) * 100 : 0, `${fmtBytes(diskUsed)} / ${fmtBytes(diskTotal)}`);
+
+  document.getElementById('sub-load').textContent = `Load: ${(loads[0] || 0).toFixed(2)}`;
+  document.getElementById('sub-conn').textContent = `TCP ${sys.tcp_count || 0} · UDP ${sys.udp_count || 0}`;
+  document.getElementById('sub-uptime').textContent = `在线 ${fmtUptime(uptimeSecs)}`;
+
+  const pulse = document.getElementById('topPulseDot');
+  const badge = document.getElementById('topStateBadge');
+  const stEngine = document.getElementById('st-engine');
+  const stSocks5 = document.getElementById('st-socks5-info');
+  const isRun = ch.state === 'Running';
+  const isS5 = !!ch.socks5_running;
+
+  const s5Item = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
+  if (s5Item && switchingId !== s5Item.id) {
+    s5Item.enabled = isS5;
+  }
+
+  const activeTunnel = isRun ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
+
+  if (isRun && isS5) {
+    pulse.className = 'pulse-dot running';
+    badge.textContent = '隧道 + SOCKS5 运行中';
+    stEngine.innerHTML = `<span class="tag tag-green">● 出站隧道运行中</span> <button class="btn btn-sm btn-danger-ghost" onclick="stopTunnelOnly()">关闭出站隧道</button>`;
+  } else if (isRun) {
+    pulse.className = 'pulse-dot running';
+    badge.textContent = '隧道运行中';
+    stEngine.innerHTML = `<span class="tag tag-green">● 出站隧道运行中</span> <button class="btn btn-sm btn-danger-ghost" onclick="stopTunnelOnly()">关闭出站隧道</button>`;
+  } else if (isS5) {
+    pulse.className = 'pulse-dot running';
+    badge.textContent = 'SOCKS5 运行中';
+    stEngine.innerHTML = `<span class="tag tag-gray">出站隧道未开启 (物理网卡直连)</span>`;
+  } else if (ch.state === 'Starting') {
+    pulse.className = 'pulse-dot starting';
+    badge.textContent = '握手中';
+    stEngine.innerHTML = '<span class="tag tag-orange">⏳ 启动握手中</span>';
+  } else {
+    pulse.className = 'pulse-dot';
+    badge.textContent = '直连待机';
+    stEngine.innerHTML = `<span class="tag tag-gray">未启用 (物理网卡直连)</span>`;
+  }
+
+  if (isS5) {
+    const viaTxt = activeTunnel ? `自动走 [${escapeHtml(activeTunnel.remark)}] 出站` : '当前走物理网卡直连';
+    stSocks5.innerHTML = `<span class="tag tag-green">● 监听 ${escapeHtml(ch.socks5_listen || '0.0.0.0:10808')} (${viaTxt})</span> <button class="btn btn-sm" onclick="copySocks5Link('builtin-socks5')">复制链接</button>`;
+  } else {
+    stSocks5.innerHTML = `<span class="tag tag-gray">未开启</span> <button class="btn btn-sm" onclick="quickSwitchMode('socks5_server')">一键开启</button>`;
+  }
+
+  const activeBadges = [];
+  if (activeTunnel) {
+    activeBadges.push(`<span class="tag tag-orange">${escapeHtml(activeTunnel.remark)} (${MODE_META[normalizeMode(activeTunnel.config?.mode)]?.label || ''})</span>`);
+  }
+  if (isS5 && s5Item) {
+    activeBadges.push(`<span class="tag tag-green">${escapeHtml(s5Item.remark)} (${escapeHtml(ch.socks5_listen || '10808')})</span>`);
+  }
+  document.getElementById('st-active-node').innerHTML = activeBadges.length > 0 ? activeBadges.join('') : '无 (本机物理网卡直连)';
+  updateModeHighlight();
+
+  const f = ch.final_hop || {};
+  if (isRun) {
+    const ipTxt = f.exit_ip ? `${f.exit_ip} · ${f.exit_country || ''} ${f.latency_ms ? '(' + f.latency_ms + ' ms)' : ''}` : '隧道已握手连通';
+    document.getElementById('st-exit').innerHTML = `<span class="tag tag-green">${escapeHtml(ipTxt)}</span>`;
+    document.getElementById('topExitText').textContent = f.exit_ip ? `出口: ${f.exit_ip}` : '隧道运行中';
+  } else {
+    document.getElementById('st-exit').textContent = '直连模式 (未开启出站代理)';
+    document.getElementById('topExitText').textContent = isS5 ? `SOCKS5 :${(ch.socks5_listen || '10808').split(':').pop()}` : '直连模式';
+  }
+
+  document.getElementById('st-topology').textContent = ch.chain_visual || '-';
+  document.getElementById('st-load').textContent =
+    `${(loads[0] || 0).toFixed(2)} | ${(loads[1] || 0).toFixed(2)} | ${(loads[2] || 0).toFixed(2)} · TCP ${sys.tcp_count || 0} / UDP ${sys.udp_count || 0}`;
+  document.getElementById('st-speed').innerHTML =
+    `<span style="color:var(--blue);">↑ ${fmtBytes(upSpeed)}/s</span> &nbsp; <span style="color:var(--emerald);">↓ ${fmtBytes(downSpeed)}/s</span>`;
+  document.getElementById('st-traffic').innerHTML =
+    `↑ ${fmtBytes(sentTot)} &nbsp; ↓ ${fmtBytes(recvTot)}`;
+  const p = ch.physical || {};
+  document.getElementById('st-uptime').textContent =
+    `${p.interface || '-'} (${(p.ip_addresses || []).join(', ') || '-'}) · 运行 ${fmtUptime(uptimeSecs)}`;
+
+  renderOutboundTable();
+}
+
+async function refreshStatus(manual = false) {
+  try {
+    const d = await api('./panel/api/server/status');
+    applyStatusToDom(d.system || {}, d.chain || {});
+    if (manual) showAlert('状态已刷新', 'success');
+  } catch (e) { console.error(e); }
+}
+
+async function stopTunnelOnly() {
+  try {
+    outbounds.forEach(o => {
+      if (normalizeMode(o.config?.mode) !== 'socks5_server') o.enabled = false;
+    });
+    if (lastChainStatus) lastChainStatus.state = 'Stopped';
+    renderOutboundTable();
+    await api('./api/v1/stop', 'POST', { all: false });
+    persistOutbounds();
+    const s5Note = lastChainStatus?.socks5_running ? '（本机 SOCKS5 服务端继续保持运行）' : '';
+    showAlert(`已关闭出站隧道，恢复物理网卡直连 ${s5Note}`, 'success');
+    await refreshStatus(false);
+  } catch (e) {
+    showAlert('停止失败: ' + e.message, 'error');
+  }
+}
+
+async function stopChain() {
+  try {
+    outbounds.forEach(o => o.enabled = false);
+    if (lastChainStatus) {
+      lastChainStatus.state = 'Stopped';
+      lastChainStatus.socks5_running = false;
+    }
+    renderOutboundTable();
+    await api('./api/v1/stop', 'POST', { all: true });
+    persistOutbounds();
+    showAlert('已停止全部出站与 SOCKS5 服务，宿主机已恢复原网络直连', 'success');
+    await refreshStatus(false);
+  } catch (e) {
+    showAlert('停止失败: ' + e.message, 'error');
+  }
+}
+
+/* ==================== Modal & Extra Utilities ==================== */
 function genRandomSocks5Auth() {
   const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
   const rand = len => Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
@@ -1227,7 +1680,7 @@ function genRandomSocks5Auth() {
 }
 
 function copySocks5Link(id) {
-  const item = outbounds.find(o => o.id === id);
+  const item = outbounds.find(o => o.id === id) || outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
   const s = item?.config?.socks5_server || { listen: '0.0.0.0', port: 10808, users: [] };
   const host = window.location.hostname || '127.0.0.1';
   const u = s.users && s.users[0] && s.users[0].username ? `${encodeURIComponent(s.users[0].username)}:${encodeURIComponent(s.users[0].password)}@` : '';
@@ -1248,8 +1701,7 @@ async function deleteOutbound(id) {
   }
   outbounds = outbounds.filter(o => o.id !== id);
   if (outbounds.length === 0) outbounds.push(makeDefaultWarpItem());
-  await persistOutbounds();
-  await refreshStatus(true);
+  persistOutbounds();
   renderOutboundTable();
 }
 
@@ -1355,7 +1807,7 @@ async function saveOutboundFromModal(applyNow) {
     targetId = 'node-' + Date.now();
     outbounds.push({ id: targetId, remark, enabled: false, config: cfg });
   }
-  await persistOutbounds();
+  persistOutbounds();
   closeOutboundModal();
   renderOutboundTable();
 
@@ -1396,7 +1848,7 @@ async function quickRekeyWarp() {
     if (!updated && outbounds[0]) {
       outbounds[0].config.vpn2 = { name: 'Cloudflare WARP', wireguard_config: res.wireguard_config };
     }
-    await persistOutbounds();
+    persistOutbounds();
     const active = outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server' && lastChainStatus?.state === 'Running');
     if (active && ['standalone_warp', 'wg_chain_warp', 'socks_chain_warp'].includes(normalizeMode(active.config?.mode))) {
       await onToggleOutbound(active.id, true);
@@ -1410,142 +1862,26 @@ async function quickRekeyWarp() {
   }
 }
 
-async function refreshStatus(manual = false) {
-  try {
-    const d = await api('./panel/api/server/status');
-    const sys = d.system || {};
-    const ch = d.chain || {};
-    lastChainStatus = ch;
-
-    if (sys.app_version) document.getElementById('siderVersion').textContent = 'v' + sys.app_version;
-    setGauge('cpu', sys.cpu_usage, `${sys.cpu_cores || 1} Cores`);
-    setGauge('mem', sys.mem_total ? (sys.mem_used / sys.mem_total) * 100 : 0, `${fmtBytes(sys.mem_used)} / ${fmtBytes(sys.mem_total)}`);
-    setGauge('swap', sys.swap_total ? (sys.swap_used / sys.swap_total) * 100 : 0, `${fmtBytes(sys.swap_used)} / ${fmtBytes(sys.swap_total)}`);
-    setGauge('disk', sys.disk_total ? (sys.disk_used / sys.disk_total) * 100 : 0, `${fmtBytes(sys.disk_used)} / ${fmtBytes(sys.disk_total)}`);
-
-    const badge = document.getElementById('topStateBadge');
-    const stEngine = document.getElementById('st-engine');
-    const isRun = ch.state === 'Running';
-    const isS5 = !!ch.socks5_running;
-
-    const s5Item = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
-    if (s5Item && switchingId !== s5Item.id) {
-      s5Item.enabled = isS5;
-    }
-
-    if (isRun && isS5) {
-      badge.className = 'tag tag-green'; badge.textContent = '隧道 + SOCKS5 运行中';
-      stEngine.innerHTML = `<span class="tag tag-green">● 出站隧道运行中</span> <span class="tag tag-green" style="margin-left:4px;">● SOCKS5 (${escapeHtml(ch.socks5_listen || '10808')}) 走隧道出站</span> <button class="btn btn-sm btn-danger-ghost" style="margin-left:8px;" onclick="stopTunnelOnly()">关闭出站隧道</button>`;
-    } else if (isRun) {
-      badge.className = 'tag tag-green'; badge.textContent = '运行中';
-      stEngine.innerHTML = `<span class="tag tag-green">● 出站隧道运行中</span> <button class="btn btn-sm btn-danger-ghost" style="margin-left:8px;" onclick="stopTunnelOnly()">关闭出站隧道</button>`;
-    } else if (isS5) {
-      badge.className = 'tag tag-green'; badge.textContent = 'SOCKS5 运行中';
-      stEngine.innerHTML = `<span class="tag tag-green">● 本机 SOCKS5 运行中 (${escapeHtml(ch.socks5_listen || '10808')})</span> <span class="tag tag-gray" style="margin-left:4px;">出站隧道未开启 (直连)</span>`;
-    } else if (ch.state === 'Starting') {
-      badge.className = 'tag tag-blue'; badge.textContent = '启动中';
-      stEngine.innerHTML = '<span class="tag tag-blue">启动握手中</span>';
-    } else {
-      badge.className = 'tag tag-gray'; badge.textContent = '直连待机';
-      stEngine.innerHTML = `<span class="tag tag-gray">未启用 (物理网卡直连)</span>`;
-    }
-
-    const activeBadges = [];
-    const activeTunnel = isRun ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
-    if (activeTunnel) {
-      activeBadges.push(`<span class="tag tag-blue" style="margin-right:6px;">${escapeHtml(activeTunnel.remark)} (${MODE_META[normalizeMode(activeTunnel.config?.mode)]?.label || ''})</span>`);
-    }
-    if (isS5 && s5Item) {
-      activeBadges.push(`<span class="tag tag-green" style="margin-right:6px;">${escapeHtml(s5Item.remark)} (${escapeHtml(ch.socks5_listen || '0.0.0.0:10808')})</span>`);
-    }
-    document.getElementById('st-active-node').innerHTML = activeBadges.length > 0
-      ? activeBadges.join('')
-      : '无 (本机物理网卡直连)';
-    updateModeHighlight();
-
-    const f = ch.final_hop || {};
-    if (isRun) {
-      const ipTxt = f.exit_ip ? `${f.exit_ip} · ${f.exit_country || ''} ${f.latency_ms ? '(' + f.latency_ms + ' ms)' : ''}` : '隧道已握手连通';
-      document.getElementById('st-exit').innerHTML = `<span class="tag tag-green">${escapeHtml(ipTxt)}</span>`;
-      document.getElementById('topExitText').textContent = f.exit_ip ? `出口: ${f.exit_ip}` : '隧道运行中';
-    } else {
-      document.getElementById('st-exit').textContent = '直连模式 (未开启出站代理)';
-      document.getElementById('topExitText').textContent = isS5 ? 'SOCKS5 监听中 (直连)' : '直连模式';
-    }
-
-    document.getElementById('st-topology').textContent = ch.chain_visual || '-';
-    document.getElementById('st-load').textContent =
-      `${(sys.load_1 || 0).toFixed(2)} | ${(sys.load_5 || 0).toFixed(2)} | ${(sys.load_15 || 0).toFixed(2)} · TCP ${sys.tcp_count || 0} / UDP ${sys.udp_count || 0}`;
-    document.getElementById('st-speed').innerHTML =
-      `<span style="color:#096dd9">↑ ${fmtBytes(sys.net_up_speed)}/s</span> &nbsp; <span style="color:#389e0d">↓ ${fmtBytes(sys.net_down_speed)}/s</span>`;
-    document.getElementById('st-traffic').innerHTML =
-      `↑ ${fmtBytes(sys.net_sent_total)} &nbsp; ↓ ${fmtBytes(sys.net_recv_total)}`;
-    const p = ch.physical || {};
-    document.getElementById('st-uptime').textContent =
-      `${p.interface || '-'} (${(p.ip_addresses || []).join(', ') || '-'}) · 运行 ${fmtUptime(sys.uptime_seconds)}`;
-
-    const selectFocused = document.activeElement && document.activeElement.tagName === 'SELECT';
-    if (manual || (!switchingId && !selectFocused)) {
-      renderOutboundTable();
-    }
-    if (manual) showAlert('状态已刷新', 'success');
-  } catch (e) { console.error(e); }
-}
-
-async function stopTunnelOnly() {
-  try {
-    outbounds.forEach(o => {
-      if (normalizeMode(o.config?.mode) !== 'socks5_server') o.enabled = false;
-    });
-    if (lastChainStatus) lastChainStatus.state = 'Stopped';
-    renderOutboundTable();
-    await api('./api/v1/stop', 'POST', { all: false });
-    persistOutbounds();
-    const s5Note = lastChainStatus?.socks5_running ? '（本机 SOCKS5 服务端继续保持运行）' : '';
-    showAlert(`已关闭出站隧道，恢复物理网卡直连 ${s5Note}`, 'success');
-    await refreshStatus(false);
-  } catch (e) {
-    showAlert('停止失败: ' + e.message, 'error');
-  }
-}
-
-async function stopChain() {
-  try {
-    outbounds.forEach(o => o.enabled = false);
-    if (lastChainStatus) {
-      lastChainStatus.state = 'Stopped';
-      lastChainStatus.socks5_running = false;
-    }
-    renderOutboundTable();
-    await api('./api/v1/stop', 'POST', { all: true });
-    persistOutbounds();
-    showAlert('已停止全部出站与 SOCKS5 服务，宿主机已恢复原网络直连', 'success');
-    await refreshStatus(false);
-  } catch (e) {
-    showAlert('停止失败: ' + e.message, 'error');
-  }
-}
-
 async function testActiveChain() {
-  const active = outbounds.find(o => o.enabled && lastChainStatus?.state === 'Running');
-  if (!active) {
-    showAlert('当前未启用任何出站节点，请先在「出站列表」中打开节点开关', 'info');
+  const isRun = lastChainStatus && lastChainStatus.state === 'Running';
+  if (!isRun) {
+    showAlert('当前未启用任何出站隧道，请先打开节点开关', 'info');
     return;
   }
   const btn = document.getElementById('btnStatusTest');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 测速中...'; }
   try {
-    const rep = await api('./api/v1/config/test', 'POST', { config: active.config });
+    const rep = await api('./api/v1/config/test', 'POST', {});
     if (rep.success) {
       showAlert(`连通性正常！出口 IP: ${rep.final_exit?.exit_ip || 'OK'} (${rep.final_exit?.exit_country || ''}) 延迟: ${rep.final_exit?.latency_ms || '-'} ms`, 'success');
     } else {
       showAlert('连通性检测未获取出口 IP，但隧道握手仍在保持', 'info');
     }
-    await refreshStatus();
+    await refreshStatus(false);
   } catch (e) {
     showAlert('检测失败: ' + e.message, 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '🔍 测速检测'; }
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 出口测速'; }
   }
 }
 
@@ -1585,8 +1921,8 @@ async function loadLogs() {
   const v = document.getElementById('logViewer');
   v.textContent = '正在加载日志...';
   try {
-    const d = await api('./api/v1/logs?lines=120');
-    v.textContent = d.logs || '暂无日志';
+    const d = await api('./api/v1/logs');
+    v.textContent = (typeof d === 'string' ? d : d.logs) || '暂无日志';
     v.scrollTop = v.scrollHeight;
   } catch (e) { v.textContent = '加载失败: ' + e.message; }
 }
@@ -1596,7 +1932,7 @@ async function loadNetworkDiag() {
   v.textContent = '正在读取 Linux 策略路由表与 nftables 规则...';
   try {
     const d = await api('./api/v1/network');
-    v.textContent = `[IP Rules]\n${d.ip_rules || ''}\n\n[Table 2023 Routes]\n${d.route_table_2023 || ''}\n\n[Nftables Ruleset]\n${d.nftables_rules || ''}`;
+    v.textContent = typeof d === 'string' ? d : JSON.stringify(d, null, 2);
   } catch (e) { v.textContent = '诊断失败: ' + e.message; }
 }
 
@@ -1610,9 +1946,11 @@ async function doLogout() {
   window.location.href = './login';
 }
 
-window.addEventListener('DOMContentLoaded', async () => {
-  await loadInitialData();
-  await refreshStatus();
+window.addEventListener('DOMContentLoaded', () => {
+  const actTab = document.querySelector('.nav-tab.active');
+  if (actTab) moveNavIndicator(actTab);
+  hydrateFromLocalCache();
+  bootstrapDashboard();
   setInterval(() => refreshStatus(false), 3000);
 });
 </script>

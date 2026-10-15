@@ -159,6 +159,16 @@ impl ChainEngine {
             .ok()
             .and_then(|c| serde_json::from_str::<ChainProxyConfig>(&c).ok());
 
+        let cached_physical = Arc::new(Mutex::new(None));
+        {
+            let bg_cache = cached_physical.clone();
+            let bg_uplink = initial_config.as_ref().and_then(|c| c.uplink_interface.clone());
+            let _ = std::thread::spawn(move || {
+                let fresh = HealthChecker::probe_physical(bg_uplink.as_deref());
+                *bg_cache.lock().unwrap() = Some((Instant::now(), fresh));
+            });
+        }
+
         Self {
             base_dir: base_path,
             warp_kernel: Arc::new(Mutex::new(WarpKernel::new())),
@@ -168,7 +178,7 @@ impl ChainEngine {
             state: Arc::new(Mutex::new(ServiceState::Stopped)),
             start_time: Arc::new(Mutex::new(None)),
             watchdog_timeout_secs: Arc::new(AtomicU64::new(30)),
-            cached_physical: Arc::new(Mutex::new(None)),
+            cached_physical,
             last_report: Arc::new(Mutex::new(None)),
         }
     }
@@ -207,9 +217,17 @@ impl ChainEngine {
     fn get_cached_physical(&self, uplink: Option<&str>) -> PhysicalHopStatus {
         let mut guard = self.cached_physical.lock().unwrap();
         if let Some((ts, ref status)) = *guard {
-            if ts.elapsed() < Duration::from_secs(60) {
-                return status.clone();
+            let cur = status.clone();
+            if ts.elapsed() >= Duration::from_secs(60) {
+                *guard = Some((Instant::now(), cur.clone()));
+                let bg_cache = self.cached_physical.clone();
+                let bg_up = uplink.map(|s| s.to_string());
+                let _ = std::thread::spawn(move || {
+                    let fresh = HealthChecker::probe_physical(bg_up.as_deref());
+                    *bg_cache.lock().unwrap() = Some((Instant::now(), fresh));
+                });
             }
+            return cur;
         }
         let fresh = HealthChecker::probe_physical(uplink);
         *guard = Some((Instant::now(), fresh.clone()));
