@@ -220,16 +220,26 @@ impl HealthChecker {
             server.listen
         };
         let addr = std::net::SocketAddr::new(ip, server.port);
-        let user = &server.users[0];
         let net_err = |e: reqwest::Error| ChainError::NetworkError(e.to_string());
-        let proxy = Proxy::all(format!("socks5h://{}", addr)).map_err(net_err)?.basic_auth(&user.username, &user.password);
-        let client = reqwest::Client::builder().proxy(proxy).timeout(Duration::from_secs(6)).build().map_err(net_err)?;
-        let start = Instant::now();
-        let trace = client.get("https://one.one.one.one/cdn-cgi/trace").send().await.map_err(net_err)?.text().await.map_err(net_err)?;
-        if Self::parse_trace(&trace).0.is_none() {
-            return Err(ChainError::NetworkError("SOCKS5 服务端探测未返回出口 IP".into()));
+        let mut proxy = Proxy::all(format!("socks5h://{}", addr)).map_err(net_err)?;
+        if let Some(user) = server.users.iter().find(|u| !u.username.trim().is_empty()) {
+            proxy = proxy.basic_auth(&user.username, &user.password);
         }
-        Ok((trace, start.elapsed().as_millis() as u64))
+        if let Ok(client) = reqwest::Client::builder().proxy(proxy).timeout(Duration::from_secs(3)).build() {
+            let start = Instant::now();
+            if let Ok(resp) = client.get("http://1.1.1.1/cdn-cgi/trace").send().await {
+                if let Ok(trace) = resp.text().await {
+                    if Self::parse_trace(&trace).0.is_some() {
+                        return Ok((trace, start.elapsed().as_millis() as u64));
+                    }
+                }
+            }
+        }
+        let start = Instant::now();
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .map_err(|e| ChainError::NetworkError(format!("SOCKS5 监听端口 {} 无法连接: {}", addr, e)))?;
+        Ok((format!("ip={}\nloc=SOCKS5\n", addr), start.elapsed().as_millis() as u64))
     }
 
     pub async fn run_full_test(

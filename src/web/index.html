@@ -241,7 +241,7 @@ body {
     <span class="logo-badge">S</span>
     <div>
       <div>Sooya 面板</div>
-      <div class="logo-ver" id="siderVersion">v1.5.5</div>
+      <div class="logo-ver" id="siderVersion">v1.5.6</div>
     </div>
   </div>
   <ul class="menu">
@@ -332,9 +332,20 @@ body {
       <div class="card">
         <div class="card-header">
           <span>📡 系统与出站运行状态</span>
-          <div style="display:flex;gap:8px;">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
             <button class="btn btn-sm btn-primary" onclick="switchMenu('outbounds', document.querySelectorAll('.menu-item')[1])">📋 管理出站列表</button>
             <button class="btn btn-sm" id="btnStatusTest" onclick="testActiveChain()">🔍 测速检测</button>
+          </div>
+        </div>
+        <div class="status-row" style="flex-wrap:wrap;gap:8px;">
+          <span class="status-label">⚡ 出站模式切换</span>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;" id="statusModeBar">
+            <button class="btn btn-sm" data-mode="direct" onclick="quickSwitchMode('direct')">🚫 直连 (关闭出站)</button>
+            <button class="btn btn-sm" data-mode="standalone_wg" onclick="quickSwitchMode('standalone_wg')">🛡️ 仅 WireGuard 出站</button>
+            <button class="btn btn-sm" data-mode="wg_chain_warp" onclick="quickSwitchMode('wg_chain_warp')">🔗 WG + WARP 链式</button>
+            <button class="btn btn-sm" data-mode="standalone_warp" onclick="quickSwitchMode('standalone_warp')">☁️ 仅 WARP 出站</button>
+            <button class="btn btn-sm" data-mode="socks_chain_warp" onclick="quickSwitchMode('socks_chain_warp')">🧦 SOCKS5 + WARP</button>
+            <button class="btn btn-sm" data-mode="socks5_server" onclick="quickSwitchMode('socks5_server')">🔌 本机 SOCKS5 服务端</button>
           </div>
         </div>
         <div class="status-row">
@@ -351,7 +362,7 @@ body {
         </div>
         <div class="status-row">
           <span class="status-label">出站接管范围</span>
-          <span class="status-val"><span class="tag tag-green">仅接管本机主动出站 (0x800) · 入站连接 (SSH/Web/业务端口) 100% 原路返回</span></span>
+          <span class="status-val"><span class="tag tag-green">仅接管本机主动出站 (0x800) + 隧道 DNS · 入站连接 (SSH/Web/业务端口) 100% 原路返回</span></span>
         </div>
         <div class="status-row">
           <span class="status-label">拓扑链路状态</span>
@@ -397,27 +408,41 @@ body {
         </div>
       </div>
 
+      <div class="card" style="margin-bottom:14px;">
+        <div class="card-body" style="padding:12px 18px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;" id="outboundModeBar">
+            <span style="font-size:13px;font-weight:600;color:var(--muted);">⚡ 快速切换出站模式：</span>
+            <button class="btn btn-sm" data-mode="direct" onclick="quickSwitchMode('direct')">🚫 直连 (关闭出站)</button>
+            <button class="btn btn-sm" data-mode="standalone_wg" onclick="quickSwitchMode('standalone_wg')">🛡️ 仅 WireGuard 出站</button>
+            <button class="btn btn-sm" data-mode="wg_chain_warp" onclick="quickSwitchMode('wg_chain_warp')">🔗 WG + WARP 链式</button>
+            <button class="btn btn-sm" data-mode="standalone_warp" onclick="quickSwitchMode('standalone_warp')">☁️ 仅 WARP 出站</button>
+            <button class="btn btn-sm" data-mode="socks_chain_warp" onclick="quickSwitchMode('socks_chain_warp')">🧦 SOCKS5 + WARP</button>
+            <button class="btn btn-sm" data-mode="socks5_server" onclick="quickSwitchMode('socks5_server')">🔌 本机 SOCKS5 服务端</button>
+          </div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <span>📋 出站列表</span>
-            <button class="btn btn-primary" onclick="openOutboundModal(null)">+ 添加出站</button>
+            <span>📋 出站与服务列表</span>
+            <button class="btn btn-primary" onclick="openOutboundModal(null)">+ 添加出站 / SOCKS5 服务端</button>
             <button class="btn" id="btnQuickRekey" onclick="quickRekeyWarp()">⚡ 一键刷新 WARP 账号</button>
             <button class="btn" onclick="testActiveChain()">🔍 检测当前出口</button>
           </div>
           <div>
-            <button class="btn btn-danger-ghost btn-sm" id="btnStopAll" onclick="stopChain()" style="display:none;">🛑 停止出站 (恢复直连)</button>
+            <button class="btn btn-danger-ghost btn-sm" id="btnStopAll" onclick="stopChain()" style="display:none;">🛑 停止全部 (恢复直连)</button>
           </div>
         </div>
         <div class="table-wrap">
           <table class="x-table">
             <thead>
               <tr>
-                <th style="width:120px;">操作</th>
+                <th style="width:140px;">操作</th>
                 <th style="width:76px;">启用</th>
                 <th>备注</th>
-                <th>出站类型</th>
-                <th>节点地址 (Endpoint)</th>
+                <th style="width:210px;">出站模式 (可直接切换)</th>
+                <th>节点地址 / 监听端口</th>
                 <th>隧道流量 (↑ / ↓)</th>
                 <th>状态 / 出口 IP</th>
               </tr>
@@ -607,7 +632,10 @@ body {
 
       <!-- 本机 SOCKS5 服务端配置区 -->
       <div id="mBoxS5Srv" class="sub-box" style="display:none;">
-        <div class="sub-box-title"><span>🔌 本机 SOCKS5 服务端配置</span></div>
+        <div class="sub-box-title">
+          <span>🔌 本机 SOCKS5 服务端配置</span>
+          <button type="button" class="btn btn-sm" onclick="genRandomSocks5Auth()">🎲 随机生成账密</button>
+        </div>
         <div class="grid-2">
           <div class="form-item">
             <label class="form-label">监听地址</label>
@@ -618,14 +646,15 @@ body {
             <input type="number" id="mSrvPort" class="input" value="10808">
           </div>
           <div class="form-item">
-            <label class="form-label">认证用户名</label>
-            <input type="text" id="mSrvUser" class="input" placeholder="必填">
+            <label class="form-label">认证用户名 (留空则为免密模式)</label>
+            <input type="text" id="mSrvUser" class="input" placeholder="可选，留空无需密码">
           </div>
           <div class="form-item">
-            <label class="form-label">认证密码</label>
-            <input type="text" id="mSrvPass" class="input" placeholder="必填">
+            <label class="form-label">认证密码 (留空则为免密模式)</label>
+            <input type="text" id="mSrvPass" class="input" placeholder="可选，留空无需密码">
           </div>
         </div>
+        <div class="form-help">提示：支持单独开启，也支持与任意出站隧道（WireGuard / WARP）同时开启！同时开启时，外部连接此 SOCKS5 的流量将自动走当前出站隧道出口。</div>
       </div>
 
       <div style="display:flex;align-items:center;gap:16px;padding-top:4px;">
@@ -804,7 +833,9 @@ function getEndpointSummary(item) {
   }
   if (m === 'socks5_server') {
     const s = c.socks5_server;
-    return s ? `监听 ${s.listen}:${s.port}` : '0.0.0.0:10808';
+    if (!s) return '监听 0.0.0.0:10808 (免密)';
+    const u = s.users && s.users[0] && s.users[0].username ? `账号: ${s.users[0].username}` : '免密认证';
+    return `监听 ${s.listen}:${s.port} (${u})`;
   }
   return '-';
 }
@@ -829,6 +860,21 @@ function makeDefaultWarpItem() {
   };
 }
 
+function makeDefaultSocks5Item() {
+  return {
+    id: 'builtin-socks5',
+    remark: '本机 SOCKS5 服务端',
+    enabled: false,
+    config: {
+      mode: 'socks5_server',
+      vpn1: { name: 'SOCKS5 服务端', wireguard_config: '' },
+      vpn2: { name: 'Cloudflare WARP', wireguard_config: '' },
+      socks5_server: { listen: '0.0.0.0', port: 10808, users: [] },
+      routing: { proxy_host_outbound: true, preserve_inbound_connections: true, connection_mark: '0x88', ipv6: false }
+    }
+  };
+}
+
 async function loadInitialData() {
   try {
     let serverList = [];
@@ -848,19 +894,23 @@ async function loadInitialData() {
     c.mode = normalizeMode(c.mode);
     const isRunning = d.status === 'Running';
 
-    if (outbounds.length === 0) {
-      outbounds.push(makeDefaultWarpItem());
+    if (!outbounds.some(o => normalizeMode(o.config?.mode) === 'standalone_warp')) {
+      outbounds.unshift(makeDefaultWarpItem());
+    }
+    if (!outbounds.some(o => normalizeMode(o.config?.mode) === 'socks5_server')) {
+      outbounds.push(makeDefaultSocks5Item());
     }
 
     const hasCustomSaved =
       (c.mode === 'standalone_wg' && c.vpn1?.wireguard_config?.trim()) ||
       (c.mode === 'wg_chain_warp' && c.vpn1?.wireguard_config?.trim()) ||
-      (c.mode === 'socks_chain_warp' && c.socks5?.server) ||
-      (c.mode === 'socks5_server' && c.socks5_server);
+      (c.mode === 'socks_chain_warp' && c.socks5?.server);
 
     if (hasCustomSaved) {
-      const exists = outbounds.some(o => normalizeMode(o.config?.mode) === c.mode &&
-        (o.config?.vpn1?.wireguard_config || '').trim() === (c.vpn1?.wireguard_config || '').trim());
+      const exists = outbounds.some(o =>
+        ['standalone_wg', 'wg_chain_warp'].includes(normalizeMode(o.config?.mode)) &&
+        (o.config?.vpn1?.wireguard_config || '').trim() === (c.vpn1?.wireguard_config || '').trim()
+      );
       if (!exists) {
         outbounds.push({
           id: 'node-' + Date.now(),
@@ -874,11 +924,16 @@ async function loadInitialData() {
     if (isRunning) {
       let matched = false;
       for (const o of outbounds) {
-        if (!matched && normalizeMode(o.config?.mode) === c.mode) {
+        const om = normalizeMode(o.config?.mode);
+        if (om === 'socks5_server' && c.socks5_server && c.socks5_server.port > 0) {
+          o.enabled = true;
+          o.config.socks5_server = c.socks5_server;
+          if (c.mode === 'socks5_server') matched = true;
+        } else if (!matched && (om === c.mode || (['standalone_wg', 'wg_chain_warp'].includes(om) && ['standalone_wg', 'wg_chain_warp'].includes(c.mode) && (o.config?.vpn1?.wireguard_config || '').trim() === (c.vpn1?.wireguard_config || '').trim()))) {
           o.enabled = true;
           o.config = c;
           matched = true;
-        } else {
+        } else if (om !== 'socks5_server') {
           o.enabled = false;
         }
       }
@@ -898,15 +953,33 @@ async function loadInitialData() {
   } catch (e) { console.error(e); }
 }
 
+function updateModeHighlight() {
+  const isRunning = lastChainStatus && lastChainStatus.state === 'Running';
+  const activeTunnel = isRunning ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
+  const activeS5 = isRunning ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) === 'socks5_server') : null;
+  const activeMode = activeTunnel ? normalizeMode(activeTunnel.config?.mode) : (activeS5 ? 'socks5_server' : 'direct');
+
+  ['statusModeBar', 'outboundModeBar'].forEach(barId => {
+    const bar = document.getElementById(barId);
+    if (!bar) return;
+    bar.querySelectorAll('button[data-mode]').forEach(btn => {
+      const m = btn.getAttribute('data-mode');
+      const isAct = (m === activeMode) || (m === 'socks5_server' && !!activeS5);
+      btn.className = isAct ? 'btn btn-sm btn-primary' : 'btn btn-sm';
+    });
+  });
+}
+
 function renderOutboundTable() {
   const tbody = document.getElementById('outboundTableBody');
   if (!tbody) return;
   document.getElementById('ob-count').textContent = outbounds.length;
 
   const isRunning = lastChainStatus && lastChainStatus.state === 'Running';
-  const activeItem = isRunning ? outbounds.find(o => o.enabled) : null;
-  document.getElementById('ob-active-name').textContent = activeItem ? activeItem.remark : '未启用 (本机直连)';
+  const activeItems = isRunning ? outbounds.filter(o => o.enabled) : [];
+  document.getElementById('ob-active-name').textContent = activeItems.length > 0 ? activeItems.map(o => o.remark).join(' + ') : '未启用 (本机直连)';
   document.getElementById('btnStopAll').style.display = isRunning ? 'inline-flex' : 'none';
+  updateModeHighlight();
 
   const txBytes = isRunning ? ((lastChainStatus.vpn2?.bytes_sent || 0) + (lastChainStatus.vpn1?.bytes_sent || 0)) : 0;
   const rxBytes = isRunning ? ((lastChainStatus.vpn2?.bytes_received || 0) + (lastChainStatus.vpn1?.bytes_received || 0)) : 0;
@@ -923,28 +996,43 @@ function renderOutboundTable() {
 
     if (rowActive) {
       const f = lastChainStatus?.final_hop || {};
-      const ipStr = f.exit_ip ? `${f.exit_ip} ${f.exit_country ? '(' + f.exit_country + ')' : ''}` : '已握手连通';
-      statusCell = `<span class="tag tag-green">● 运行中 · ${ipStr}</span>`;
+      if (modeKey === 'socks5_server') {
+        const s = item.config?.socks5_server || { port: 10808 };
+        statusCell = `<span class="tag tag-green">● 监听中 (端口 ${s.port})</span>`;
+      } else {
+        const ipStr = f.exit_ip ? `${f.exit_ip} ${f.exit_country ? '(' + f.exit_country + ')' : ''}` : '已握手连通';
+        statusCell = `<span class="tag tag-green">● 运行中 · ${ipStr}</span>`;
+      }
       trafficCell = `<span style="font-family:monospace;color:#096dd9;">↑ ${fmtBytes(txBytes)}</span> / <span style="font-family:monospace;color:#389e0d;">↓ ${fmtBytes(rxBytes)}</span>`;
     } else if (busy) {
       statusCell = `<span class="tag tag-blue">⏳ 正在握手切换...</span>`;
     }
 
+    let modeCell = `<span class="tag ${meta.tag}">${meta.label}</span>`;
+    if (modeKey === 'standalone_wg' || modeKey === 'wg_chain_warp') {
+      modeCell = `<select class="select" style="height:28px;padding:0 8px;font-size:12px;width:auto;" onchange="changeItemMode('${item.id}', this.value)">
+        <option value="standalone_wg" ${modeKey === 'standalone_wg' ? 'selected' : ''}>🛡️ WireGuard 出站 (直出)</option>
+        <option value="wg_chain_warp" ${modeKey === 'wg_chain_warp' ? 'selected' : ''}>🔗 WG + WARP 链式出站</option>
+      </select>`;
+    }
+
+    const isBuiltin = item.id === 'builtin-warp' || item.id === 'builtin-socks5';
     return `<tr class="${rowActive ? 'active-row' : ''}">
       <td>
-        <div style="display:flex;gap:6px;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="btn btn-sm" onclick="openOutboundModal('${item.id}')">编辑</button>
-          ${item.id === 'builtin-warp' ? '' : `<button class="btn btn-sm btn-danger-ghost" onclick="deleteOutbound('${item.id}')">删除</button>`}
+          ${modeKey === 'socks5_server' ? `<button class="btn btn-sm" onclick="copySocks5Link('${item.id}')">📋 链接</button>` : ''}
+          ${isBuiltin ? '' : `<button class="btn btn-sm btn-danger-ghost" onclick="deleteOutbound('${item.id}')">删除</button>`}
         </div>
       </td>
       <td>
-        <label class="x-switch" title="点击启用或关闭该出站节点">
+        <label class="x-switch" title="点击启用或关闭">
           <input type="checkbox" ${rowActive ? 'checked' : ''} ${switchingId ? 'disabled' : ''} onchange="onToggleOutbound('${item.id}', this.checked)">
           <span class="x-slider"></span>
         </label>
       </td>
       <td style="font-weight:600;">${escapeHtml(item.remark || '未命名节点')}</td>
-      <td><span class="tag ${meta.tag}">${meta.label}</span></td>
+      <td>${modeCell}</td>
       <td style="font-family:monospace;font-size:12.5px;">${escapeHtml(getEndpointSummary(item))}</td>
       <td>${trafficCell}</td>
       <td>${statusCell}</td>
@@ -956,33 +1044,157 @@ function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
 }
 
+async function changeItemMode(id, newMode) {
+  const item = outbounds.find(o => o.id === id);
+  if (!item || !item.config) return;
+  item.config.mode = normalizeMode(newMode);
+  await persistOutbounds();
+  renderOutboundTable();
+  if (item.enabled && lastChainStatus?.state === 'Running') {
+    await onToggleOutbound(id, true);
+  } else {
+    showAlert(`已将 [${item.remark}] 出站模式切换为「${MODE_META[item.config.mode]?.label || newMode}」，开启右侧开关即可生效`, 'info');
+  }
+}
+
+async function quickSwitchMode(targetMode) {
+  if (switchingId) return;
+  if (targetMode === 'direct') {
+    await stopChain();
+    return;
+  }
+  if (targetMode === 'standalone_wg' || targetMode === 'wg_chain_warp') {
+    const wgItem = outbounds.find(o => ['standalone_wg', 'wg_chain_warp'].includes(normalizeMode(o.config?.mode)) && o.config?.vpn1?.wireguard_config?.trim());
+    if (wgItem) {
+      wgItem.config.mode = targetMode;
+      await persistOutbounds();
+      await onToggleOutbound(wgItem.id, true);
+    } else {
+      openOutboundModal(null);
+      document.getElementById('mMode').value = targetMode;
+      onModalModeChange();
+      showAlert('请先粘贴或导入您的 WireGuard 节点配置，点击「保存并立即启用」即可', 'info');
+    }
+    return;
+  }
+  if (targetMode === 'standalone_warp') {
+    let warpItem = outbounds.find(o => normalizeMode(o.config?.mode) === 'standalone_warp');
+    if (!warpItem) {
+      warpItem = makeDefaultWarpItem();
+      outbounds.unshift(warpItem);
+      await persistOutbounds();
+    }
+    await onToggleOutbound(warpItem.id, true);
+    return;
+  }
+  if (targetMode === 'socks_chain_warp') {
+    const s5Chain = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks_chain_warp' && o.config?.socks5?.server);
+    if (s5Chain) {
+      await onToggleOutbound(s5Chain.id, true);
+    } else {
+      openOutboundModal(null);
+      document.getElementById('mMode').value = 'socks_chain_warp';
+      onModalModeChange();
+      showAlert('请填写前置 SOCKS5 节点信息并点击「保存并立即启用」', 'info');
+    }
+    return;
+  }
+  if (targetMode === 'socks5_server') {
+    let s5Srv = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
+    if (!s5Srv) {
+      s5Srv = makeDefaultSocks5Item();
+      outbounds.push(s5Srv);
+      await persistOutbounds();
+    }
+    const isRunning = lastChainStatus && lastChainStatus.state === 'Running';
+    await onToggleOutbound(s5Srv.id, !(isRunning && s5Srv.enabled));
+  }
+}
+
 async function onToggleOutbound(id, checked) {
   const item = outbounds.find(o => o.id === id);
   if (!item) return;
   if (item.config) item.config.mode = normalizeMode(item.config.mode);
+  const modeKey = normalizeMode(item.config?.mode);
+  const isRunning = lastChainStatus && lastChainStatus.state === 'Running';
   switchingId = id;
   renderOutboundTable();
 
   try {
-    if (!checked) {
-      showAlert(`正在关闭 [${item.remark}] 并恢复本机原网络直连...`, 'info');
-      await api('./api/v1/stop', 'POST', {});
-      outbounds.forEach(o => o.enabled = false);
-      await persistOutbounds();
-      showAlert('已关闭出站代理，宿主机已恢复物理网卡直连', 'success');
+    if (modeKey === 'socks5_server') {
+      const activeTunnel = isRunning ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
+      if (!checked) {
+        if (activeTunnel) {
+          showAlert(`正在关闭 [${item.remark}]，保持出站隧道 [${activeTunnel.remark}] 运行...`, 'info');
+          const cfgCopy = JSON.parse(JSON.stringify(activeTunnel.config));
+          delete cfgCopy.socks5_server;
+          await api('./api/v1/config/apply', 'POST', { config: cfgCopy });
+          activeTunnel.config = cfgCopy;
+          item.enabled = false;
+          await persistOutbounds();
+          showAlert(`已关闭本机 SOCKS5 服务端，出站隧道 [${activeTunnel.remark}] 继续保持运行`, 'success');
+        } else {
+          showAlert(`正在关闭 [${item.remark}]...`, 'info');
+          await api('./api/v1/stop', 'POST', {});
+          outbounds.forEach(o => o.enabled = false);
+          await persistOutbounds();
+          showAlert('已关闭本机 SOCKS5 服务端', 'success');
+        }
+      } else {
+        if (activeTunnel) {
+          showAlert(`正在开启 [${item.remark}] 并挂载到当前出站隧道 [${activeTunnel.remark}]...`, 'info');
+          const cfgCopy = JSON.parse(JSON.stringify(activeTunnel.config));
+          cfgCopy.socks5_server = item.config.socks5_server || { listen: '0.0.0.0', port: 10808, users: [] };
+          await api('./api/v1/config/apply', 'POST', { config: cfgCopy });
+          activeTunnel.config = cfgCopy;
+          item.enabled = true;
+          await persistOutbounds();
+          showAlert(`✅ 本机 SOCKS5 服务端已开启 (端口 ${cfgCopy.socks5_server.port})，流量将自动走 [${activeTunnel.remark}] 出站！`, 'success');
+        } else {
+          showAlert(`正在开启 [${item.remark}]...`, 'info');
+          await api('./api/v1/config/apply', 'POST', { config: item.config });
+          outbounds.forEach(o => o.enabled = (o.id === id));
+          await persistOutbounds();
+          const port = item.config?.socks5_server?.port || 10808;
+          showAlert(`✅ 本机 SOCKS5 服务端已启动！监听端口: ${port}`, 'success');
+        }
+      }
     } else {
-      showAlert(`正在启用出站 [${item.remark}]，正在进行隧道握手与校验...`, 'info');
-      const rep = await api('./api/v1/config/apply', 'POST', { config: item.config });
-      const latest = await api('./panel/api/chain/config');
-      if (latest && latest.config) item.config = latest.config;
-      outbounds.forEach(o => o.enabled = (o.id === id));
-      await persistOutbounds();
-      const ip = rep.final_exit?.exit_ip || '已连通';
-      const loc = rep.final_exit?.exit_country || '';
-      showAlert(`✅ 出站 [${item.remark}] 已启用！当前出口 IP: ${ip} ${loc}`, 'success');
+      const activeS5 = isRunning ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) === 'socks5_server') : null;
+      if (!checked) {
+        if (activeS5) {
+          showAlert(`正在关闭出站隧道 [${item.remark}]，保留本机 SOCKS5 服务端运行...`, 'info');
+          await api('./api/v1/config/apply', 'POST', { config: activeS5.config });
+          outbounds.forEach(o => { if (o.id !== activeS5.id) o.enabled = false; });
+          await persistOutbounds();
+          showAlert('已关闭出站隧道恢复直连，本机 SOCKS5 服务端继续保持运行', 'success');
+        } else {
+          showAlert(`正在关闭 [${item.remark}] 并恢复本机原网络直连...`, 'info');
+          await api('./api/v1/stop', 'POST', {});
+          outbounds.forEach(o => o.enabled = false);
+          await persistOutbounds();
+          showAlert('已关闭出站代理，宿主机已恢复物理网卡直连', 'success');
+        }
+      } else {
+        showAlert(`正在启用出站 [${item.remark}] (${MODE_META[modeKey]?.label || modeKey})，正在进行隧道握手与校验...`, 'info');
+        const cfgToApply = JSON.parse(JSON.stringify(item.config));
+        if (activeS5 && activeS5.config?.socks5_server) {
+          cfgToApply.socks5_server = activeS5.config.socks5_server;
+        }
+        const rep = await api('./api/v1/config/apply', 'POST', { config: cfgToApply });
+        const latest = await api('./panel/api/chain/config');
+        if (latest && latest.config) item.config = latest.config;
+        outbounds.forEach(o => {
+          o.enabled = (o.id === id) || (activeS5 && o.id === activeS5.id);
+        });
+        await persistOutbounds();
+        const ip = rep.final_exit?.exit_ip || '已连通';
+        const loc = rep.final_exit?.exit_country || '';
+        showAlert(`✅ 出站 [${item.remark}] 已启用！当前出口 IP: ${ip} ${loc}`, 'success');
+      }
     }
   } catch (e) {
-    outbounds.forEach(o => o.enabled = false);
+    item.enabled = false;
     await persistOutbounds();
     showAlert(`❌ 启用 [${item.remark}] 失败 (已自动安全恢复原网络): ${e.message}`, 'error');
   } finally {
@@ -992,12 +1204,32 @@ async function onToggleOutbound(id, checked) {
   }
 }
 
+function genRandomSocks5Auth() {
+  const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
+  const rand = len => Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  document.getElementById('mSrvUser').value = 'sooya_' + rand(5);
+  document.getElementById('mSrvPass').value = rand(12);
+}
+
+function copySocks5Link(id) {
+  const item = outbounds.find(o => o.id === id);
+  const s = item?.config?.socks5_server || { listen: '0.0.0.0', port: 10808, users: [] };
+  const host = window.location.hostname || '127.0.0.1';
+  const u = s.users && s.users[0] && s.users[0].username ? `${encodeURIComponent(s.users[0].username)}:${encodeURIComponent(s.users[0].password)}@` : '';
+  const link = `socks5://${u}${host}:${s.port}`;
+  navigator.clipboard.writeText(link).then(() => {
+    showAlert(`已复制 SOCKS5 链接: ${link}`, 'success');
+  }).catch(() => {
+    prompt('请复制 SOCKS5 连接地址:', link);
+  });
+}
+
 async function deleteOutbound(id) {
   const item = outbounds.find(o => o.id === id);
   if (!item) return;
-  if (!confirm(`确定删除出站节点「${item.remark}」吗？`)) return;
+  if (!confirm(`确定删除「${item.remark}」吗？`)) return;
   if (item.enabled && lastChainStatus?.state === 'Running') {
-    try { await api('./api/v1/stop', 'POST', {}); } catch (_) {}
+    await onToggleOutbound(id, false);
   }
   outbounds = outbounds.filter(o => o.id !== id);
   if (outbounds.length === 0) outbounds.push(makeDefaultWarpItem());
@@ -1017,7 +1249,7 @@ function onModalModeChange() {
 function openOutboundModal(id) {
   const item = id ? outbounds.find(o => o.id === id) : null;
   document.getElementById('editId').value = item ? item.id : '';
-  document.getElementById('modalTitle').textContent = item ? `编辑出站 — ${item.remark}` : '添加出站节点';
+  document.getElementById('modalTitle').textContent = item ? `编辑 — ${item.remark}` : '添加出站 / SOCKS5 服务端';
 
   const c = item ? (item.config || {}) : { mode: 'standalone_wg', routing: { ipv6: false } };
   document.getElementById('mRemark').value = item ? item.remark : '';
@@ -1075,13 +1307,12 @@ function buildConfigFromModal() {
     };
   }
   if (mode === 'socks5_server') {
+    const su = document.getElementById('mSrvUser').value.trim();
+    const sp = document.getElementById('mSrvPass').value.trim();
     cfg.socks5_server = {
       listen: document.getElementById('mSrvListen').value.trim() || '0.0.0.0',
       port: parseInt(document.getElementById('mSrvPort').value, 10) || 10808,
-      users: [{
-        username: document.getElementById('mSrvUser').value.trim(),
-        password: document.getElementById('mSrvPass').value.trim()
-      }]
+      users: (su || sp) ? [{ username: su, password: sp }] : []
     };
   }
   return { remark, cfg };
@@ -1092,6 +1323,13 @@ async function saveOutboundFromModal(applyNow) {
   if ((cfg.mode === 'standalone_wg' || cfg.mode === 'wg_chain_warp') && !cfg.vpn1.wireguard_config) {
     showAlert('请粘贴或填写 WireGuard 节点配置', 'error');
     return;
+  }
+  if (cfg.mode === 'socks5_server') {
+    const u = cfg.socks5_server?.users?.[0];
+    if (u && (!u.username || !u.password)) {
+      showAlert('SOCKS5 服务端如需开启密码认证，请同时填写用户名和密码；如需免密请将两者都留空', 'error');
+      return;
+    }
   }
   const editId = document.getElementById('editId').value;
   let targetId = editId;
@@ -1109,7 +1347,7 @@ async function saveOutboundFromModal(applyNow) {
   if (applyNow) {
     await onToggleOutbound(targetId, true);
   } else {
-    showAlert(`已保存出站节点 [${remark}]，可在出站列表中随时点击开关启用`, 'success');
+    showAlert(`已保存 [${remark}]，可在列表中随时点击开关启用`, 'success');
   }
 }
 
@@ -1144,7 +1382,7 @@ async function quickRekeyWarp() {
       outbounds[0].config.vpn2 = { name: 'Cloudflare WARP', wireguard_config: res.wireguard_config };
     }
     await persistOutbounds();
-    const active = outbounds.find(o => o.enabled && lastChainStatus?.state === 'Running');
+    const active = outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server' && lastChainStatus?.state === 'Running');
     if (active && ['standalone_warp', 'wg_chain_warp', 'socks_chain_warp'].includes(normalizeMode(active.config?.mode))) {
       await onToggleOutbound(active.id, true);
     } else {
@@ -1185,10 +1423,11 @@ async function refreshStatus(manual = false) {
       stEngine.innerHTML = `<span class="tag tag-gray">未启用 (物理网卡直连)</span>`;
     }
 
-    const activeItem = isRun ? outbounds.find(o => o.enabled) : null;
-    document.getElementById('st-active-node').innerHTML = activeItem
-      ? `<span class="tag tag-blue">${escapeHtml(activeItem.remark)}</span>`
+    const activeItems = isRun ? outbounds.filter(o => o.enabled) : [];
+    document.getElementById('st-active-node').innerHTML = activeItems.length > 0
+      ? activeItems.map(o => `<span class="tag tag-blue" style="margin-right:6px;">${escapeHtml(o.remark)} (${MODE_META[normalizeMode(o.config?.mode)]?.label || ''})</span>`).join('')
       : '无 (本机物理网卡直连)';
+    updateModeHighlight();
 
     const f = ch.final_hop || {};
     if (isRun) {

@@ -189,21 +189,34 @@ impl WarpKernel {
         self.warp_hs_ok.store(false, Ordering::Relaxed);
         *self.active_warp_ep.lock().unwrap() = None;
 
-        if config.mode == ProxyMode::Socks5Server {
-            let srv = config
-                .socks5_server
-                .as_ref()
-                .ok_or_else(|| ChainError::ValidationError("Missing SOCKS5 server config".into()))?
-                .clone();
-            srv.validate()?;
-            self.running.store(true, Ordering::SeqCst);
-            self.vpn1_hs_ok.store(true, Ordering::Relaxed);
-            let (running, tx, rx) = (self.running.clone(), self.vpn1_tx.clone(), self.vpn1_rx.clone());
-            let h = tokio::spawn(async move {
-                let _ = run_native_socks5_server(SocketAddr::new(srv.listen, srv.port), srv.users, running, tx, rx).await;
-            });
-            self.tokio_abort_handles.push(h.abort_handle());
-            return Ok(());
+        if config.mode == ProxyMode::Socks5Server && config.socks5_server.is_none() {
+            return Err(ChainError::ValidationError("Missing SOCKS5 server config".into()));
+        }
+        if let Some(ref srv) = config.socks5_server {
+            if srv.port > 0 {
+                srv.validate()?;
+                let listen_addr = SocketAddr::new(srv.listen, srv.port);
+                let std_listener = TcpListener::bind(listen_addr).map_err(|e| {
+                    ChainError::NetworkError(format!("SOCKS5 服务端绑定 {} 失败 (端口可能已被占用): {}", listen_addr, e))
+                })?;
+                std_listener
+                    .set_nonblocking(true)
+                    .map_err(|e| ChainError::NetworkError(format!("SOCKS5 set_nonblocking failed: {}", e)))?;
+                let tokio_listener = tokio::net::TcpListener::from_std(std_listener)
+                    .map_err(|e| ChainError::NetworkError(format!("SOCKS5 tokio listener failed: {}", e)))?;
+                self.running.store(true, Ordering::SeqCst);
+                let (running, tx, rx) = (self.running.clone(), self.vpn1_tx.clone(), self.vpn1_rx.clone());
+                let users = srv.users.clone();
+                let h = tokio::spawn(async move {
+                    let _ = run_native_socks5_server(tokio_listener, users, running, tx, rx).await;
+                });
+                self.tokio_abort_handles.push(h.abort_handle());
+                info!("Sooya native SOCKS5 server listening on {}", listen_addr);
+                if config.mode == ProxyMode::Socks5Server {
+                    self.vpn1_hs_ok.store(true, Ordering::Relaxed);
+                    return Ok(());
+                }
+            }
         }
 
         let host_ipv4 = local_ip_str.parse::<Ipv4Addr>().unwrap_or(TUN_IPV4);
@@ -720,19 +733,20 @@ fn run_kernel_packet_loop(
 }
 
 async fn run_native_socks5_server(
-    listen_addr: SocketAddr,
+    listener: tokio::net::TcpListener,
     users: Vec<Socks5User>,
     running: Arc<AtomicBool>,
     tx_counter: Arc<AtomicU64>,
     rx_counter: Arc<AtomicU64>,
 ) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener as TokioListener, TcpStream as TokioStream};
+    use tokio::net::TcpStream as TokioStream;
 
-    let listener = TokioListener::bind(listen_addr)
-        .await
-        .map_err(|e| ChainError::NetworkError(format!("SOCKS5 bind failed: {}", e)))?;
-    let users = Arc::new(users);
+    let active_users: Vec<Socks5User> = users
+        .into_iter()
+        .filter(|u| !u.username.trim().is_empty())
+        .collect();
+    let users = Arc::new(active_users);
 
     while running.load(Ordering::Relaxed) {
         let Ok((mut client, _)) = listener.accept().await else { break };
@@ -742,25 +756,48 @@ async fn run_native_socks5_server(
             let mut b = [0u8; 512];
             if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x05 { return; }
             let nm = b[1] as usize;
-            if client.read_exact(&mut b[..nm]).await.is_err() || !b[..nm].contains(&0x02) {
-                let _ = client.write_all(&[0x05, 0xFF]).await;
-                return;
+            if nm == 0 || client.read_exact(&mut b[..nm]).await.is_err() { return; }
+            let methods = &b[..nm];
+
+            if users.is_empty() {
+                if methods.contains(&0x00) {
+                    if client.write_all(&[0x05, 0x00]).await.is_err() { return; }
+                } else if methods.contains(&0x02) {
+                    if client.write_all(&[0x05, 0x02]).await.is_err() { return; }
+                    if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x01 { return; }
+                    let ulen = b[1] as usize;
+                    if client.read_exact(&mut b[..ulen + 1]).await.is_err() { return; }
+                    let plen = b[ulen] as usize;
+                    if client.read_exact(&mut b[..plen]).await.is_err() { return; }
+                    if client.write_all(&[0x01, 0x00]).await.is_err() { return; }
+                } else {
+                    let _ = client.write_all(&[0x05, 0xFF]).await;
+                    return;
+                }
+            } else {
+                if !methods.contains(&0x02) {
+                    let _ = client.write_all(&[0x05, 0xFF]).await;
+                    return;
+                }
+                if client.write_all(&[0x05, 0x02]).await.is_err() { return; }
+                if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x01 { return; }
+                let ulen = b[1] as usize;
+                if client.read_exact(&mut b[..ulen + 1]).await.is_err() { return; }
+                let uname = String::from_utf8_lossy(&b[..ulen]).into_owned();
+                let plen = b[ulen] as usize;
+                if client.read_exact(&mut b[..plen]).await.is_err() { return; }
+                let upass = String::from_utf8_lossy(&b[..plen]).into_owned();
+                if !users.iter().any(|u| u.username == uname && u.password == upass) {
+                    let _ = client.write_all(&[0x01, 0x01]).await;
+                    return;
+                }
+                if client.write_all(&[0x01, 0x00]).await.is_err() { return; }
             }
-            if client.write_all(&[0x05, 0x02]).await.is_err() { return; }
-            if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x01 { return; }
-            let ulen = b[1] as usize;
-            if client.read_exact(&mut b[..ulen + 1]).await.is_err() { return; }
-            let uname = String::from_utf8_lossy(&b[..ulen]).into_owned();
-            let plen = b[ulen] as usize;
-            if client.read_exact(&mut b[..plen]).await.is_err() { return; }
-            let upass = String::from_utf8_lossy(&b[..plen]).into_owned();
-            if !users.iter().any(|u| u.username == uname && u.password == upass) {
-                let _ = client.write_all(&[0x01, 0x01]).await;
-                return;
-            }
-            if client.write_all(&[0x01, 0x00]).await.is_err() { return; }
-            if client.read_exact(&mut b[..4]).await.is_err() || b[0] != 0x05 || b[1] != 0x01 { return; }
-            let target = match b[3] {
+
+            if client.read_exact(&mut b[..4]).await.is_err() || b[0] != 0x05 { return; }
+            let cmd = b[1];
+            let atyp = b[3];
+            let target = match atyp {
                 0x01 => {
                     if client.read_exact(&mut b[..6]).await.is_err() { return; }
                     format!("{}:{}", Ipv4Addr::new(b[0], b[1], b[2], b[3]), u16::from_be_bytes([b[4], b[5]]))
@@ -776,15 +813,27 @@ async fn run_native_socks5_server(
                     let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&b[..16]).unwrap());
                     format!("[{}]:{}", ip, u16::from_be_bytes([b[16], b[17]]))
                 }
-                _ => return,
+                _ => {
+                    let _ = client.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+                    return;
+                }
             };
-            if let Ok(mut up) = TokioStream::connect(&target).await {
-                let _ = up.set_nodelay(true);
-                if client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.is_ok() {
-                    if let Ok((tx, rx)) = tokio::io::copy_bidirectional(&mut client, &mut up).await {
-                        tx_c.fetch_add(tx, Ordering::Relaxed);
-                        rx_c.fetch_add(rx, Ordering::Relaxed);
+            if cmd != 0x01 {
+                let _ = client.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+                return;
+            }
+            match tokio::time::timeout(Duration::from_secs(10), TokioStream::connect(&target)).await {
+                Ok(Ok(mut up)) => {
+                    let _ = up.set_nodelay(true);
+                    if client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.is_ok() {
+                        if let Ok((tx, rx)) = tokio::io::copy_bidirectional(&mut client, &mut up).await {
+                            tx_c.fetch_add(tx, Ordering::Relaxed);
+                            rx_c.fetch_add(rx, Ordering::Relaxed);
+                        }
                     }
+                }
+                _ => {
+                    let _ = client.write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
                 }
             }
         });

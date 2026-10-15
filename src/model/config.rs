@@ -40,15 +40,18 @@ pub struct Socks5ServerConfig {
 
 impl Socks5ServerConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.port == 0 || self.users.is_empty() {
+        if self.port == 0 {
             return Err(ChainError::ValidationError(
-                "SOCKS5 服务端必须配置有效端口和至少一个用户".to_string(),
+                "SOCKS5 服务端必须配置有效端口 (1-65535)".to_string(),
             ));
         }
         let mut names = HashSet::new();
         for u in &self.users {
+            if u.username.trim().is_empty() && u.password.trim().is_empty() {
+                continue;
+            }
             if !(1..=255).contains(&u.username.len()) || !(1..=255).contains(&u.password.len()) {
-                return Err(ChainError::ValidationError("SOCKS5 用户名、密码必须为 1–255 字节".to_string()));
+                return Err(ChainError::ValidationError("SOCKS5 用户名、密码必须为 1–255 字节（或全部留空使用免密模式）".to_string()));
             }
             if !names.insert(&u.username) {
                 return Err(ChainError::ValidationError("SOCKS5 用户名不能重复".to_string()));

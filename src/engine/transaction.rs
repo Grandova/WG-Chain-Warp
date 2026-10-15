@@ -312,7 +312,7 @@ impl ChainEngine {
             }
 
             let hs_ok = match config.mode {
-                ProxyMode::StandaloneWg => kstats.vpn1_handshake_ok,
+                ProxyMode::StandaloneWg | ProxyMode::Socks5Server => kstats.vpn1_handshake_ok,
                 ProxyMode::StandaloneWarp => kstats.warp_handshake_ok,
                 ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp => kstats.vpn1_handshake_ok && kstats.warp_handshake_ok,
                 _ => false,
@@ -321,9 +321,9 @@ impl ChainEngine {
                 report.success = true;
                 report.final_exit.internet_ok = true;
                 report.final_exit.status = "OK (握手已连通)".into();
-                if matches!(config.mode, ProxyMode::StandaloneWg | ProxyMode::WgChainWarp) {
+                if matches!(config.mode, ProxyMode::StandaloneWg | ProxyMode::WgChainWarp | ProxyMode::Socks5Server) {
                     report.vpn1.reachable = true;
-                    report.vpn1.status = "OK (已握手)".into();
+                    report.vpn1.status = "OK (已就绪)".into();
                 }
                 if matches!(config.mode, ProxyMode::StandaloneWarp | ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp) {
                     report.vpn2.reachable = true;
