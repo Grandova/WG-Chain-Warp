@@ -44,7 +44,7 @@ impl IpRouteManager {
             return Err(ChainError::NetworkError(format!(
                 "ip {}: {}",
                 args.join(" "),
-                String::from_utf8_lossy(&output.stderr)
+                String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -127,21 +127,21 @@ impl IpRouteManager {
         let mask = MARK_MASK | inbound;
         for family in ["-4", "-6"] {
             let ipv6 = family == "-6";
-            let mut rules = vec![format!(
-                "priority {} fwmark {:#x}/{:#x} lookup main",
-                DIRECT_RULE_PRIORITY, MARK_PHYSICAL_DIRECT, MARK_PHYSICAL_DIRECT
-            )];
-            if config.routing.preserve_inbound_connections {
-                rules.push(format!(
+            let mut rules = vec![
+                format!(
+                    "priority {} fwmark {:#x}/{:#x} lookup main",
+                    DIRECT_RULE_PRIORITY, MARK_PHYSICAL_DIRECT, MARK_PHYSICAL_DIRECT
+                ),
+                format!(
                     "priority {} fwmark {:#x}/{:#x} lookup main",
                     INBOUND_RULE_PRIORITY, inbound, inbound
+                ),
+            ];
+            for ip in ssh_ips.iter().filter(|ip| ip.is_ipv6() == ipv6) {
+                rules.push(format!(
+                    "priority {} to {} lookup main",
+                    SSH_BYPASS_PRIORITY, ip
                 ));
-                for ip in ssh_ips.iter().filter(|ip| ip.is_ipv6() == ipv6) {
-                    rules.push(format!(
-                        "priority {} to {} lookup main",
-                        SSH_BYPASS_PRIORITY, ip
-                    ));
-                }
             }
             if !ipv6 || config.routing.ipv6 {
                 let mut bypass = config.routing.exclude_destinations.clone();
@@ -217,10 +217,50 @@ impl IpRouteManager {
         Ok(plan)
     }
 
-    pub fn check_available(plan: &RoutePlan) -> Result<()> {
+    /// Clean up any stale Sooya policy rules (proto 186 / table 2023) and orphaned chain0 device
+    pub fn cleanup_stale() {
         for family in ["-4", "-6"] {
+            let _ = Self::run(&[family, "route", "flush", "table", "2023"]);
+            if let Ok(out) = Self::run(&[family, "-N", "-j", "rule", "show"]) {
+                if let Ok(rules) = serde_json::from_str::<serde_json::Value>(&out) {
+                    let mut del_cmds = Vec::new();
+                    for rule in rules.as_array().into_iter().flatten() {
+                        let is_sooya_proto = rule["protocol"].as_str() == Some(ROUTE_PROTOCOL)
+                            || rule["protocol"].as_u64() == Some(186);
+                        let is_sooya_table = rule["table"].as_u64() == Some(HOST_TABLE as u64)
+                            || rule["table"].as_str() == Some("2023");
+                        let prio = rule["priority"].as_u64().unwrap_or(0);
+                        let is_sooya_prio = matches!(prio, 70 | 80 | 90 | 100 | 101 | 120 | 121);
+                        if (is_sooya_proto || is_sooya_table || is_sooya_prio) && prio > 0 {
+                            del_cmds.push(vec![
+                                family.to_string(),
+                                "rule".to_string(),
+                                "del".to_string(),
+                                "priority".to_string(),
+                                prio.to_string(),
+                            ]);
+                        }
+                    }
+                    let _ = Self::run_batch(&del_cmds, true);
+                }
+            }
+        }
+        if Self::interface_exists("chain0") {
+            let _ = Self::run(&["link", "del", "dev", "chain0"]);
+        }
+    }
+
+    pub fn check_available(plan: &RoutePlan) -> Result<()> {
+        Self::cleanup_stale();
+        for family in ["-4", "-6"] {
+            let Ok(rules_raw) = Self::run(&[family, "-N", "-j", "rule", "show"]) else {
+                if family == "-6" {
+                    continue;
+                }
+                return Err(ChainError::NetworkError("Failed to inspect IPv4 policy rules".into()));
+            };
             let rules: serde_json::Value =
-                serde_json::from_str(&Self::run(&[family, "-N", "-j", "rule", "show"])?)?;
+                serde_json::from_str(&rules_raw).unwrap_or_else(|_| serde_json::json!([]));
             for rule in rules.as_array().into_iter().flatten() {
                 if rule["table"].as_u64() == Some(HOST_TABLE as u64)
                     || rule["table"].as_str() == Some(&HOST_TABLE.to_string())
@@ -243,29 +283,33 @@ impl IpRouteManager {
                     }
                 }
             }
-            let routes: serde_json::Value = serde_json::from_str(&Self::run(&[
-                family, "-N", "-j", "route", "show", "table", "2023",
-            ])?)
-            .unwrap_or_else(|_| serde_json::json!([]));
-            if routes
-                .as_array()
-                .map(|arr| !arr.is_empty())
-                .unwrap_or(false)
-            {
-                return Err(ChainError::NetworkError(
-                    "Routing table 2023 already in use; stop its owner before applying".to_string(),
-                ));
+            // Note: `ip -6 route show table 2023` returns exit code 2 ("Error: ipv6: FIB table does not exist")
+            // when table 2023 has not been allocated in the kernel yet. That means table 2023 is empty and available!
+            if let Ok(routes_raw) = Self::run(&[family, "-N", "-j", "route", "show", "table", "2023"]) {
+                let routes: serde_json::Value =
+                    serde_json::from_str(&routes_raw).unwrap_or_else(|_| serde_json::json!([]));
+                if routes.as_array().map(|arr| !arr.is_empty()).unwrap_or(false) {
+                    return Err(ChainError::NetworkError(
+                        "Routing table 2023 already in use; stop its owner before applying".to_string(),
+                    ));
+                }
             }
         }
         Ok(())
     }
 
     pub fn install_rules(plan: &RoutePlan) -> Result<()> {
-        Self::run_batch(&plan.rules, false)
+        let (v4, v6): (Vec<_>, Vec<_>) = plan.rules.iter().cloned().partition(|r| r.first().map(String::as_str) != Some("-6"));
+        Self::run_batch(&v4, false)?;
+        let _ = Self::run_batch(&v6, true);
+        Ok(())
     }
 
     pub fn install_routes(plan: &RoutePlan) -> Result<()> {
-        Self::run_batch(&plan.routes, false)
+        let (v4, v6): (Vec<_>, Vec<_>) = plan.routes.iter().cloned().partition(|r| r.first().map(String::as_str) != Some("-6"));
+        Self::run_batch(&v4, false)?;
+        let _ = Self::run_batch(&v6, true);
+        Ok(())
     }
 
     pub fn remove_plan(plan: &RoutePlan) -> Result<()> {
@@ -277,7 +321,9 @@ impl IpRouteManager {
             }
             del_cmds.push(del_args);
         }
-        Self::run_batch(&del_cmds, true)
+        let _ = Self::run_batch(&del_cmds, true);
+        Self::cleanup_stale();
+        Ok(())
     }
 
     pub fn interface_exists(name: &str) -> bool {
@@ -304,25 +350,17 @@ impl IpRouteManager {
     /// Detect active SSH client IP addresses from environment ($SSH_CONNECTION / $SSH_CLIENT)
     pub fn detect_current_ssh_client_ips() -> Vec<IpAddr> {
         let mut ips = Vec::new();
-
-        if let Ok(ssh_conn) = std::env::var("SSH_CONNECTION") {
-            if let Some(client_ip_str) = ssh_conn.split_whitespace().next() {
-                if let Ok(ip) = IpAddr::from_str(client_ip_str) {
-                    ips.push(ip);
-                }
-            }
-        }
-
-        if let Ok(ssh_client) = std::env::var("SSH_CLIENT") {
-            if let Some(client_ip_str) = ssh_client.split_whitespace().next() {
-                if let Ok(ip) = IpAddr::from_str(client_ip_str) {
-                    if !ips.contains(&ip) {
-                        ips.push(ip);
+        for var in ["SSH_CONNECTION", "SSH_CLIENT"] {
+            if let Ok(val) = std::env::var(var) {
+                if let Some(ip_str) = val.split_whitespace().next() {
+                    if let Ok(ip) = IpAddr::from_str(ip_str) {
+                        if !ips.contains(&ip) {
+                            ips.push(ip);
+                        }
                     }
                 }
             }
         }
-
         ips
     }
 

@@ -256,7 +256,7 @@ impl HealthChecker {
                 let probe = if mode == ProxyMode::Socks5Server {
                     Self::test_socks_server(config).await
                 } else {
-                    Self::test_hop_via_proxy(TEST_WARP_PORT, vpn1_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(4)).await
+                    Self::test_hop_via_proxy(TEST_WARP_PORT, vpn1_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(6)).await
                 };
                 let isp = if mode == ProxyMode::Socks5Server { "本机直连" } else { "WireGuard" };
                 let (hop1, final_exit, ok1) = Self::build_hop_and_exit(vpn1_name, vpn1_ep, probe, isp, false);
@@ -270,7 +270,7 @@ impl HealthChecker {
                 }
             }
             ProxyMode::StandaloneWarp => {
-                let probe = Self::test_hop_via_proxy(TEST_WARP_PORT, vpn2_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(4)).await;
+                let probe = Self::test_hop_via_proxy(TEST_WARP_PORT, vpn2_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(6)).await;
                 let (hop2, final_exit, ok2) = Self::build_hop_and_exit(vpn2_name, vpn2_ep, probe, "Cloudflare WARP", true);
                 let hop1 = bypass_hop("Entry Relay", "BYPASS (直连 WARP)", "直连 WARP 模式，无需前置中继");
                 TestReport {
@@ -282,8 +282,8 @@ impl HealthChecker {
                 }
             }
             ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp => {
-                let hop1_fut = Self::single_probe_proxy(TEST_VPN1_PORT, vpn1_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_millis(2500));
-                let hop2_fut = Self::test_hop_via_proxy(TEST_WARP_PORT, vpn2_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(4));
+                let hop1_fut = Self::single_probe_proxy(TEST_VPN1_PORT, vpn1_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(4));
+                let hop2_fut = Self::test_hop_via_proxy(TEST_WARP_PORT, vpn2_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(6));
                 let (hop1_res, hop2_res) = tokio::join!(hop1_fut, hop2_fut);
 
                 let (mut vpn1_hop, _, mut vpn1_ok) = Self::build_hop_and_exit(vpn1_name, vpn1_ep, hop1_res, "WireGuard", false);

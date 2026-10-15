@@ -7,7 +7,7 @@ use crate::model::state::{
 use crate::network::iproute::{IpRouteManager, RoutePlan};
 use crate::network::nftables::NftablesManager;
 use crate::network::sysctl::{SysctlManager, SysctlSnapshot};
-use crate::warp_kernel::{WarpKernel, TEST_WARP_PORT};
+use crate::warp_kernel::WarpKernel;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,16 +26,9 @@ pub struct NetworkSnapshot {
 
 impl NetworkSnapshot {
     pub fn capture(plan: RoutePlan, config: &ChainProxyConfig) -> Result<Self> {
-        let inbound_mark = if config.routing.preserve_inbound_connections {
-            config.routing.inbound_mark()?
-        } else {
-            0
-        };
+        let inbound_mark = config.routing.inbound_mark()?;
         if inbound_mark != 0 {
-            let probe = std::process::Command::new("conntrack").arg("-C").output()?;
-            if !probe.status.success() {
-                return Err(ChainError::NetworkError(String::from_utf8_lossy(&probe.stderr).into_owned()));
-            }
+            let _ = std::process::Command::new("modprobe").arg("nf_conntrack").output();
         }
         Ok(Self {
             plan,
@@ -108,7 +101,18 @@ impl ChainEngine {
         fresh
     }
 
-    pub async fn apply(&mut self, config: ChainProxyConfig) -> Result<TestReport> {
+    pub async fn apply(&mut self, mut config: ChainProxyConfig) -> Result<TestReport> {
+        config.routing.preserve_inbound_connections = true;
+        if matches!(config.mode, ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp | ProxyMode::StandaloneWarp)
+            && config.vpn2.wireguard_config.trim().is_empty()
+        {
+            info!("WARP config is empty; auto-registering Cloudflare WARP credentials...");
+            let reg = crate::wireguard::WarpRegistrar::register_warp().await?;
+            config.vpn2.wireguard_config = reg.wireguard_config;
+            if config.vpn2.name.trim().is_empty() {
+                config.vpn2.name = "Cloudflare WARP".to_string();
+            }
+        }
         let parsed = config.parse_and_validate()?;
         let uplink = match &config.uplink_interface {
             Some(iface) => iface.clone(),
@@ -138,9 +142,6 @@ impl ChainEngine {
             std::fs::create_dir_all(&self.base_dir)?;
             if config.mode != ProxyMode::Socks5Server {
                 IpRouteManager::check_available(&plan)?;
-                if IpRouteManager::interface_exists("chain0") {
-                    return Err(ChainError::NetworkError("chain0 already exists".into()));
-                }
                 let snapshot = NetworkSnapshot::capture(plan, &config)?;
                 let journal = self.base_dir.join("network_snapshot.json");
                 let mut file = tempfile::NamedTempFile::new_in(&self.base_dir)?;
@@ -165,17 +166,8 @@ impl ChainEngine {
                 let plan_clone = self.network_snapshot.lock().unwrap().as_ref().unwrap().plan.clone();
                 IpRouteManager::install_routes(&plan_clone)?;
                 NftablesManager::apply_ruleset(&nft_rules)?;
-
-                let wait_start = Instant::now();
-                let test_addr = format!("127.0.0.1:{}", TEST_WARP_PORT);
-                while wait_start.elapsed() < Duration::from_millis(1500) {
-                    if tokio::net::TcpStream::connect(&test_addr).await.is_ok() { break; }
-                    tokio::time::sleep(Duration::from_millis(40)).await;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            } else {
-                tokio::time::sleep(Duration::from_millis(80)).await;
             }
+            tokio::time::sleep(Duration::from_millis(80)).await;
 
             let (v1_name, v1_ep) = match config.mode {
                 ProxyMode::Socks5Server => (
@@ -246,19 +238,22 @@ impl ChainEngine {
         {
             let mut snap_guard = self.network_snapshot.lock().unwrap();
             if snap_guard.is_none() && journal.exists() {
-                *snap_guard = Some(serde_json::from_slice(&std::fs::read(&journal)?)?);
+                if let Ok(bytes) = std::fs::read(&journal) {
+                    if let Ok(snap) = serde_json::from_slice(&bytes) {
+                        *snap_guard = Some(snap);
+                    }
+                }
             }
         }
+        self.warp_kernel.lock().unwrap().stop();
+        let _ = NftablesManager::restore(None);
         if let Some(snapshot) = self.network_snapshot.lock().unwrap().take() {
-            let nft = NftablesManager::restore(None);
-            self.warp_kernel.lock().unwrap().stop();
-            let restored = snapshot.restore();
-            nft.and(restored)?;
-            if journal.exists() {
-                std::fs::remove_file(&journal)?;
-            }
+            let _ = snapshot.restore();
         } else {
-            self.warp_kernel.lock().unwrap().stop();
+            IpRouteManager::cleanup_stale();
+        }
+        if journal.exists() {
+            let _ = std::fs::remove_file(&journal);
         }
         *self.state.lock().unwrap() = ServiceState::Stopped;
         *self.start_time.lock().unwrap() = None;

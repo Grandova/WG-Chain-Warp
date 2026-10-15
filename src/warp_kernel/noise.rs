@@ -51,6 +51,7 @@ pub struct WgTunnel {
     mac1_key: [u8; 32],
     pub reserved: [u8; 3],
     pending: Option<PendingHandshake>,
+    prev_pending: Option<PendingHandshake>,
     current: Option<WgSession>,
     previous: Option<WgSession>,
 }
@@ -75,6 +76,7 @@ impl WgTunnel {
             mac1_key,
             reserved,
             pending: None,
+            prev_pending: None,
             current: None,
             previous: None,
         }
@@ -89,7 +91,7 @@ impl WgTunnel {
             None => self
                 .pending
                 .as_ref()
-                .map(|p| p.started_at.elapsed() >= Duration::from_millis(800))
+                .map(|p| p.started_at.elapsed() >= Duration::from_millis(1200))
                 .unwrap_or(true),
             Some(sess) => {
                 sess.established_at.elapsed() >= Duration::from_secs(120)
@@ -146,6 +148,9 @@ impl WgTunnel {
         msg[1..4].copy_from_slice(&self.reserved);
         msg[116..132].copy_from_slice(&mac1);
 
+        if let Some(old) = self.pending.take() {
+            self.prev_pending = Some(old);
+        }
         self.pending = Some(PendingHandshake {
             local_index,
             ephemeral_private,
@@ -160,11 +165,15 @@ impl WgTunnel {
         if msg.len() < HANDSHAKE_RESP_LEN || msg[0] != 2 {
             return None;
         }
-        let pending = self.pending.as_ref()?;
         let peer_index = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]);
-        if u32::from_le_bytes([msg[8], msg[9], msg[10], msg[11]]) != pending.local_index {
+        let rx_local = u32::from_le_bytes([msg[8], msg[9], msg[10], msg[11]]);
+        let pending = if self.pending.as_ref().map(|p| p.local_index) == Some(rx_local) {
+            self.pending.as_ref()?
+        } else if self.prev_pending.as_ref().map(|p| p.local_index) == Some(rx_local) {
+            self.prev_pending.as_ref()?
+        } else {
             return None;
-        }
+        };
 
         let mut peer_eph = [0u8; 32];
         peer_eph.copy_from_slice(&msg[12..44]);
@@ -187,6 +196,7 @@ impl WgTunnel {
         let rtt_ms = pending.started_at.elapsed().as_millis() as u64;
         let local_index = pending.local_index;
         self.pending = None;
+        self.prev_pending = None;
         if let Some(prev) = self.current.take() {
             self.previous = Some(prev);
         }

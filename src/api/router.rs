@@ -194,10 +194,28 @@ async fn panel_get_config_handler(
 async fn panel_save_config_handler(
     headers: HeaderMap,
     State(state): State<AppState>,
-    Json(payload): Json<ValidatePayload>,
+    Json(mut payload): Json<ValidatePayload>,
 ) -> (StatusCode, Json<ApiResponse<String>>) {
     if !is_authenticated(&headers, &state).await {
         return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
+    }
+    payload.config.routing.preserve_inbound_connections = true;
+    if matches!(
+        payload.config.mode,
+        crate::model::config::ProxyMode::WgChainWarp
+            | crate::model::config::ProxyMode::SocksChainWarp
+            | crate::model::config::ProxyMode::StandaloneWarp
+    ) && payload.config.vpn2.wireguard_config.trim().is_empty()
+    {
+        match crate::wireguard::WarpRegistrar::register_warp().await {
+            Ok(reg) => {
+                payload.config.vpn2.wireguard_config = reg.wireguard_config;
+                if payload.config.vpn2.name.trim().is_empty() {
+                    payload.config.vpn2.name = "Cloudflare WARP".to_string();
+                }
+            }
+            Err(e) => return (StatusCode::BAD_REQUEST, Json(ApiResponse::err(e.to_string()))),
+        }
     }
     if let Err(e) = payload.config.parse_and_validate() {
         return (StatusCode::BAD_REQUEST, Json(ApiResponse::err(e.to_string())));

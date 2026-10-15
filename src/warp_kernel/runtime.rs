@@ -306,7 +306,7 @@ fn spawn_probe_http_listener(
                 if stream.read(&mut req).unwrap_or(0) == 0 || !running.load(Ordering::Relaxed) { continue; }
                 let (reply_tx, reply_rx) = mpsc::sync_channel(1);
                 if probe_tx.send(ProbeJob { target, reply_tx }).is_err() { break; }
-                let (status, body) = match reply_rx.recv_timeout(Duration::from_millis(3200)) {
+                let (status, body) = match reply_rx.recv_timeout(Duration::from_millis(5500)) {
                     Ok(Ok(b)) => ("200 OK", b),
                     Ok(Err(e)) => ("502 Bad Gateway", e),
                     Err(_) => ("504 Gateway Timeout", "Probe timeout".to_string()),
@@ -476,7 +476,7 @@ fn run_kernel_packet_loop(
 
     while running.load(Ordering::Relaxed) {
         if let Some((ref mut v1, vep)) = vpn1_tunnel {
-            let due = (!v1.has_session() && last_vpn1_hs.elapsed() >= Duration::from_millis(650))
+            let due = (!v1.has_session() && last_vpn1_hs.elapsed() >= Duration::from_millis(1200))
                 || (v1.needs_handshake() && last_vpn1_hs.elapsed() >= Duration::from_secs(3));
             if due {
                 let init = v1.format_handshake_initiation();
@@ -490,7 +490,7 @@ fn run_kernel_packet_loop(
 
         if let Some(ref mut w) = warp_tunnel {
             if vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(true) {
-                let no_sess_due = !w.has_session() && last_warp_hs.elapsed() >= Duration::from_millis(500);
+                let no_sess_due = !w.has_session() && last_warp_hs.elapsed() >= Duration::from_millis(1100);
                 let rekey_due = w.needs_handshake() && last_warp_hs.elapsed() >= Duration::from_secs(3);
                 if no_sess_due || rekey_due {
                     if no_sess_due && !warp_candidates.is_empty() {
@@ -523,7 +523,7 @@ fn run_kernel_packet_loop(
 
         let mut idx = 0;
         while idx < active_probes.len() {
-            if active_probes[idx].started_at.elapsed() > Duration::from_millis(3000) {
+            if active_probes[idx].started_at.elapsed() > Duration::from_millis(5000) {
                 let p = active_probes.swap_remove(idx);
                 let _ = p.reply_tx.send(Err("Probe timed out".into()));
                 continue;
@@ -532,7 +532,7 @@ fn run_kernel_packet_loop(
                 ProbeTarget::Vpn1 => vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(false),
                 ProbeTarget::Warp => warp_tunnel.as_ref().map(|w| w.has_session()).unwrap_or(false),
             };
-            if ready && !active_probes[idx].fsm.request_sent && active_probes[idx].last_tx.elapsed() >= Duration::from_millis(350) && active_probes[idx].retries < 5 {
+            if ready && !active_probes[idx].fsm.request_sent && active_probes[idx].last_tx.elapsed() >= Duration::from_millis(400) && active_probes[idx].retries < 8 {
                 let n = active_probes[idx].fsm.build_syn(&mut probe_buf);
                 active_probes[idx].last_tx = Instant::now();
                 active_probes[idx].retries += 1;

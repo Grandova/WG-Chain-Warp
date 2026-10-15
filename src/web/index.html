@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sooya Web 控制台</title>
+    <title>Sooya 面板</title>
     <style>
         :root {
             --primary: #1890ff;
             --primary-hover: #40a9ff;
             --success: #52c41a;
             --warning: #faad14;
-            --danger: #f5222d;
+            --danger: #ff4d4f;
             --sider-bg: #001529;
             --body-bg: #f0f2f5;
             --card-bg: #ffffff;
@@ -26,23 +26,21 @@
             color: var(--text-main);
             font-size: 14px;
         }
-        .app-layout {
-            display: flex;
-            min-height: 100vh;
-        }
-        /* Left Sidebar (x-ui style) */
+        .app-layout { display: flex; min-height: 100vh; }
+
+        /* x-ui Left Sidebar */
         .app-sider {
-            width: 220px;
+            width: 200px;
             background: var(--sider-bg);
             color: rgba(255, 255, 255, 0.65);
             flex-shrink: 0;
             display: flex;
             flex-direction: column;
-            box-shadow: 2px 0 8px rgba(0, 21, 41, 0.15);
+            box-shadow: 2px 0 6px rgba(0, 21, 41, 0.15);
             z-index: 10;
         }
         .sider-logo {
-            height: 64px;
+            height: 60px;
             display: flex;
             align-items: center;
             padding: 0 20px;
@@ -50,13 +48,12 @@
             color: #fff;
             font-size: 17px;
             font-weight: 600;
-            letter-spacing: 0.5px;
             gap: 10px;
         }
         .logo-badge {
-            width: 30px;
-            height: 30px;
-            border-radius: 8px;
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
             background: var(--primary);
             display: inline-flex;
             align-items: center;
@@ -65,47 +62,31 @@
             font-size: 14px;
             color: #fff;
         }
-        .sider-menu {
-            list-style: none;
-            padding: 12px 0;
-            flex: 1;
-        }
+        .sider-menu { list-style: none; padding: 8px 0; flex: 1; }
         .menu-item {
             display: flex;
             align-items: center;
-            gap: 12px;
-            padding: 13px 24px;
+            gap: 10px;
+            padding: 13px 22px;
             cursor: pointer;
             transition: all 0.2s;
             font-size: 14px;
             color: rgba(255, 255, 255, 0.7);
             user-select: none;
         }
-        .menu-item:hover {
-            color: #fff;
-            background: rgba(255, 255, 255, 0.06);
-        }
-        .menu-item.active {
-            color: #fff;
-            background: var(--primary);
-            font-weight: 500;
-        }
+        .menu-item:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
+        .menu-item.active { color: #fff; background: var(--primary); font-weight: 500; }
         .sider-footer {
-            padding: 14px 20px;
+            padding: 12px 20px;
             font-size: 12px;
             color: rgba(255, 255, 255, 0.35);
             border-top: 1px solid rgba(255, 255, 255, 0.08);
         }
 
-        /* Main Content */
-        .app-main {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            min-width: 0;
-        }
+        /* Main Area */
+        .app-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
         .app-header {
-            height: 60px;
+            height: 56px;
             background: #fff;
             padding: 0 24px;
             display: flex;
@@ -121,53 +102,25 @@
             align-items: center;
             gap: 10px;
         }
-        .header-right {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
+        .header-right { display: flex; align-items: center; gap: 10px; }
         .app-content {
             padding: 20px 24px;
-            max-width: 1360px;
+            max-width: 1280px;
             width: 100%;
             margin: 0 auto;
         }
-        .view-pane {
-            display: none;
-        }
-        .view-pane.active {
-            display: block;
-        }
+        .view-pane { display: none; }
+        .view-pane.active { display: block; }
 
-        /* x-ui Cards & Grid */
-        .grid-4 {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 16px;
-            margin-bottom: 16px;
-        }
-        .grid-2 {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 16px;
-            margin-bottom: 16px;
-        }
-        .grid-3 {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 14px;
-            margin-bottom: 16px;
-        }
+        /* x-ui Cards & Layout */
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 16px; }
         .xcard {
             background: var(--card-bg);
-            border-radius: 14px;
-            padding: 20px;
-            box-shadow: 0 2px 10px rgba(0, 21, 41, 0.04);
-            transition: box-shadow 0.25s, transform 0.25s;
+            border-radius: 10px;
+            padding: 18px 20px;
+            box-shadow: 0 1px 6px rgba(0, 21, 41, 0.04);
             border: 1px solid #f0f0f0;
-        }
-        .xcard:hover {
-            box-shadow: 0 6px 20px rgba(0, 21, 41, 0.08);
         }
         .xcard-title {
             font-size: 15px;
@@ -177,41 +130,30 @@
             align-items: center;
             justify-content: space-between;
             color: #001529;
+            flex-wrap: wrap;
+            gap: 8px;
         }
 
-        /* Circular Gauges (x-ui dashboard progress) */
-        .gauge-card {
-            text-align: center;
-            padding: 18px 12px;
-        }
-        .gauge-svg-wrap {
-            position: relative;
-            width: 116px;
-            height: 116px;
-            margin: 0 auto 8px;
-        }
+        /* Gauges */
+        .gauge-card { text-align: center; padding: 16px 12px; }
+        .gauge-svg-wrap { position: relative; width: 112px; height: 112px; margin: 0 auto 6px; }
         .gauge-label {
             position: absolute;
             inset: 0;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
-            font-size: 20px;
+            font-size: 19px;
             font-weight: 600;
             color: #001529;
         }
-        .gauge-sub {
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-top: 4px;
-        }
+        .gauge-sub { font-size: 12px; color: var(--text-secondary); }
 
-        /* Tags / Badges */
+        /* Tags */
         .ant-tag {
             display: inline-flex;
             align-items: center;
-            padding: 2px 10px;
+            padding: 2px 9px;
             font-size: 12px;
             border-radius: 4px;
             font-weight: 500;
@@ -246,13 +188,57 @@
         .btn:disabled { opacity: 0.55; cursor: not-allowed; }
         .btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
         .btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: #fff; }
-        .btn-success { background: #52c41a; border-color: #52c41a; color: #fff; }
-        .btn-success:hover { background: #73d13d; border-color: #73d13d; color: #fff; }
-        .btn-danger  { background: #ff4d4f; border-color: #ff4d4f; color: #fff; }
+        .btn-danger  { background: var(--danger); border-color: var(--danger); color: #fff; }
         .btn-danger:hover  { background: #ff7875; border-color: #ff7875; color: #fff; }
         .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
 
-        /* Topology Hop Flow */
+        /* x-ui Status List Table inside Cards */
+        .status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 9px 0;
+            border-bottom: 1px solid #f5f5f5;
+            font-size: 13px;
+        }
+        .status-row:last-child { border-bottom: none; padding-bottom: 0; }
+        .status-row:first-child { padding-top: 0; }
+        .status-label { color: var(--text-secondary); }
+
+        /* Simple Segmented Mode Selector (x-ui protocol tabs style) */
+        .mode-tabs {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .mode-tab {
+            border: 1px solid #d9d9d9;
+            border-radius: 8px;
+            padding: 12px 14px;
+            cursor: pointer;
+            background: #fafafa;
+            transition: all 0.2s;
+            text-align: left;
+        }
+        .mode-tab:hover { border-color: var(--primary); background: #fff; }
+        .mode-tab.selected {
+            border-color: var(--primary);
+            background: #e6f7ff;
+            box-shadow: 0 0 0 1px var(--primary);
+        }
+        .mode-tab-name {
+            font-weight: 600;
+            font-size: 13px;
+            color: #001529;
+            margin-bottom: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .mode-tab-desc { font-size: 11px; color: var(--text-secondary); }
+
+        /* Hop Flow */
         .hop-chain {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -261,63 +247,28 @@
         }
         .hop-box {
             border: 1px solid #e8e8e8;
-            border-radius: 10px;
-            padding: 14px;
+            border-radius: 8px;
+            padding: 12px 14px;
             background: #fafafa;
-            position: relative;
         }
-        .hop-box.hop-ok { border-color: #b7eb8f; background: #fcffe6; }
-        .hop-box.hop-off { opacity: 0.65; }
-        .hop-step { font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; text-transform: uppercase; }
-        .hop-name { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #001529; }
-        .hop-meta { font-size: 12px; color: rgba(0,0,0,0.6); line-height: 1.6; word-break: break-all; }
+        .hop-box.hop-ok { border-color: #b7eb8f; background: #f6ffed; }
+        .hop-box.hop-off { opacity: 0.55; }
+        .hop-step { font-size: 11px; color: var(--text-secondary); margin-bottom: 3px; }
+        .hop-name { font-size: 13px; font-weight: 600; margin-bottom: 4px; color: #001529; }
+        .hop-meta { font-size: 12px; color: rgba(0,0,0,0.65); line-height: 1.5; word-break: break-all; }
 
-        /* Mode Selector Cards */
-        .mode-card {
-            border: 2px solid #e8e8e8;
-            border-radius: 10px;
-            padding: 14px 16px;
-            cursor: pointer;
-            background: #fff;
-            transition: all 0.2s;
-        }
-        .mode-card:hover {
-            border-color: #91d5ff;
-            background: #f9fcff;
-        }
-        .mode-card.selected {
-            border-color: var(--primary);
-            background: #e6f7ff;
-            box-shadow: 0 2px 8px rgba(24, 144, 255, 0.15);
-        }
-        .mode-card-title {
-            font-weight: 600;
-            font-size: 14px;
-            color: #001529;
-            margin-bottom: 4px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .mode-card-desc {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        /* Forms & Inputs */
-        .form-row {
-            margin-bottom: 14px;
-        }
+        /* Forms */
+        .form-row { margin-bottom: 12px; }
         .form-label {
             display: block;
             font-size: 13px;
             font-weight: 500;
-            margin-bottom: 6px;
+            margin-bottom: 5px;
             color: rgba(0, 0, 0, 0.75);
         }
         .ant-input, .ant-select, .ant-textarea {
             width: 100%;
-            padding: 7px 12px;
+            padding: 7px 11px;
             font-size: 13px;
             border: 1px solid #d9d9d9;
             border-radius: 6px;
@@ -331,25 +282,17 @@
             box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.15);
         }
         .ant-textarea {
-            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-            min-height: 165px;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            min-height: 150px;
             resize: vertical;
             line-height: 1.5;
         }
-        .switch-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid #f5f5f5;
-        }
-        .switch-row:last-child { border-bottom: none; }
 
-        /* Tabs (for Panel Settings) */
+        /* Tabs */
         .ant-tabs-bar {
             display: flex;
             border-bottom: 1px solid #e8e8e8;
-            margin-bottom: 20px;
+            margin-bottom: 18px;
             gap: 24px;
         }
         .ant-tab {
@@ -360,82 +303,66 @@
             border-bottom: 2px solid transparent;
             margin-bottom: -1px;
         }
-        .ant-tab.active {
-            color: var(--primary);
-            border-bottom-color: var(--primary);
-        }
+        .ant-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
 
-        /* Terminal Log Viewer */
+        /* Log Viewer */
         .log-pre {
             background: #0d1117;
             color: #e6edf3;
             font-family: "SFMono-Regular", Consolas, monospace;
             font-size: 12px;
             line-height: 1.55;
-            padding: 16px;
+            padding: 14px;
             border-radius: 8px;
-            max-height: 520px;
+            max-height: 500px;
             overflow: auto;
             white-space: pre-wrap;
             word-break: break-all;
         }
 
-        /* Toast Notification */
-        #toastContainer {
-            position: fixed;
-            top: 20px;
-            right: 24px;
-            z-index: 9999;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-        .toast {
-            min-width: 280px;
-            max-width: 440px;
-            padding: 12px 16px;
-            border-radius: 8px;
-            background: #fff;
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
-            font-size: 13px;
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            border-left: 4px solid var(--primary);
-            animation: fadeIn 0.2s ease;
-        }
-        .toast.ok { border-left-color: var(--success); }
-        .toast.err { border-left-color: var(--danger); }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-8px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
         /* Table */
-        .ant-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
-        }
+        .ant-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
         .ant-table th, .ant-table td {
-            padding: 10px 12px;
+            padding: 9px 10px;
             border-bottom: 1px solid #f0f0f0;
             text-align: left;
             font-size: 13px;
         }
-        .ant-table th {
-            background: #fafafa;
-            font-weight: 600;
-            color: rgba(0, 0, 0, 0.75);
+        .ant-table th { background: #fafafa; font-weight: 600; }
+
+        /* Toast */
+        #toastContainer {
+            position: fixed;
+            top: 18px;
+            right: 22px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
+        .toast {
+            min-width: 260px;
+            max-width: 420px;
+            padding: 11px 15px;
+            border-radius: 6px;
+            background: #fff;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-left: 4px solid var(--primary);
+        }
+        .toast.ok { border-left-color: var(--success); }
+        .toast.err { border-left-color: var(--danger); }
 
         @media (max-width: 960px) {
             .app-layout { flex-direction: column; }
             .app-sider { width: 100%; }
             .sider-menu { display: flex; overflow-x: auto; padding: 0; }
-            .menu-item { padding: 12px 16px; white-space: nowrap; }
+            .menu-item { padding: 12px 14px; white-space: nowrap; }
             .sider-footer { display: none; }
-            .grid-4, .grid-3, .grid-2, .hop-chain { grid-template-columns: 1fr; }
+            .grid-4, .grid-2, .mode-tabs, .hop-chain { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -443,7 +370,7 @@
     <div id="toastContainer"></div>
 
     <div class="app-layout">
-        <!-- Sidebar -->
+        <!-- x-ui Sidebar -->
         <aside class="app-sider">
             <div class="sider-logo">
                 <span class="logo-badge">S</span>
@@ -454,59 +381,56 @@
                     <span>📊</span><span>系统状态</span>
                 </li>
                 <li class="menu-item" data-view="nodes" onclick="switchView('nodes')">
-                    <span>🔗</span><span>链路与节点配置</span>
-                </li>
-                <li class="menu-item" data-view="logs" onclick="switchView('logs')">
-                    <span>📜</span><span>运行日志与诊断</span>
+                    <span>🚀</span><span>出站配置</span>
                 </li>
                 <li class="menu-item" data-view="settings" onclick="switchView('settings')">
                     <span>⚙️</span><span>面板设置</span>
+                </li>
+                <li class="menu-item" data-view="logs" onclick="switchView('logs')">
+                    <span>📜</span><span>运行日志</span>
                 </li>
                 <li class="menu-item" onclick="doLogout()">
                     <span>🚪</span><span>退出登录</span>
                 </li>
             </ul>
-            <div class="sider-footer" id="siderVer">
-                Sooya Web Console
-            </div>
+            <div class="sider-footer" id="siderVer">Sooya v1.5</div>
         </aside>
 
         <!-- Main Area -->
         <div class="app-main">
             <header class="app-header">
                 <div class="header-title">
-                    <span id="pageTitle">系统状态监控</span>
-                    <span id="headerStateBadge" class="ant-tag tag-gray">加载中...</span>
+                    <span id="pageTitle">系统状态</span>
+                    <span id="headerStateBadge" class="ant-tag tag-gray">检测中</span>
+                    <span class="ant-tag tag-green" title="所有入站连接均通过原物理网卡直接返回，绝不经过代理隧道">仅接管出站 · 不影响入站</span>
                 </div>
                 <div class="header-right">
                     <span id="headerModeText" class="ant-tag tag-blue">模式: --</span>
-                    <button class="btn btn-sm" onclick="refreshAll()">🔄 立即刷新</button>
+                    <button class="btn btn-sm" onclick="refreshAll()">🔄 刷新</button>
                 </div>
             </header>
 
             <main class="app-content">
-                <!-- ==================== VIEW 1: SYSTEM STATUS (x-ui index.html) ==================== -->
+                <!-- ==================== 1. 系统状态 (x-ui style) ==================== -->
                 <section id="view-dashboard" class="view-pane active">
-                    <!-- 4 Circular Dashboard Gauges -->
+                    <!-- 4 Gauges -->
                     <div class="grid-4">
                         <div class="xcard gauge-card">
                             <div class="gauge-svg-wrap">
-                                <svg width="116" height="116" viewBox="0 0 120 120">
+                                <svg width="112" height="112" viewBox="0 0 120 120">
                                     <circle cx="60" cy="60" r="50" fill="none" stroke="#f0f0f0" stroke-width="10"
-                                            stroke-dasharray="235.6 314.16" stroke-dashoffset="0"
-                                            transform="rotate(135 60 60)" stroke-linecap="round"/>
+                                            stroke-dasharray="235.6 314.16" transform="rotate(135 60 60)" stroke-linecap="round"/>
                                     <circle id="gaugeCpuArc" cx="60" cy="60" r="50" fill="none" stroke="#1890ff" stroke-width="10"
-                                            stroke-dasharray="0 314.16" stroke-dashoffset="0"
-                                            transform="rotate(135 60 60)" stroke-linecap="round"/>
+                                            stroke-dasharray="0 314.16" transform="rotate(135 60 60)" stroke-linecap="round"/>
                                 </svg>
                                 <div class="gauge-label"><span id="gaugeCpuText">0%</span></div>
                             </div>
-                            <div class="gauge-sub" id="gaugeCpuSub">CPU 使用率</div>
+                            <div class="gauge-sub" id="gaugeCpuSub">CPU</div>
                         </div>
 
                         <div class="xcard gauge-card">
                             <div class="gauge-svg-wrap">
-                                <svg width="116" height="116" viewBox="0 0 120 120">
+                                <svg width="112" height="112" viewBox="0 0 120 120">
                                     <circle cx="60" cy="60" r="50" fill="none" stroke="#f0f0f0" stroke-width="10"
                                             stroke-dasharray="235.6 314.16" transform="rotate(135 60 60)" stroke-linecap="round"/>
                                     <circle id="gaugeMemArc" cx="60" cy="60" r="50" fill="none" stroke="#1890ff" stroke-width="10"
@@ -514,12 +438,12 @@
                                 </svg>
                                 <div class="gauge-label"><span id="gaugeMemText">0%</span></div>
                             </div>
-                            <div class="gauge-sub" id="gaugeMemSub">内存: 0 B / 0 B</div>
+                            <div class="gauge-sub" id="gaugeMemSub">内存</div>
                         </div>
 
                         <div class="xcard gauge-card">
                             <div class="gauge-svg-wrap">
-                                <svg width="116" height="116" viewBox="0 0 120 120">
+                                <svg width="112" height="112" viewBox="0 0 120 120">
                                     <circle cx="60" cy="60" r="50" fill="none" stroke="#f0f0f0" stroke-width="10"
                                             stroke-dasharray="235.6 314.16" transform="rotate(135 60 60)" stroke-linecap="round"/>
                                     <circle id="gaugeSwapArc" cx="60" cy="60" r="50" fill="none" stroke="#1890ff" stroke-width="10"
@@ -527,12 +451,12 @@
                                 </svg>
                                 <div class="gauge-label"><span id="gaugeSwapText">0%</span></div>
                             </div>
-                            <div class="gauge-sub" id="gaugeSwapSub">Swap: 0 B / 0 B</div>
+                            <div class="gauge-sub" id="gaugeSwapSub">Swap</div>
                         </div>
 
                         <div class="xcard gauge-card">
                             <div class="gauge-svg-wrap">
-                                <svg width="116" height="116" viewBox="0 0 120 120">
+                                <svg width="112" height="112" viewBox="0 0 120 120">
                                     <circle cx="60" cy="60" r="50" fill="none" stroke="#f0f0f0" stroke-width="10"
                                             stroke-dasharray="235.6 314.16" transform="rotate(135 60 60)" stroke-linecap="round"/>
                                     <circle id="gaugeDiskArc" cx="60" cy="60" r="50" fill="none" stroke="#1890ff" stroke-width="10"
@@ -540,267 +464,267 @@
                                 </svg>
                                 <div class="gauge-label"><span id="gaugeDiskText">0%</span></div>
                             </div>
-                            <div class="gauge-sub" id="gaugeDiskSub">硬盘: 0 B / 0 B</div>
+                            <div class="gauge-sub" id="gaugeDiskSub">硬盘</div>
                         </div>
                     </div>
 
-                    <!-- 6 Status Cards (x-ui 2-column grid) -->
+                    <!-- 2-Column x-ui Status Rows -->
                     <div class="grid-2">
                         <div class="xcard">
-                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-                                <div>
-                                    <div style="font-weight:600; color:#001529; margin-bottom:6px;">内核引擎状态 (Sooya WarpKernel)</div>
-                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                                        <span id="dashEngineBadge" class="ant-tag tag-gray">检测中</span>
-                                        <span id="dashSbVer" class="ant-tag tag-blue">Sooya WarpKernel</span>
-                                    </div>
-                                </div>
-                                <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                                    <button class="btn btn-primary btn-sm" onclick="quickApplyCurrent()">▶ 启动/重载</button>
+                            <div class="xcard-title">
+                                <span>🚀 出站代理控制</span>
+                                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                                    <button id="dashStartBtn" class="btn btn-primary btn-sm" onclick="quickApplyCurrent()">▶ 启动/重载</button>
                                     <button class="btn btn-danger btn-sm" onclick="stopProxyService()">⏹ 停止</button>
-                                    <button class="btn btn-sm" onclick="switchView('nodes')">⚙️ 节点配置</button>
+                                    <button class="btn btn-sm" onclick="switchView('nodes')">⚙️ 修改出站配置</button>
                                 </div>
+                            </div>
+                            <div class="status-row">
+                                <span class="status-label">运行状态</span>
+                                <span id="dashEngineBadge" class="ant-tag tag-gray">检测中</span>
+                            </div>
+                            <div class="status-row">
+                                <span class="status-label">快速切换出站模式</span>
+                                <select id="dashModeSelect" class="ant-select" style="width:auto; height:28px; padding:2px 8px; font-size:12px;" onchange="onDashModeChange(this.value)">
+                                    <option value="standalone_warp">☁️ 仅 WARP 出站 (免配置)</option>
+                                    <option value="wg_chain_warp">🔗 WireGuard + WARP 链式出站</option>
+                                    <option value="standalone_wg">🛡️ 仅 WireGuard 出站</option>
+                                    <option value="socks_chain_warp">🧦 SOCKS5 + WARP 链式出站</option>
+                                    <option value="socks5_server">🖥️ SOCKS5 服务端</option>
+                                </select>
+                            </div>
+                            <div class="status-row">
+                                <span class="status-label">流量范围</span>
+                                <span class="ant-tag tag-green">仅本机出站流量 (入站服务 100% 原路返回)</span>
+                            </div>
+                            <div class="status-row">
+                                <span class="status-label">代理运行时间</span>
+                                <span id="dashProxyUptime" class="ant-tag tag-blue">0 秒</span>
                             </div>
                         </div>
 
                         <div class="xcard">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <div>
-                                    <div style="font-weight:600; color:#001529; margin-bottom:6px;">运行时间 (Uptime)</div>
-                                    <div style="display:flex; gap:10px; align-items:center;">
-                                        <span>系统运行: <span id="dashSysUptime" class="ant-tag tag-green">0 秒</span></span>
-                                        <span>代理持续: <span id="dashProxyUptime" class="ant-tag tag-blue">0 秒</span></span>
-                                    </div>
-                                </div>
-                                <div style="font-size:12px; color:var(--text-secondary);" id="dashActiveVer">版本: --</div>
+                            <div class="xcard-title">
+                                <span>📈 主机网络与负载</span>
+                                <span id="dashSbVer" class="ant-tag tag-gray">Sooya WarpKernel</span>
                             </div>
-                        </div>
-
-                        <div class="xcard">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <div>
-                                    <div style="font-weight:600; color:#001529; margin-bottom:6px;">系统负载 & 连接统计</div>
-                                    <div style="font-size:13px; color:rgba(0,0,0,0.65);">
-                                        负载 (1/5/15m): <strong id="dashLoads">0.00 | 0.00 | 0.00</strong>
-                                    </div>
-                                </div>
-                                <div style="display:flex; gap:8px;">
-                                    <span class="ant-tag tag-blue">TCP: <strong id="dashTcp" style="margin-left:4px;">0</strong></span>
-                                    <span class="ant-tag tag-blue">UDP: <strong id="dashUdp" style="margin-left:4px;">0</strong></span>
-                                </div>
+                            <div class="status-row">
+                                <span class="status-label">实时网速</span>
+                                <span>
+                                    <span style="color:#1890ff; font-weight:600;">↑ <span id="dashSpeedUp">0 B/s</span></span>
+                                    &nbsp;/&nbsp;
+                                    <span style="color:#52c41a; font-weight:600;">↓ <span id="dashSpeedDown">0 B/s</span></span>
+                                </span>
                             </div>
-                        </div>
-
-                        <div class="xcard">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <div>
-                                    <div style="font-weight:600; color:#001529; margin-bottom:6px;">实时网速 & 累计流量</div>
-                                    <div style="font-size:13px; color:rgba(0,0,0,0.75);">
-                                        速率: <span style="color:#1890ff;">↑ <span id="dashSpeedUp">0 B/s</span></span>
-                                        &nbsp;|&nbsp;
-                                        <span style="color:#52c41a;">↓ <span id="dashSpeedDown">0 B/s</span></span>
-                                    </div>
-                                </div>
-                                <div style="font-size:12px; color:var(--text-secondary); text-align:right;">
-                                    <div>累计 ↑ <strong id="dashTrafficSent">0 B</strong></div>
-                                    <div>累计 ↓ <strong id="dashTrafficRecv">0 B</strong></div>
-                                </div>
+                            <div class="status-row">
+                                <span class="status-label">总流量</span>
+                                <span>↑ <strong id="dashTrafficSent">0 B</strong> &nbsp;/&nbsp; ↓ <strong id="dashTrafficRecv">0 B</strong></span>
+                            </div>
+                            <div class="status-row">
+                                <span class="status-label">系统负载 (1/5/15m)</span>
+                                <strong id="dashLoads">0.00 | 0.00 | 0.00</strong>
+                            </div>
+                            <div class="status-row">
+                                <span class="status-label">系统运行 / 连接数</span>
+                                <span>
+                                    <span id="dashSysUptime">0 秒</span> ·
+                                    TCP <strong id="dashTcp">0</strong> / UDP <strong id="dashUdp">0</strong>
+                                </span>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Chain Topology & Hop Probe Card -->
+                    <!-- Outbound Topology & Exit IP -->
                     <div class="xcard">
                         <div class="xcard-title">
                             <div>
-                                <span>🌐 当前链式代理拓扑与分跳健康状态</span>
-                                <span id="dashTopologyText" style="font-size:12px; font-weight:400; color:var(--text-secondary); margin-left:10px;"></span>
+                                <span>🌐 出站链路状态与当前出口 IP</span>
+                                <span id="dashTopologyText" style="font-size:12px; font-weight:400; color:var(--text-secondary); margin-left:8px;"></span>
                             </div>
-                            <button id="probeBtn" class="btn btn-primary btn-sm" onclick="runHopTest()">⚡ 立即执行分跳连通性探测</button>
+                            <button id="probeBtn" class="btn btn-primary btn-sm" onclick="runHopTest()">⚡ 检测出口 IP 与延迟</button>
                         </div>
-
                         <div class="hop-chain">
                             <div id="hopPhysBox" class="hop-box">
-                                <div class="hop-step">Hop 0 · 物理出口网卡</div>
-                                <div class="hop-name" id="hopPhysName">物理网卡</div>
+                                <div class="hop-step">本机物理网卡</div>
+                                <div class="hop-name" id="hopPhysName">网卡: --</div>
                                 <div class="hop-meta" id="hopPhysMeta">网关: --</div>
                             </div>
                             <div id="hopVpn1Box" class="hop-box">
-                                <div class="hop-step">Hop 1 · 第一跳入口节点</div>
-                                <div class="hop-name" id="hopVpn1Name">入口节点</div>
+                                <div class="hop-step">第一跳 (前置节点)</div>
+                                <div class="hop-name" id="hopVpn1Name">前置节点</div>
                                 <div class="hop-meta" id="hopVpn1Meta">状态: --</div>
                             </div>
                             <div id="hopVpn2Box" class="hop-box">
-                                <div class="hop-step">Hop 2 · 第二跳出口节点</div>
+                                <div class="hop-step">第二跳 (落地 WARP)</div>
                                 <div class="hop-name" id="hopVpn2Name">Cloudflare WARP</div>
                                 <div class="hop-meta" id="hopVpn2Meta">状态: --</div>
                             </div>
                             <div id="hopExitBox" class="hop-box">
-                                <div class="hop-step">Final · 目标公网出口</div>
-                                <div class="hop-name" id="hopExitName">公网连通状态</div>
-                                <div class="hop-meta" id="hopExitMeta">点击右上角探测获取出口 IP</div>
+                                <div class="hop-step">当前公网出站出口</div>
+                                <div class="hop-name" id="hopExitName">待检测</div>
+                                <div class="hop-meta" id="hopExitMeta">点击右上角按钮检测出口 IP</div>
                             </div>
                         </div>
                     </div>
                 </section>
 
-                <!-- ==================== VIEW 2: CHAIN & NODES CONFIG ==================== -->
+                <!-- ==================== 2. 出站配置 (Simple x-ui style) ==================== -->
                 <section id="view-nodes" class="view-pane">
-                    <!-- Step 1: Select Proxy Mode -->
                     <div class="xcard" style="margin-bottom:16px;">
-                        <div class="xcard-title">
-                            <span>1. 选择代理工作模式 (点击切换，自动精简下方配置项)</span>
-                        </div>
-                        <div class="grid-3">
-                            <div class="mode-card" data-mode="wg_chain_warp" onclick="selectMode('wg_chain_warp')">
-                                <div class="mode-card-title">
-                                    <span>🔗 WireGuard 链式 WARP</span>
-                                    <span class="ant-tag tag-blue">推荐双跳</span>
-                                </div>
-                                <div class="mode-card-desc">VPS ➔ WireGuard (入口) ➔ Cloudflare WARP (出口) ➔ 公网</div>
+                        <div class="xcard-title" style="padding-bottom:12px; border-bottom:1px solid #f0f0f0;">
+                            <div>
+                                <span>出站模式选择</span>
+                                <span id="nodesReadyHint" style="font-size:12px; font-weight:400; margin-left:10px;"></span>
                             </div>
-                            <div class="mode-card" data-mode="socks_chain_warp" onclick="selectMode('socks_chain_warp')">
-                                <div class="mode-card-title">
-                                    <span>🧦 SOCKS5 链式 WARP</span>
-                                    <span class="ant-tag tag-blue">双跳链式</span>
-                                </div>
-                                <div class="mode-card-desc">VPS ➔ SOCKS5 代理 (入口) ➔ Cloudflare WARP (出口) ➔ 公网</div>
-                            </div>
-                            <div class="mode-card" data-mode="standalone_wg" onclick="selectMode('standalone_wg')">
-                                <div class="mode-card-title">
-                                    <span>🛡️ 单独 WireGuard 出站</span>
-                                    <span class="ant-tag tag-green">单跳直连</span>
-                                </div>
-                                <div class="mode-card-desc">VPS ➔ WireGuard 节点 ➔ 公网 (不使用 WARP)</div>
-                            </div>
-                            <div class="mode-card" data-mode="standalone_socks" onclick="selectMode('standalone_socks')">
-                                <div class="mode-card-title">
-                                    <span>⚡ 单独 SOCKS5 代理出站</span>
-                                    <span class="ant-tag tag-green">单跳直连</span>
-                                </div>
-                                <div class="mode-card-desc">VPS ➔ 外部 SOCKS5 节点 ➔ 公网 (不使用 WARP)</div>
-                            </div>
-                            <div class="mode-card" data-mode="standalone_warp" onclick="selectMode('standalone_warp')">
-                                <div class="mode-card-title">
-                                    <span>☁️ 单独 Cloudflare WARP 出站</span>
-                                    <span class="ant-tag tag-orange">单跳解锁</span>
-                                </div>
-                                <div class="mode-card-desc">VPS ➔ Cloudflare WARP ➔ 公网 (支持一键自动注册)</div>
-                            </div>
-                            <div class="mode-card" data-mode="socks5_server" onclick="selectMode('socks5_server')">
-                                <div class="mode-card-title">
-                                    <span>🖥️ 本机 SOCKS5 服务端</span>
-                                    <span class="ant-tag tag-gray">供外部连接</span>
-                                </div>
-                                <div class="mode-card-desc">在本机开启带账密认证的 SOCKS5 服务端，供外部客户端连接</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Dynamic Node Configuration Panels -->
-                    <div class="grid-2">
-                        <!-- Panel A: WireGuard (VPN1) -->
-                        <div id="panelWg1" class="xcard">
-                            <div class="xcard-title">
-                                <span>🛡️ 入口 WireGuard 节点配置 (VPN 1)</span>
-                                <div style="display:flex; gap:6px;">
-                                    <label class="btn btn-sm" style="cursor:pointer;">
-                                        📂 导入 .conf 文件
-                                        <input type="file" accept=".conf,.txt" style="display:none;" onchange="importWgFile(event, 'vpn1Config')">
-                                    </label>
-                                    <button class="btn btn-sm" onclick="fillWgSample('vpn1Config')">填入模板</button>
-                                </div>
-                            </div>
-                            <div class="form-row">
-                                <label class="form-label">节点备注名称</label>
-                                <input id="vpn1Name" type="text" class="ant-input" placeholder="例如: 冰岛 NordVPN / 香港 WG">
-                            </div>
-                            <div class="form-row" style="margin-bottom:0;">
-                                <label class="form-label">WireGuard 标准配置内容 (需包含 [Interface] 与 [Peer] Endpoint)</label>
-                                <textarea id="vpn1Config" class="ant-textarea" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.5.0.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = 1.2.3.4:51820&#10;AllowedIPs = 0.0.0.0/0"></textarea>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <button id="topApplyBtn" class="btn btn-primary" onclick="saveAndApplyConfig()">🚀 保存并启用出站</button>
+                                <button class="btn" onclick="saveConfigOnly()">💾 仅保存</button>
+                                <button class="btn btn-danger" onclick="stopProxyService()">⏹ 停止出站</button>
                             </div>
                         </div>
 
-                        <!-- Panel B: SOCKS5 Upstream -->
-                        <div id="panelSocks5" class="xcard" style="display:none;">
-                            <div class="xcard-title">
-                                <span>🧦 入口外部 SOCKS5 代理节点</span>
+                        <!-- 5 Simple Mode Tabs -->
+                        <div class="mode-tabs">
+                            <div class="mode-tab" data-mode="standalone_warp" onclick="selectMode('standalone_warp')">
+                                <div class="mode-tab-name">
+                                    <span>☁️ 仅 WARP 出站</span>
+                                    <span class="ant-tag tag-green">免配置</span>
+                                </div>
+                                <div class="mode-tab-desc">一键自动申请 WARP 接管本机出站</div>
                             </div>
-                            <div class="form-row">
-                                <label class="form-label">⚡ 一键智能解析 (支持粘贴 <code>user:pass@host:port</code> 或 <code>socks5://...</code>)</label>
-                                <div style="display:flex; gap:8px;">
-                                    <input id="socksQuickInput" type="text" class="ant-input" placeholder="粘贴 user:pass@ip:port 后点击右侧解析">
-                                    <button class="btn btn-primary" onclick="parseQuickSocks()">智能填入</button>
+                            <div class="mode-tab" data-mode="wg_chain_warp" onclick="selectMode('wg_chain_warp')">
+                                <div class="mode-tab-name">
+                                    <span>🔗 WG + WARP 链式</span>
+                                    <span class="ant-tag tag-blue">双跳</span>
+                                </div>
+                                <div class="mode-tab-desc">本机 ➔ WireGuard ➔ WARP ➔ 公网</div>
+                            </div>
+                            <div class="mode-tab" data-mode="standalone_wg" onclick="selectMode('standalone_wg')">
+                                <div class="mode-tab-name">
+                                    <span>🛡️ 仅 WireGuard 出站</span>
+                                </div>
+                                <div class="mode-tab-desc">本机 ➔ WireGuard 节点 ➔ 公网</div>
+                            </div>
+                            <div class="mode-tab" data-mode="socks_chain_warp" onclick="selectMode('socks_chain_warp')">
+                                <div class="mode-tab-name">
+                                    <span>🧦 SOCKS5 + WARP</span>
+                                </div>
+                                <div class="mode-tab-desc">本机 ➔ SOCKS5 ➔ WARP ➔ 公网</div>
+                            </div>
+                            <div class="mode-tab" data-mode="socks5_server" onclick="selectMode('socks5_server')">
+                                <div class="mode-tab-name">
+                                    <span>🖥️ SOCKS5 服务端</span>
+                                </div>
+                                <div class="mode-tab-desc">开启本机 SOCKS5 端口供外部连接</div>
+                            </div>
+                        </div>
+
+                        <!-- Dynamic Node Inputs -->
+                        <div id="nodesGrid" class="grid-2" style="margin-bottom:0;">
+                            <!-- WireGuard Node (VPN 1) -->
+                            <div id="panelWg1" class="xcard" style="background:#fafafa;">
+                                <div class="xcard-title">
+                                    <span>🛡️ WireGuard 节点配置</span>
+                                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                                        <button class="btn btn-sm" onclick="pasteToTarget('vpn1Config')">📋 粘贴配置</button>
+                                        <label class="btn btn-sm" style="cursor:pointer;">
+                                            📂 导入 .conf
+                                            <input type="file" accept=".conf,.txt" style="display:none;" onchange="importWgFile(event, 'vpn1Config', 'vpn1Name')">
+                                        </label>
+                                        <button class="btn btn-sm" onclick="fillWgSample('vpn1Config')">模板</button>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <label class="form-label">节点备注</label>
+                                    <input id="vpn1Name" type="text" class="ant-input" placeholder="例如: 香港 WG / NordVPN">
+                                </div>
+                                <div class="form-row" style="margin-bottom:0;">
+                                    <label class="form-label">WireGuard 配置文件内容 (支持直接拖拽 .conf 文件到此框)</label>
+                                    <textarea id="vpn1Config" class="ant-textarea" oninput="updateLiveHints()" ondragover="event.preventDefault()" ondrop="handleWgDrop(event, 'vpn1Config', 'vpn1Name')" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.5.0.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = 1.2.3.4:51820"></textarea>
+                                    <div id="wg1Hint" style="margin-top:6px; font-size:12px; color:var(--text-secondary);"></div>
                                 </div>
                             </div>
-                            <div class="grid-2" style="margin-bottom:0;">
-                                <div class="form-row">
-                                    <label class="form-label">服务器地址 (IP 或域名)</label>
-                                    <input id="socksServer" type="text" class="ant-input" placeholder="例如: 198.51.100.10">
+
+                            <!-- SOCKS5 Node -->
+                            <div id="panelSocks5" class="xcard" style="display:none; background:#fafafa;">
+                                <div class="xcard-title">
+                                    <span>🧦 前置 SOCKS5 代理配置</span>
+                                    <button class="btn btn-sm" onclick="pasteQuickSocks()">📋 粘贴并自动识别</button>
                                 </div>
                                 <div class="form-row">
-                                    <label class="form-label">端口 (Port)</label>
-                                    <input id="socksPort" type="number" class="ant-input" placeholder="1080" min="1" max="65535">
+                                    <label class="form-label">快速识别 (支持粘贴 <code>user:pass@host:port</code> 或 <code>host:port:user:pass</code>)</label>
+                                    <div style="display:flex; gap:8px;">
+                                        <input id="socksQuickInput" type="text" class="ant-input" oninput="tryAutoParseSocks(this.value, false)" placeholder="粘贴整行 SOCKS5 链接自动填入下方">
+                                        <button class="btn btn-primary" onclick="parseQuickSocks()">识别</button>
+                                    </div>
                                 </div>
-                                <div class="form-row">
-                                    <label class="form-label">用户名 (可选)</label>
-                                    <input id="socksUser" type="text" class="ant-input" placeholder="无认证可留空">
+                                <div class="grid-2" style="margin-bottom:0;">
+                                    <div class="form-row">
+                                        <label class="form-label">服务器地址</label>
+                                        <input id="socksServer" type="text" class="ant-input" oninput="tryAutoParseSocks(this.value, true); updateLiveHints();" placeholder="198.51.100.10">
+                                    </div>
+                                    <div class="form-row">
+                                        <label class="form-label">端口</label>
+                                        <input id="socksPort" type="number" class="ant-input" oninput="updateLiveHints()" placeholder="1080" min="1" max="65535">
+                                    </div>
+                                    <div class="form-row" style="margin-bottom:0;">
+                                        <label class="form-label">用户名 (选填)</label>
+                                        <input id="socksUser" type="text" class="ant-input" placeholder="无认证留空">
+                                    </div>
+                                    <div class="form-row" style="margin-bottom:0;">
+                                        <label class="form-label">密码 (选填)</label>
+                                        <input id="socksPass" type="text" class="ant-input" placeholder="无认证留空">
+                                    </div>
                                 </div>
-                                <div class="form-row">
-                                    <label class="form-label">密码 (可选)</label>
-                                    <input id="socksPass" type="text" class="ant-input" placeholder="无认证可留空">
+                            </div>
+
+                            <!-- Cloudflare WARP Node (VPN 2) -->
+                            <div id="panelWarp" class="xcard" style="background:#fafafa;">
+                                <div class="xcard-title">
+                                    <span>☁️ Cloudflare WARP 出站配置</span>
+                                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                                        <button id="warpRegBtn" class="btn btn-primary btn-sm" onclick="autoRegisterWarp()">⚡ 一键自动生成/换号</button>
+                                        <button class="btn btn-sm" onclick="pasteToTarget('vpn2Config')">📋 粘贴</button>
+                                        <label class="btn btn-sm" style="cursor:pointer;">
+                                            📂 导入 .conf
+                                            <input type="file" accept=".conf,.txt" style="display:none;" onchange="importWgFile(event, 'vpn2Config', 'vpn2Name')">
+                                        </label>
+                                    </div>
+                                </div>
+                                <div style="background:#e6f7ff; border:1px solid #91d5ff; border-radius:6px; padding:10px 12px; margin-bottom:12px; font-size:12px; color:#0050b3;">
+                                    💡 <strong>免配置说明：</strong>下方配置框<strong>留空即可</strong>，点击右上角「🚀 保存并启用出站」会自动向 Cloudflare 注册免费 WARP 账户并启动出站。
+                                </div>
+                                <input id="vpn2Name" type="hidden" value="Cloudflare WARP">
+                                <div class="form-row" style="margin-bottom:0;">
+                                    <label class="form-label">WARP WireGuard 配置 (留空自动生成，也可手动粘贴自有 WARP 配置)</label>
+                                    <textarea id="vpn2Config" class="ant-textarea" oninput="updateLiveHints()" ondragover="event.preventDefault()" ondrop="handleWgDrop(event, 'vpn2Config', 'vpn2Name')" placeholder="留空即可自动注册生成 Cloudflare WARP 配置..."></textarea>
+                                    <div id="wg2Hint" style="margin-top:6px; font-size:12px; color:var(--text-secondary);"></div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Panel C: Cloudflare WARP (VPN2) -->
-                        <div id="panelWarp" class="xcard">
-                            <div class="xcard-title">
-                                <span>☁️ Cloudflare WARP 出口节点 (VPN 2)</span>
-                                <div style="display:flex; gap:6px;">
-                                    <button id="warpRegBtn" class="btn btn-primary btn-sm" onclick="autoRegisterWarp()">⚡ 一键自动注册生成 WARP</button>
-                                    <label class="btn btn-sm" style="cursor:pointer;">
-                                        📂 导入 .conf
-                                        <input type="file" accept=".conf,.txt" style="display:none;" onchange="importWgFile(event, 'vpn2Config')">
-                                    </label>
+                        <!-- SOCKS5 Server Panel -->
+                        <div id="panelSocksServer" style="display:none;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                                <span style="font-weight:600;">🖥️ 本机 SOCKS5 服务端设置</span>
+                                <button class="btn btn-primary btn-sm" onclick="addSocksServerUser()">+ 添加账号</button>
+                            </div>
+                            <div class="grid-2">
+                                <div class="form-row" style="margin-bottom:0;">
+                                    <label class="form-label">监听地址</label>
+                                    <input id="s5SrvListen" type="text" class="ant-input" value="0.0.0.0">
+                                </div>
+                                <div class="form-row" style="margin-bottom:0;">
+                                    <label class="form-label">监听端口</label>
+                                    <input id="s5SrvPort" type="number" class="ant-input" value="1080" min="1" max="65535">
                                 </div>
                             </div>
-                            <div class="form-row">
-                                <label class="form-label">出口节点名称</label>
-                                <input id="vpn2Name" type="text" class="ant-input" placeholder="Cloudflare WARP">
-                            </div>
-                            <div class="form-row" style="margin-bottom:0;">
-                                <label class="form-label">WARP WireGuard 配置 (可点击上方“一键自动注册生成 WARP”自动获取)</label>
-                                <textarea id="vpn2Config" class="ant-textarea" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 172.16.0.2/32&#10;&#10;[Peer]&#10;PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=&#10;Endpoint = engage.cloudflareclient.com:2408&#10;AllowedIPs = 0.0.0.0/0"></textarea>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Panel D: Local SOCKS5 Server (Only for socks5_server mode) -->
-                    <div id="panelSocksServer" class="xcard" style="display:none; margin-bottom:16px;">
-                        <div class="xcard-title">
-                            <span>🖥️ 本机 SOCKS5 服务端配置</span>
-                            <button class="btn btn-primary btn-sm" onclick="addSocksServerUser()">+ 添加认证账号</button>
-                        </div>
-                        <div class="grid-2">
-                            <div class="form-row">
-                                <label class="form-label">监听地址 (0.0.0.0 表示允许公网/所有网卡连接)</label>
-                                <input id="s5SrvListen" type="text" class="ant-input" value="0.0.0.0">
-                            </div>
-                            <div class="form-row">
-                                <label class="form-label">监听端口 (避免使用 8880 或当前面板端口)</label>
-                                <input id="s5SrvPort" type="number" class="ant-input" value="1080" min="1" max="65535">
-                            </div>
-                        </div>
-                        <div>
-                            <label class="form-label">账号密码列表 (至少保留 1 个启用账号)</label>
                             <table class="ant-table">
                                 <thead>
                                     <tr>
                                         <th>用户名</th>
                                         <th>密码</th>
-                                        <th>状态</th>
-                                        <th>快捷分享</th>
+                                        <th>分享链接</th>
                                         <th>操作</th>
                                     </tr>
                                 </thead>
@@ -809,120 +733,95 @@
                         </div>
                     </div>
 
-                    <!-- Step 2: Lightweight Routing & DNS -->
-                    <div class="xcard" style="margin-bottom:16px;">
-                        <div class="xcard-title">
-                            <span>2. 路由接管与防泄漏 DNS 策略</span>
-                        </div>
-                        <div class="grid-3" style="margin-bottom:0;">
+                    <!-- Optional Advanced Outbound Filter -->
+                    <details class="xcard">
+                        <summary style="cursor:pointer; font-weight:600; color:#001529; display:flex; justify-content:space-between; align-items:center; user-select:none;">
+                            <span>🔧 可选高级分流设置 (不代理的目标 IP 白名单 / DNS 策略)</span>
+                            <span class="ant-tag tag-green">入站流量原路直连保护已锁定开启</span>
+                        </summary>
+                        <div class="grid-2" style="margin-top:14px; margin-bottom:0;">
                             <div class="form-row" style="margin-bottom:0;">
-                                <label class="form-label">本机自身出站流量接管</label>
-                                <select id="routeHostProxy" class="ant-select">
-                                    <option value="true">开启 (本机发起的访问走代理链路)</option>
-                                    <option value="false">关闭 (本机直连，仅按需路由)</option>
-                                </select>
-                            </div>
-                            <div class="form-row" style="margin-bottom:0;">
-                                <label class="form-label">DNS 解析防泄漏模式</label>
-                                <select id="dnsMode" class="ant-select">
-                                    <option value="chain">链式隧道内解析 (防 DNS 泄漏，推荐)</option>
-                                    <option value="physical">物理网卡直连解析</option>
-                                </select>
-                            </div>
-                            <div class="form-row" style="margin-bottom:0;">
-                                <label class="form-label">绕过代理的目标网段 (可选，逗号分隔 CIDR)</label>
+                                <label class="form-label">出站直连白名单 IP/网段 (逗号分隔 CIDR，访问这些目标时不走代理)</label>
                                 <input id="excludeDest" type="text" class="ant-input" placeholder="例如: 1.2.3.0/24, 8.8.4.4/32">
                             </div>
-                        </div>
-                    </div>
-
-                    <!-- Step 3: Action Bar -->
-                    <div class="xcard" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-                        <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                            <button id="applyBtn" class="btn btn-primary" onclick="saveAndApplyConfig()">🚀 保存并立即应用启动 (30s 看门狗保护)</button>
-                            <button class="btn" onclick="saveConfigOnly()">💾 仅保存配置</button>
-                            <button class="btn" onclick="validateCurrentForm()">🔍 校验配置语法</button>
-                        </div>
-                        <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                            <button class="btn btn-danger" onclick="stopProxyService()">🛑 停止代理并恢复原网络</button>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- ==================== VIEW 3: LOGS & DIAGNOSTICS ==================== -->
-                <section id="view-logs" class="view-pane">
-                    <div class="xcard">
-                        <div class="xcard-title" style="flex-wrap:wrap; gap:10px;">
-                            <span>📜 实时运行日志与系统网络诊断</span>
-                            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                                <span style="font-size:12px; font-weight:400; color:var(--text-secondary);">日志级别:</span>
-                                <select id="logLevelSelect" class="ant-select" style="width:120px; height:28px; padding:2px 8px;" onchange="changeLogLevel(this.value)">
-                                    <option value="info">info (默认)</option>
-                                    <option value="debug">debug (详细)</option>
-                                    <option value="warn">warn (仅警告)</option>
-                                    <option value="none">none (关闭)</option>
+                            <div class="form-row" style="margin-bottom:0;">
+                                <label class="form-label">DNS 解析策略</label>
+                                <select id="dnsMode" class="ant-select">
+                                    <option value="chain">通过出站代理隧道解析 (防 DNS 泄漏，默认)</option>
+                                    <option value="physical">使用物理网卡直连解析</option>
                                 </select>
-                                <button class="btn btn-primary btn-sm" onclick="loadLogs()">🔄 刷新运行日志</button>
-                                <button class="btn btn-sm" onclick="loadDiagnose()">🩺 生成系统路由/防火墙诊断报告</button>
-                                <button class="btn btn-sm" onclick="copyLogContent()">📋 复制内容</button>
                             </div>
                         </div>
-                        <pre id="logViewer" class="log-pre">正在加载运行日志...</pre>
-                    </div>
+                        <input id="routeHostProxy" type="hidden" value="true">
+                    </details>
                 </section>
 
-                <!-- ==================== VIEW 4: PANEL SETTINGS (x-ui setting.html) ==================== -->
+                <!-- ==================== 3. 面板设置 (x-ui setting.html) ==================== -->
                 <section id="view-settings" class="view-pane">
                     <div class="xcard">
                         <div class="ant-tabs-bar">
-                            <div class="ant-tab active" data-tab="panelCfg" onclick="switchSettingTab('panelCfg')">面板配置</div>
-                            <div class="ant-tab" data-tab="userCfg" onclick="switchSettingTab('userCfg')">登录用户与密码设置</div>
+                            <div class="ant-tab active" data-tab="panelCfg" onclick="switchSettingTab('panelCfg')">面板监听设置</div>
+                            <div class="ant-tab" data-tab="userCfg" onclick="switchSettingTab('userCfg')">修改登录账号密码</div>
                         </div>
 
-                        <!-- Tab 1: Panel Listen / Port / Path -->
-                        <div id="tab-panelCfg">
-                            <div style="margin-bottom:20px; display:flex; gap:12px;">
-                                <button class="btn btn-primary" onclick="savePanelSettings()">💾 保存面板配置</button>
-                                <button class="btn btn-danger" onclick="restartPanelService()">🔄 重启面板服务</button>
+                        <div id="tab-panelCfg" style="max-width:520px;">
+                            <div class="form-row">
+                                <label class="form-label">面板监听地址 (0.0.0.0 表示所有网卡)</label>
+                                <input id="panelListen" type="text" class="ant-input" placeholder="0.0.0.0">
                             </div>
-                            <div style="max-width:560px;">
-                                <div class="form-row">
-                                    <label class="form-label">面板监听 IP (默认留空或填 0.0.0.0 监听全部网卡)</label>
-                                    <input id="panelListen" type="text" class="ant-input" placeholder="0.0.0.0">
-                                </div>
-                                <div class="form-row">
-                                    <label class="form-label">面板监听端口 (默认 54321，修改保存后请点击“重启面板服务”生效)</label>
-                                    <input id="panelPort" type="number" class="ant-input" placeholder="54321" min="1" max="65535">
-                                </div>
-                                <div class="form-row">
-                                    <label class="form-label">面板 URL 根路径 (必须以 / 开头和结尾，例如 / 或 /xui/)</label>
-                                    <input id="panelBasePath" type="text" class="ant-input" placeholder="/">
-                                </div>
+                            <div class="form-row">
+                                <label class="form-label">面板端口 (修改后请点击重启面板生效)</label>
+                                <input id="panelPort" type="number" class="ant-input" placeholder="54321" min="1" max="65535">
+                            </div>
+                            <div class="form-row">
+                                <label class="form-label">面板根路径 (以 / 开头和结尾，如 / 或 /sooya/)</label>
+                                <input id="panelBasePath" type="text" class="ant-input" placeholder="/">
+                            </div>
+                            <div style="display:flex; gap:10px; margin-top:16px;">
+                                <button class="btn btn-primary" onclick="savePanelSettings()">💾 保存设置</button>
+                                <button class="btn btn-danger" onclick="restartPanelService()">🔄 重启面板</button>
                             </div>
                         </div>
 
-                        <!-- Tab 2: User Credentials -->
-                        <div id="tab-userCfg" style="display:none; max-width:480px;">
+                        <div id="tab-userCfg" style="display:none; max-width:460px;">
                             <div class="form-row">
-                                <label class="form-label">原用户名</label>
-                                <input id="oldUsername" type="text" class="ant-input" placeholder="输入当前登录用户名">
+                                <label class="form-label">当前用户名</label>
+                                <input id="oldUsername" type="text" class="ant-input">
                             </div>
                             <div class="form-row">
-                                <label class="form-label">原密码</label>
-                                <input id="oldPassword" type="password" class="ant-input" placeholder="输入当前登录密码">
+                                <label class="form-label">当前密码</label>
+                                <input id="oldPassword" type="password" class="ant-input">
                             </div>
                             <div class="form-row">
                                 <label class="form-label">新用户名</label>
-                                <input id="newUsername" type="text" class="ant-input" placeholder="输入新用户名">
+                                <input id="newUsername" type="text" class="ant-input">
                             </div>
                             <div class="form-row">
                                 <label class="form-label">新密码</label>
-                                <input id="newPassword" type="password" class="ant-input" placeholder="输入新密码">
+                                <input id="newPassword" type="password" class="ant-input">
                             </div>
-                            <div class="form-row">
-                                <button class="btn btn-primary" onclick="updatePanelUser()">🔐 确认修改登录账密</button>
+                            <button class="btn btn-primary" onclick="updatePanelUser()">🔐 保存新账号密码</button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ==================== 4. 运行日志 ==================== -->
+                <section id="view-logs" class="view-pane">
+                    <div class="xcard">
+                        <div class="xcard-title">
+                            <span>📜 运行日志与路由诊断</span>
+                            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                <select id="logLevelSelect" class="ant-select" style="width:110px; height:28px; padding:2px 8px;" onchange="changeLogLevel(this.value)">
+                                    <option value="info">info</option>
+                                    <option value="debug">debug</option>
+                                    <option value="warn">warn</option>
+                                </select>
+                                <button class="btn btn-primary btn-sm" onclick="loadLogs()">🔄 刷新日志</button>
+                                <button class="btn btn-sm" onclick="loadDiagnose()">🩺 路由表与防火墙检查</button>
+                                <button class="btn btn-sm" onclick="copyLogContent()">📋 复制</button>
                             </div>
                         </div>
+                        <pre id="logViewer" class="log-pre">正在加载运行日志...</pre>
                     </div>
                 </section>
             </main>
@@ -931,9 +830,8 @@
 
     <script>
         let currentConfig = null;
-        let currentMode = 'wg_chain_warp';
+        let currentMode = 'standalone_warp';
         let socks5ServerUsers = [];
-        let statusTimer = null;
 
         function showToast(msg, type = 'ok') {
             const box = document.getElementById('toastContainer');
@@ -941,7 +839,7 @@
             el.className = 'toast ' + (type === 'err' ? 'err' : 'ok');
             el.innerHTML = `<span>${type === 'err' ? '❌' : '✅'}</span><div style="flex:1;">${escapeHtml(msg)}</div>`;
             box.appendChild(el);
-            setTimeout(() => { el.remove(); }, 4200);
+            setTimeout(() => { el.remove(); }, 4000);
         }
 
         function escapeHtml(str) {
@@ -968,25 +866,23 @@
 
         function setGauge(arcId, textId, pct) {
             const clamped = Math.max(0, Math.min(100, Math.round(pct || 0)));
-            const maxArc = 235.6;
-            const filled = (clamped / 100) * maxArc;
+            const filled = (clamped / 100) * 235.6;
             const arc = document.getElementById(arcId);
             const txt = document.getElementById(textId);
             if (arc) {
                 arc.setAttribute('stroke-dasharray', `${filled.toFixed(1)} 314.16`);
-                arc.setAttribute('stroke', clamped >= 90 ? '#f5222d' : (clamped >= 75 ? '#faad14' : '#1890ff'));
+                arc.setAttribute('stroke', clamped >= 90 ? '#ff4d4f' : (clamped >= 75 ? '#faad14' : '#1890ff'));
             }
             if (txt) txt.textContent = clamped + '%';
         }
 
         function modeLabel(mode) {
             const map = {
-                'wg_chain_warp': 'WireGuard 链式 WARP (WG -> WARP)',
-                'socks_chain_warp': 'SOCKS5 链式 WARP (SOCKS5 -> WARP)',
-                'standalone_wg': '单独 WireGuard 出站',
-                'standalone_socks': '单独 SOCKS5 代理出站',
-                'standalone_warp': '单独 Cloudflare WARP 出站',
-                'socks5_server': '本机 SOCKS5 服务端'
+                'standalone_warp': '仅 WARP 出站',
+                'wg_chain_warp': 'WG + WARP 链式出站',
+                'standalone_wg': '仅 WireGuard 出站',
+                'socks_chain_warp': 'SOCKS5 + WARP 链式出站',
+                'socks5_server': 'SOCKS5 服务端'
             };
             return map[mode] || mode;
         }
@@ -999,10 +895,10 @@
                 el.classList.toggle('active', el.id === 'view-' + view);
             });
             const titles = {
-                dashboard: '系统状态监控',
-                nodes: '链式代理与节点配置',
-                logs: '运行日志与系统诊断',
-                settings: '面板设置'
+                dashboard: '系统状态',
+                nodes: '出站配置',
+                settings: '面板设置',
+                logs: '运行日志'
             };
             document.getElementById('pageTitle').textContent = titles[view] || 'Sooya';
             if (view === 'logs') loadLogs();
@@ -1024,7 +920,7 @@
             });
             if (resp.status === 401) {
                 window.location.href = './login';
-                throw new Error('登录会话已过期');
+                throw new Error('登录已过期');
             }
             return await resp.json();
         }
@@ -1035,9 +931,8 @@
                 if (!res.success || !res.data) return;
                 const { system, chain } = res.data;
 
-                // Gauges
                 setGauge('gaugeCpuArc', 'gaugeCpuText', system.cpu);
-                document.getElementById('gaugeCpuSub').textContent = `CPU 使用率 (${system.cpu_cores || 1} 核)`;
+                document.getElementById('gaugeCpuSub').textContent = `CPU (${system.cpu_cores || 1} 核)`;
 
                 const memPct = system.mem.total > 0 ? (system.mem.current / system.mem.total) * 100 : 0;
                 setGauge('gaugeMemArc', 'gaugeMemText', memPct);
@@ -1051,12 +946,10 @@
                 setGauge('gaugeDiskArc', 'gaugeDiskText', diskPct);
                 document.getElementById('gaugeDiskSub').textContent = `硬盘: ${formatBytes(system.disk.current)} / ${formatBytes(system.disk.total)}`;
 
-                // Cards
                 document.getElementById('siderVer').textContent = `Sooya v${system.chainproxy_version}`;
-                document.getElementById('dashSbVer').textContent = `内核: ${system.singbox_version}`;
+                document.getElementById('dashSbVer').textContent = system.singbox_version;
                 document.getElementById('dashSysUptime').textContent = formatDuration(system.uptime);
                 document.getElementById('dashProxyUptime').textContent = formatDuration(chain.uptime_seconds);
-                document.getElementById('dashActiveVer').textContent = `配置版本: ${chain.active_config_version || '未激活'}`;
                 document.getElementById('dashLoads').textContent = system.loads.map(n => Number(n).toFixed(2)).join(' | ');
                 document.getElementById('dashTcp').textContent = system.tcp_count;
                 document.getElementById('dashUdp').textContent = system.udp_count;
@@ -1065,41 +958,39 @@
                 document.getElementById('dashTrafficSent').textContent = formatBytes(system.net_traffic.sent);
                 document.getElementById('dashTrafficRecv').textContent = formatBytes(system.net_traffic.recv);
 
-                // Engine State Badge
                 const state = chain.state;
                 const badge = document.getElementById('dashEngineBadge');
                 const hdrBadge = document.getElementById('headerStateBadge');
                 if (state === 'Running') {
                     badge.className = 'ant-tag tag-green';
-                    badge.textContent = '● 运行中 (Running)';
+                    badge.textContent = '● 运行中';
                     hdrBadge.className = 'ant-tag tag-green';
-                    hdrBadge.textContent = '代理运行中';
+                    hdrBadge.textContent = '出站运行中';
                 } else if (state === 'Failed') {
                     badge.className = 'ant-tag tag-red';
-                    badge.textContent = '● 启动失败 (Failed)';
+                    badge.textContent = '● 启动失败';
                     hdrBadge.className = 'ant-tag tag-red';
-                    hdrBadge.textContent = '状态异常';
+                    hdrBadge.textContent = '异常';
                 } else {
                     badge.className = 'ant-tag tag-orange';
-                    badge.textContent = '○ 已停止 (' + state + ')';
+                    badge.textContent = '○ 未启动 (本机直连)';
                     hdrBadge.className = 'ant-tag tag-orange';
                     hdrBadge.textContent = '未启动';
                 }
 
-                // Topology boxes
                 document.getElementById('dashTopologyText').textContent = chain.chain_visual || '';
                 document.getElementById('hopPhysName').textContent = `网卡: ${chain.physical.interface || '--'}`;
-                document.getElementById('hopPhysMeta').innerHTML = `网关: ${escapeHtml(chain.physical.gateway || '--')}<br>状态: <strong>${escapeHtml(chain.physical.status)}</strong>`;
+                document.getElementById('hopPhysMeta').innerHTML = `网关: ${escapeHtml(chain.physical.gateway || '--')} · <strong>${escapeHtml(chain.physical.status)}</strong>`;
                 document.getElementById('hopPhysBox').className = 'hop-box ' + (chain.physical.status === 'UP' ? 'hop-ok' : '');
 
-                document.getElementById('hopVpn1Name').textContent = chain.vpn1.name || '第一跳入口';
+                document.getElementById('hopVpn1Name').textContent = chain.vpn1.name || '前置节点';
                 const lat1 = chain.vpn1.latency_ms != null ? ` (${chain.vpn1.latency_ms} ms)` : '';
-                document.getElementById('hopVpn1Meta').innerHTML = `地址: ${escapeHtml(chain.vpn1.endpoint || '未设置')}<br>状态: <strong>${escapeHtml(chain.vpn1.status)}${lat1}</strong>`;
+                document.getElementById('hopVpn1Meta').innerHTML = `${escapeHtml(chain.vpn1.endpoint || '无')}<br>状态: <strong>${escapeHtml(chain.vpn1.status)}${lat1}</strong>`;
                 document.getElementById('hopVpn1Box').className = 'hop-box ' + (chain.vpn1.reachable ? 'hop-ok' : '');
 
                 document.getElementById('hopVpn2Name').textContent = chain.vpn2.name || 'Cloudflare WARP';
                 const lat2 = chain.vpn2.latency_ms != null ? ` (${chain.vpn2.latency_ms} ms)` : '';
-                document.getElementById('hopVpn2Meta').innerHTML = `地址: ${escapeHtml(chain.vpn2.endpoint || '未设置')}<br>状态: <strong>${escapeHtml(chain.vpn2.status)}${lat2}</strong>`;
+                document.getElementById('hopVpn2Meta').innerHTML = `${escapeHtml(chain.vpn2.endpoint || '自动优选')}<br>状态: <strong>${escapeHtml(chain.vpn2.status)}${lat2}</strong>`;
                 document.getElementById('hopVpn2Box').className = 'hop-box ' + (chain.vpn2.reachable ? 'hop-ok' : (chain.vpn2.status === '未使用' ? 'hop-off' : ''));
 
                 if (chain.final_hop) {
@@ -1107,12 +998,12 @@
                     if (fe.exit_ip) {
                         const latF = fe.latency_ms != null ? `${fe.latency_ms} ms` : '--';
                         document.getElementById('hopExitName').textContent = `出口 IP: ${fe.exit_ip}`;
-                        document.getElementById('hopExitMeta').innerHTML = `归属: ${escapeHtml(fe.exit_country || '--')} · ${escapeHtml(fe.exit_isp || '--')}<br>延迟: <strong>${latF}</strong> (${escapeHtml(fe.status)})`;
+                        document.getElementById('hopExitMeta').innerHTML = `${escapeHtml(fe.exit_country || '--')} · ${escapeHtml(fe.exit_isp || '--')} (<strong>${latF}</strong>)`;
                     }
                     document.getElementById('hopExitBox').className = 'hop-box ' + (fe.internet_ok ? 'hop-ok' : '');
                 }
             } catch (e) {
-                console.warn('status poll err:', e);
+                console.warn('status err:', e);
             }
         }
 
@@ -1122,12 +1013,11 @@
                 if (!res.success || !res.data) return;
                 const cfg = res.data.config || {};
                 currentConfig = cfg;
-                selectMode(cfg.mode || 'wg_chain_warp');
-                document.getElementById('headerModeText').textContent = '当前模式: ' + modeLabel(cfg.mode || 'wg_chain_warp');
+                let mode = cfg.mode || 'standalone_warp';
+                if (mode === 'standalone_socks') mode = 'socks_chain_warp';
 
                 document.getElementById('vpn1Name').value = (cfg.vpn1 && cfg.vpn1.name) || 'WireGuard-1';
                 document.getElementById('vpn1Config').value = (cfg.vpn1 && cfg.vpn1.wireguard_config) || '';
-
                 document.getElementById('vpn2Name').value = (cfg.vpn2 && cfg.vpn2.name) || 'Cloudflare WARP';
                 document.getElementById('vpn2Config').value = (cfg.vpn2 && cfg.vpn2.wireguard_config) || '';
 
@@ -1148,33 +1038,107 @@
                 renderSocksServerUsers();
 
                 const routing = cfg.routing || {};
-                document.getElementById('routeHostProxy').value = routing.proxy_host_outbound === false ? 'false' : 'true';
                 document.getElementById('excludeDest').value = (routing.exclude_destinations || []).join(', ');
                 document.getElementById('dnsMode').value = (cfg.dns && cfg.dns.mode) || 'chain';
                 document.getElementById('logLevelSelect').value = cfg.log_level || 'info';
+
+                selectMode(mode);
+                document.getElementById('headerModeText').textContent = '模式: ' + modeLabel(mode);
             } catch (e) {
                 showToast('加载配置失败: ' + e.message, 'err');
             }
         }
 
+        function onDashModeChange(mode) {
+            selectMode(mode);
+            showToast('已切换为「' + modeLabel(mode) + '」，点击「▶ 启动/重载」即可生效');
+        }
+
         function selectMode(mode) {
+            if (mode === 'standalone_socks') mode = 'socks_chain_warp';
             currentMode = mode;
-            document.querySelectorAll('.mode-card').forEach(el => {
+            document.querySelectorAll('.mode-tab').forEach(el => {
                 el.classList.toggle('selected', el.dataset.mode === mode);
             });
+            const dashSel = document.getElementById('dashModeSelect');
+            if (dashSel) dashSel.value = mode;
 
             const showWg1 = (mode === 'wg_chain_warp' || mode === 'standalone_wg');
-            const showSocks = (mode === 'socks_chain_warp' || mode === 'standalone_socks');
+            const showSocks = (mode === 'socks_chain_warp');
             const showWarp = (mode === 'wg_chain_warp' || mode === 'socks_chain_warp' || mode === 'standalone_warp');
             const showSocksSrv = (mode === 'socks5_server');
 
-            document.getElementById('panelWg1').style.display = showWg1 ? 'block' : 'none';
-            document.getElementById('panelSocks5').style.display = showSocks ? 'block' : 'none';
-            document.getElementById('panelWarp').style.display = showWarp ? 'block' : 'none';
-            document.getElementById('panelSocksServer').style.display = showSocksSrv ? 'block' : 'none';
+            const pWg1 = document.getElementById('panelWg1');
+            const pSocks = document.getElementById('panelSocks5');
+            const pWarp = document.getElementById('panelWarp');
+            const pSrv = document.getElementById('panelSocksServer');
+            const nGrid = document.getElementById('nodesGrid');
+
+            pWg1.style.display = showWg1 ? 'block' : 'none';
+            pSocks.style.display = showSocks ? 'block' : 'none';
+            pWarp.style.display = showWarp ? 'block' : 'none';
+            pSrv.style.display = showSocksSrv ? 'block' : 'none';
+            nGrid.style.display = showSocksSrv ? 'none' : 'grid';
+
+            const singleHop = (mode === 'standalone_wg' || mode === 'standalone_warp');
+            pWg1.style.gridColumn = singleHop ? '1 / -1' : '';
+            pWarp.style.gridColumn = singleHop ? '1 / -1' : '';
 
             if (showSocksSrv && socks5ServerUsers.length === 0) {
                 addSocksServerUser();
+            }
+            updateLiveHints();
+        }
+
+        function inspectWgText(raw) {
+            const text = (raw || '').trim();
+            if (!text) return { empty: true, ok: false, summary: '未填写' };
+            const hasPriv = /PrivateKey\s*=\s*\S+/i.test(text);
+            const addrMatch = text.match(/Address\s*=\s*([^\r\n#]+)/i);
+            const pubMatch = /PublicKey\s*=\s*\S+/i.test(text);
+            const epMatch = text.match(/Endpoint\s*=\s*([^\r\n#]+)/i);
+            if (hasPriv && addrMatch && pubMatch && epMatch) {
+                return {
+                    empty: false,
+                    ok: true,
+                    summary: `✅ 配置有效 · 节点: ${epMatch[1].trim()} · 内网IP: ${addrMatch[1].trim()}`
+                };
+            }
+            return { empty: false, ok: false, summary: '⚠️ 配置缺少 PrivateKey / Address / PublicKey / Endpoint' };
+        }
+
+        function updateLiveHints() {
+            const w1 = inspectWgText(document.getElementById('vpn1Config').value);
+            const w2 = inspectWgText(document.getElementById('vpn2Config').value);
+            const h1 = document.getElementById('wg1Hint');
+            const h2 = document.getElementById('wg2Hint');
+            if (h1) {
+                h1.style.color = w1.ok ? '#389e0d' : (w1.empty ? 'var(--text-secondary)' : '#d46b08');
+                h1.textContent = w1.empty ? '请粘贴 WireGuard 配置或点击右上角导入 .conf 文件' : w1.summary;
+            }
+            if (h2) {
+                h2.style.color = w2.ok ? '#389e0d' : '#096dd9';
+                h2.textContent = w2.empty ? '✨ 当前为空，启动时将自动向 Cloudflare 免费申请生成' : w2.summary;
+            }
+
+            const readyEl = document.getElementById('nodesReadyHint');
+            if (!readyEl) return;
+            if (currentMode === 'standalone_warp') {
+                readyEl.style.color = '#389e0d';
+                readyEl.textContent = w2.ok ? '✅ WARP 配置已就绪' : '✨ 免配置：直接点击右上角「保存并启用出站」即可';
+            } else if (currentMode === 'wg_chain_warp') {
+                readyEl.style.color = w1.ok ? '#389e0d' : '#d46b08';
+                readyEl.textContent = w1.ok ? '✅ WireGuard 节点已就绪 (WARP 可自动生成)' : '⚠️ 请先填写左侧 WireGuard 节点配置';
+            } else if (currentMode === 'standalone_wg') {
+                readyEl.style.color = w1.ok ? '#389e0d' : '#d46b08';
+                readyEl.textContent = w1.ok ? '✅ WireGuard 节点已就绪' : '⚠️ 请先填写 WireGuard 节点配置';
+            } else if (currentMode === 'socks_chain_warp') {
+                const sOk = document.getElementById('socksServer').value.trim() && parseInt(document.getElementById('socksPort').value, 10) > 0;
+                readyEl.style.color = sOk ? '#389e0d' : '#d46b08';
+                readyEl.textContent = sOk ? '✅ SOCKS5 节点已就绪' : '⚠️ 请填写左侧 SOCKS5 服务器与端口';
+            } else {
+                readyEl.style.color = '#389e0d';
+                readyEl.textContent = '✅ SOCKS5 服务端配置就绪';
             }
         }
 
@@ -1184,15 +1148,12 @@
             const s5User = document.getElementById('socksUser').value.trim();
             const s5Pass = document.getElementById('socksPass').value;
 
-            let socks5Obj = null;
-            if (s5Server && s5Port > 0) {
-                socks5Obj = {
-                    server: s5Server,
-                    port: s5Port,
-                    username: s5User ? s5User : null,
-                    password: s5Pass ? s5Pass : null
-                };
-            }
+            const socks5Obj = (s5Server && s5Port > 0) ? {
+                server: s5Server,
+                port: s5Port,
+                username: s5User ? s5User : null,
+                password: s5Pass ? s5Pass : null
+            } : null;
 
             const srvListen = document.getElementById('s5SrvListen').value.trim() || '0.0.0.0';
             const srvPort = parseInt(document.getElementById('s5SrvPort').value, 10) || 1080;
@@ -1202,8 +1163,7 @@
                 users: socks5ServerUsers
             } : null;
 
-            const exclRaw = document.getElementById('excludeDest').value;
-            const excludeDestinations = exclRaw
+            const excludeDestinations = document.getElementById('excludeDest').value
                 .split(',')
                 .map(s => s.trim())
                 .filter(Boolean);
@@ -1223,7 +1183,7 @@
                 socks5: socks5Obj,
                 socks5_server: socks5ServerObj,
                 routing: {
-                    proxy_host_outbound: document.getElementById('routeHostProxy').value === 'true',
+                    proxy_host_outbound: true,
                     preserve_inbound_connections: true,
                     connection_mark: '0x88',
                     exclude_destinations: excludeDestinations,
@@ -1237,9 +1197,10 @@
             };
         }
 
-        function parseQuickSocks() {
-            let raw = document.getElementById('socksQuickInput').value.trim();
-            if (!raw) return showToast('请先粘贴 SOCKS5 节点字符串', 'err');
+        function tryAutoParseSocks(rawStr, fromServerField) {
+            let raw = (rawStr || '').trim();
+            if (!raw) return false;
+            if (fromServerField && !raw.includes(':') && !raw.includes('@') && !/^socks5/i.test(raw)) return false;
             raw = raw.replace(/^socks5h?:\/\//i, '');
             let user = '', pass = '', hostPort = raw;
             if (raw.includes('@')) {
@@ -1260,56 +1221,121 @@
                 document.getElementById('socksPort').value = parts[1];
                 document.getElementById('socksUser').value = parts[2];
                 document.getElementById('socksPass').value = parts[3];
-                return showToast('已解析 host:port:user:pass 格式');
+                updateLiveHints();
+                return true;
             }
             if (parts.length >= 2) {
-                const port = parts.pop();
+                const port = parseInt(parts.pop(), 10);
                 const host = parts.join(':');
-                document.getElementById('socksServer').value = host;
-                document.getElementById('socksPort').value = port;
-                document.getElementById('socksUser').value = user;
-                document.getElementById('socksPass').value = pass;
+                if (host && port > 0 && port <= 65535) {
+                    document.getElementById('socksServer').value = host;
+                    document.getElementById('socksPort').value = port;
+                    if (user) document.getElementById('socksUser').value = user;
+                    if (pass) document.getElementById('socksPass').value = pass;
+                    updateLiveHints();
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function parseQuickSocks() {
+            const raw = document.getElementById('socksQuickInput').value.trim();
+            if (!raw) return showToast('请先粘贴 SOCKS5 链接', 'err');
+            if (tryAutoParseSocks(raw, false)) {
                 showToast('SOCKS5 节点信息已自动填入');
             } else {
-                showToast('未能识别该格式，请使用 user:pass@host:port', 'err');
+                showToast('格式未识别，请使用 user:pass@host:port 或 host:port:user:pass', 'err');
             }
         }
 
-        function importWgFile(event, targetId) {
+        async function pasteQuickSocks() {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                    document.getElementById('socksQuickInput').value = text.trim();
+                    parseQuickSocks();
+                }
+            } catch (_) {
+                showToast('请直接在输入框内按 Ctrl+V 粘贴', 'err');
+            }
+        }
+
+        async function pasteToTarget(targetId) {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                    document.getElementById(targetId).value = text.trim();
+                    updateLiveHints();
+                    showToast('已粘贴配置内容');
+                }
+            } catch (_) {
+                showToast('请直接点击输入框按 Ctrl+V 粘贴', 'err');
+            }
+        }
+
+        function applyImportedWgContent(file, content, targetId, nameId) {
+            document.getElementById(targetId).value = content;
+            if (nameId && file && file.name) {
+                const cleanName = file.name.replace(/\.(conf|txt)$/i, '');
+                const nameEl = document.getElementById(nameId);
+                if (nameEl && (!nameEl.value || nameEl.value === 'WireGuard-1')) {
+                    nameEl.value = cleanName;
+                }
+            }
+            updateLiveHints();
+            showToast(`已导入: ${file.name}`);
+        }
+
+        function importWgFile(event, targetId, nameId) {
             const file = event.target.files[0];
             if (!file) return;
             const reader = new FileReader();
-            reader.onload = e => {
-                document.getElementById(targetId).value = e.target.result;
-                showToast(`已导入配置文件: ${file.name}`);
-            };
+            reader.onload = e => applyImportedWgContent(file, e.target.result, targetId, nameId);
             reader.readAsText(file);
             event.target.value = '';
         }
 
-        function fillWgSample(targetId) {
-            document.getElementById(targetId).value = `[Interface]\nPrivateKey = 请替换为您的客户端私钥\nAddress = 10.5.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = 请替换为服务端公钥\nEndpoint = 198.51.100.1:51820\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25`;
-            showToast('已填入 WireGuard 标准配置模板');
+        function handleWgDrop(event, targetId, nameId) {
+            event.preventDefault();
+            const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = e => applyImportedWgContent(file, e.target.result, targetId, nameId);
+            reader.readAsText(file);
         }
 
-        async function autoRegisterWarp() {
+        function fillWgSample(targetId) {
+            document.getElementById(targetId).value = `[Interface]\nPrivateKey = 请替换为客户端私钥\nAddress = 10.5.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = 请替换为服务端公钥\nEndpoint = 198.51.100.1:51820\nAllowedIPs = 0.0.0.0/0`;
+            updateLiveHints();
+        }
+
+        async function autoRegisterWarp(silent = false) {
             const btn = document.getElementById('warpRegBtn');
-            btn.disabled = true;
-            btn.textContent = '⏳ 正在向 Cloudflare 注册...';
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '⏳ 正在注册...';
+            }
             try {
                 const res = await apiCall('./panel/api/warp/register', { method: 'POST' });
                 if (res.success && res.data) {
                     document.getElementById('vpn2Name').value = 'Cloudflare WARP';
                     document.getElementById('vpn2Config').value = res.data.wireguard_config;
-                    showToast(`WARP 自动注册成功！分配 IP: ${res.data.address_v4}`);
+                    updateLiveHints();
+                    if (!silent) showToast(`WARP 生成成功！内网 IP: ${res.data.address_v4}`);
+                    return true;
                 } else {
-                    showToast('WARP 注册失败: ' + (res.error || '未知错误'), 'err');
+                    if (!silent) showToast('WARP 注册失败: ' + (res.error || '未知错误'), 'err');
+                    return false;
                 }
             } catch (e) {
-                showToast('请求失败: ' + e.message, 'err');
+                if (!silent) showToast('请求失败: ' + e.message, 'err');
+                return false;
             } finally {
-                btn.disabled = false;
-                btn.textContent = '⚡ 一键自动注册生成 WARP';
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '⚡ 一键自动生成/换号';
+                }
             }
         }
 
@@ -1321,11 +1347,7 @@
         }
 
         function addSocksServerUser() {
-            socks5ServerUsers.push({
-                username: 'user_' + randStr(4).toLowerCase(),
-                password: randStr(12),
-                enabled: true
-            });
+            socks5ServerUsers.push({ username: 'user_' + randStr(4).toLowerCase(), password: randStr(10) });
             renderSocksServerUsers();
         }
 
@@ -1350,33 +1372,10 @@
                 <tr>
                     <td><input class="ant-input" value="${escapeHtml(u.username)}" onchange="socks5ServerUsers[${idx}].username=this.value.trim()"></td>
                     <td><input class="ant-input" value="${escapeHtml(u.password)}" onchange="socks5ServerUsers[${idx}].password=this.value"></td>
-                    <td>
-                        <select class="ant-select" onchange="socks5ServerUsers[${idx}].enabled=(this.value==='true')">
-                            <option value="true" ${u.enabled !== false ? 'selected' : ''}>启用</option>
-                            <option value="false" ${u.enabled === false ? 'selected' : ''}>停用</option>
-                        </select>
-                    </td>
                     <td><button class="btn btn-sm" onclick="copySocksShareUri(${idx})">📋 复制链接</button></td>
                     <td><button class="btn btn-danger btn-sm" onclick="removeSocksServerUser(${idx})">删除</button></td>
                 </tr>
             `).join('');
-        }
-
-        async function validateCurrentForm() {
-            const cfg = buildConfigFromForm();
-            try {
-                const res = await apiCall('./api/v1/config/validate', {
-                    method: 'POST',
-                    body: JSON.stringify({ config: cfg })
-                });
-                if (res.success) {
-                    showToast('配置语法校验通过！模式: ' + modeLabel(cfg.mode));
-                } else {
-                    showToast('配置校验未通过: ' + (res.error || ''), 'err');
-                }
-            } catch (e) {
-                showToast('校验请求异常: ' + e.message, 'err');
-            }
         }
 
         async function saveConfigOnly() {
@@ -1387,9 +1386,8 @@
                     body: JSON.stringify({ config: cfg })
                 });
                 if (res.success) {
-                    currentConfig = cfg;
-                    document.getElementById('headerModeText').textContent = '当前模式: ' + modeLabel(cfg.mode);
-                    showToast('配置已保存至磁盘 (尚未重启代理事务)');
+                    await loadFullConfig();
+                    showToast('配置已保存');
                 } else {
                     showToast('保存失败: ' + (res.error || ''), 'err');
                 }
@@ -1398,11 +1396,46 @@
             }
         }
 
+        function setApplyButtonsState(disabled, text) {
+            ['topApplyBtn', 'dashStartBtn'].forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.disabled = disabled;
+                if (id === 'dashStartBtn') {
+                    el.textContent = disabled ? '⏳ 启动中...' : '▶ 启动/重载';
+                } else {
+                    el.textContent = disabled ? text : '🚀 保存并启用出站';
+                }
+            });
+        }
+
         async function saveAndApplyConfig() {
+            const needsWg1 = (currentMode === 'wg_chain_warp' || currentMode === 'standalone_wg');
+            const needsSocks = (currentMode === 'socks_chain_warp');
+            const needsWarp = (currentMode === 'wg_chain_warp' || currentMode === 'socks_chain_warp' || currentMode === 'standalone_warp');
+
+            if (needsWg1 && !document.getElementById('vpn1Config').value.trim()) {
+                switchView('nodes');
+                document.getElementById('vpn1Config').focus();
+                return showToast('请先填写或导入 WireGuard 节点配置', 'err');
+            }
+            if (needsSocks && !document.getElementById('socksServer').value.trim()) {
+                switchView('nodes');
+                document.getElementById('socksQuickInput').focus();
+                return showToast('请先填写 SOCKS5 服务器地址与端口', 'err');
+            }
+
+            if (needsWarp && !document.getElementById('vpn2Config').value.trim()) {
+                setApplyButtonsState(true, '⏳ 正在自动注册 WARP...');
+                const ok = await autoRegisterWarp(true);
+                if (!ok) {
+                    setApplyButtonsState(false, '');
+                    return showToast('自动注册 WARP 失败，请重试或手动粘贴配置', 'err');
+                }
+            }
+
             const cfg = buildConfigFromForm();
-            const btn = document.getElementById('applyBtn');
-            btn.disabled = true;
-            btn.textContent = '⏳ 正在执行事务应用与连通性自检 (最多 30s)...';
+            setApplyButtonsState(true, '⏳ 正在建立出站隧道...');
             try {
                 const res = await apiCall('./api/v1/config/apply', {
                     method: 'POST',
@@ -1410,26 +1443,25 @@
                 });
                 if (res.success && res.data) {
                     currentConfig = cfg;
-                    document.getElementById('headerModeText').textContent = '当前模式: ' + modeLabel(cfg.mode);
+                    document.getElementById('headerModeText').textContent = '模式: ' + modeLabel(cfg.mode);
                     const exitIp = (res.data.final_exit && res.data.final_exit.exit_ip) || 'OK';
-                    showToast(`启动成功！当前公网出口 IP: ${exitIp}`);
+                    showToast(`出站已启用！当前公网出口 IP: ${exitIp}`);
                     updateHopReportUI(res.data);
+                    await loadFullConfig();
                     await refreshStatus();
                 } else {
-                    showToast('应用失败 (已自动安全回滚): ' + (res.error || '未知错误'), 'err');
+                    showToast('启用失败 (已安全恢复原网络): ' + (res.error || '未知错误'), 'err');
                     await refreshStatus();
                 }
             } catch (e) {
-                showToast('应用请求异常: ' + e.message, 'err');
+                showToast('请求异常: ' + e.message, 'err');
             } finally {
-                btn.disabled = false;
-                btn.textContent = '🚀 保存并立即应用启动 (30s 看门狗保护)';
+                setApplyButtonsState(false, '');
             }
         }
 
         async function quickApplyCurrent() {
             if (!currentConfig) await loadFullConfig();
-            switchView('nodes');
             await saveAndApplyConfig();
         }
 
@@ -1437,7 +1469,7 @@
             try {
                 const res = await apiCall('./api/v1/stop', { method: 'POST' });
                 if (res.success) {
-                    showToast('代理服务已停止，宿主机原始网络路由已完整恢复');
+                    showToast('出站代理已停止，本机已恢复直连出站');
                     await refreshStatus();
                 } else {
                     showToast('停止失败: ' + (res.error || ''), 'err');
@@ -1451,19 +1483,19 @@
             if (!report) return;
             if (report.vpn1) {
                 const lat1 = report.vpn1.latency_ms != null ? ` (${report.vpn1.latency_ms} ms)` : '';
-                document.getElementById('hopVpn1Meta').innerHTML = `节点: ${escapeHtml(report.vpn1.endpoint || '--')}<br>状态: <strong>${escapeHtml(report.vpn1.status)}${lat1}</strong>`;
+                document.getElementById('hopVpn1Meta').innerHTML = `${escapeHtml(report.vpn1.endpoint || '无')}<br>状态: <strong>${escapeHtml(report.vpn1.status)}${lat1}</strong>`;
                 document.getElementById('hopVpn1Box').className = 'hop-box ' + (report.vpn1.reachable ? 'hop-ok' : '');
             }
             if (report.vpn2) {
                 const lat2 = report.vpn2.latency_ms != null ? ` (${report.vpn2.latency_ms} ms)` : '';
-                document.getElementById('hopVpn2Meta').innerHTML = `节点: ${escapeHtml(report.vpn2.endpoint || '--')}<br>状态: <strong>${escapeHtml(report.vpn2.status)}${lat2}</strong>`;
+                document.getElementById('hopVpn2Meta').innerHTML = `${escapeHtml(report.vpn2.endpoint || '自动优选')}<br>状态: <strong>${escapeHtml(report.vpn2.status)}${lat2}</strong>`;
                 document.getElementById('hopVpn2Box').className = 'hop-box ' + (report.vpn2.reachable ? 'hop-ok' : '');
             }
             if (report.final_exit) {
                 const fe = report.final_exit;
                 const latF = fe.latency_ms != null ? `${fe.latency_ms} ms` : '--';
                 document.getElementById('hopExitName').textContent = fe.exit_ip ? `出口 IP: ${fe.exit_ip}` : '公网出口';
-                document.getElementById('hopExitMeta').innerHTML = `归属: ${escapeHtml(fe.exit_country || '--')} · ${escapeHtml(fe.exit_isp || '--')}<br>延迟: <strong>${latF}</strong> (${escapeHtml(fe.status)})`;
+                document.getElementById('hopExitMeta').innerHTML = `${escapeHtml(fe.exit_country || '--')} · ${escapeHtml(fe.exit_isp || '--')} (<strong>${latF}</strong>)`;
                 document.getElementById('hopExitBox').className = 'hop-box ' + (fe.internet_ok ? 'hop-ok' : '');
             }
         }
@@ -1471,30 +1503,30 @@
         async function runHopTest() {
             const btn = document.getElementById('probeBtn');
             btn.disabled = true;
-            btn.textContent = '⏳ 正在逐跳探测连通性与出口 IP...';
+            btn.textContent = '⏳ 正在检测出口 IP...';
             try {
                 const res = await apiCall('./api/v1/config/test', { method: 'POST' });
                 if (res.success && res.data) {
                     updateHopReportUI(res.data);
                     if (res.data.success) {
-                        showToast(`分跳探测通过！出口 IP: ${res.data.final_exit.exit_ip || '正常'}`);
+                        showToast(`检测完成！当前出口 IP: ${res.data.final_exit.exit_ip || '正常'}`);
                     } else {
-                        showToast('分跳探测发现异常，请检查对应跳状态说明', 'err');
+                        showToast('出站连通性异常，请检查节点配置', 'err');
                     }
                 } else {
-                    showToast('探测失败: ' + (res.error || ''), 'err');
+                    showToast('检测失败: ' + (res.error || ''), 'err');
                 }
             } catch (e) {
-                showToast('探测请求异常: ' + e.message, 'err');
+                showToast('检测请求异常: ' + e.message, 'err');
             } finally {
                 btn.disabled = false;
-                btn.textContent = '⚡ 立即执行分跳连通性探测';
+                btn.textContent = '⚡ 检测出口 IP 与延迟';
             }
         }
 
         async function loadLogs() {
             const pre = document.getElementById('logViewer');
-            pre.textContent = '正在获取实时运行日志...';
+            pre.textContent = '正在获取运行日志...';
             try {
                 const res = await apiCall('./api/v1/logs');
                 pre.textContent = (res.success && res.data) ? res.data : (res.error || '暂无日志');
@@ -1506,34 +1538,27 @@
 
         async function loadDiagnose() {
             const pre = document.getElementById('logViewer');
-            pre.textContent = '正在采集系统路由表、策略路由与 nftables 诊断报告...';
+            pre.textContent = '正在生成路由与防火墙诊断信息...';
             try {
                 const res = await apiCall('./api/v1/network');
-                pre.textContent = (res.success && res.data) ? res.data : (res.error || '采集失败');
+                pre.textContent = (res.success && res.data) ? res.data : (res.error || '生成失败');
             } catch (e) {
-                pre.textContent = '采集诊断报告失败: ' + e.message;
+                pre.textContent = '生成失败: ' + e.message;
             }
         }
 
         async function changeLogLevel(level) {
             try {
-                const res = await apiCall('./api/v1/log_level', {
-                    method: 'POST',
-                    body: JSON.stringify({ level })
-                });
-                if (res.success) {
-                    showToast('日志级别已切换为: ' + level);
-                } else {
-                    showToast(res.error || '已更新表单日志级别');
-                }
+                await apiCall('./api/v1/log_level', { method: 'POST', body: JSON.stringify({ level }) });
+                showToast('日志级别已切换为: ' + level);
             } catch (e) {
-                showToast('切换日志级别失败: ' + e.message, 'err');
+                showToast('切换失败: ' + e.message, 'err');
             }
         }
 
         function copyLogContent() {
-            const text = document.getElementById('logViewer').textContent;
-            navigator.clipboard.writeText(text).then(() => showToast('已复制日志/诊断内容到剪贴板'));
+            navigator.clipboard.writeText(document.getElementById('logViewer').textContent)
+                .then(() => showToast('已复制到剪贴板'));
         }
 
         async function loadPanelSettings() {
@@ -1559,7 +1584,7 @@
                     body: JSON.stringify({ listen, port, base_path })
                 });
                 if (res.success) {
-                    showToast('面板配置已保存！若修改了端口或根路径，请点击“重启面板服务”生效');
+                    showToast('面板设置已保存，重启面板后生效');
                     loadPanelSettings();
                 } else {
                     showToast('保存失败: ' + (res.error || ''), 'err');
@@ -1575,7 +1600,7 @@
             const new_username = document.getElementById('newUsername').value.trim();
             const new_password = document.getElementById('newPassword').value;
             if (!old_username || !old_password || !new_username || !new_password) {
-                return showToast('请填写完整的原用户名、原密码及新用户名、新密码', 'err');
+                return showToast('请填写完整账号密码信息', 'err');
             }
             try {
                 const res = await apiCall('./panel/api/setting/updateUser', {
@@ -1583,8 +1608,8 @@
                     body: JSON.stringify({ old_username, old_password, new_username, new_password })
                 });
                 if (res.success) {
-                    showToast('登录用户名与密码修改成功！请使用新凭证重新登录');
-                    setTimeout(() => { window.location.href = './login'; }, 1200);
+                    showToast('账号密码修改成功，请重新登录');
+                    setTimeout(() => { window.location.href = './login'; }, 1000);
                 } else {
                     showToast('修改失败: ' + (res.error || ''), 'err');
                 }
@@ -1594,13 +1619,13 @@
         }
 
         async function restartPanelService() {
-            if (!confirm('确定要重启 Sooya 面板服务吗？若修改了端口或路径，请使用新地址访问。')) return;
+            if (!confirm('确定重启 Sooya 面板服务吗？')) return;
             try {
                 await apiCall('./panel/api/setting/restart', { method: 'POST' });
-                showToast('重启指令已下发，正在等待面板重新上线...');
+                showToast('面板正在重启...');
                 setTimeout(() => { window.location.reload(); }, 3000);
-            } catch (e) {
-                showToast('重启请求已发送');
+            } catch (_) {
+                showToast('重启指令已发送');
             }
         }
 
@@ -1612,13 +1637,13 @@
         async function refreshAll() {
             await refreshStatus();
             await loadFullConfig();
-            showToast('数据已同步刷新');
+            showToast('已刷新');
         }
 
         window.addEventListener('DOMContentLoaded', async () => {
             await loadFullConfig();
             await refreshStatus();
-            statusTimer = setInterval(refreshStatus, 2500);
+            setInterval(refreshStatus, 2500);
         });
     </script>
 </body>

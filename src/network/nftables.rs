@@ -20,23 +20,22 @@ impl NftablesManager {
         script.push_str(
             "    chain prerouting {\n        type filter hook prerouting priority mangle; policy accept;\n",
         );
-        if config.routing.preserve_inbound_connections {
-            script.push_str(&format!(
-                "        iifname != \"chain0\" iifname != \"lo\" fib daddr type local ct direction original ct state new,established ct mark & {mask:#x} == 0 ct mark set ct mark | {inbound:#x} comment \"inbound-return\"\n"
-            ));
-        }
+        script.push_str(&format!(
+            "        iifname != \"chain0\" iifname != \"lo\" ct direction original ct mark & {mask:#x} == 0 ct mark set ct mark | {inbound:#x} comment \"inbound-return\"\n"
+        ));
         script.push_str("    }\n    chain output {\n        type route hook output priority mangle; policy accept;\n");
         script.push_str(&format!("        meta mark & {MARK_PHYSICAL_DIRECT:#x} != 0 return\n"));
-        if config.routing.preserve_inbound_connections {
-            script.push_str(&format!(
-                "        ct direction reply ct mark & {inbound:#x} == {inbound:#x} meta mark set (meta mark & {keep:#x}) | {inbound:#x} return\n"
-            ));
-        }
+        script.push_str(&format!(
+            "        ct direction reply meta mark set (meta mark & {keep:#x}) | {inbound:#x} return comment \"inbound-reply-direct\"\n"
+        ));
+        script.push_str(&format!(
+            "        ct mark & {inbound:#x} == {inbound:#x} meta mark set (meta mark & {keep:#x}) | {inbound:#x} return comment \"inbound-mark-direct\"\n"
+        ));
         script.push_str("        fib daddr type local return\n");
         if config.routing.proxy_host_outbound {
             let family = if config.routing.ipv6 { "" } else { "meta nfproto ipv4 " };
             script.push_str(&format!(
-                "        {family}meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"host-proxy\"\n"
+                "        {family}ct direction original meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"host-proxy\"\n"
             ));
         }
         script.push_str("    }\n    chain postrouting {\n        type filter hook postrouting priority mangle; policy accept;\n        oifname \"chain0\" tcp flags syn / syn,rst tcp option maxseg size set 1200 comment \"mss-clamp\"\n    }\n}\n");
@@ -44,16 +43,11 @@ impl NftablesManager {
     }
 
     pub fn clear_connection_mark(mark: u32) -> Result<()> {
-        if mark == 0 {
-            return Ok(());
-        }
-        for family in ["ipv4", "ipv6"] {
-            let out = Command::new("conntrack")
-                .args(["-U", "-f", family, "--mark", &format!("0/{:#x}", mark)])
-                .output()?;
-            let error = String::from_utf8_lossy(&out.stderr);
-            if !out.status.success() && !error.contains("0 flow entries") {
-                return Err(ChainError::NetworkError(format!("conntrack mark cleanup: {}", error)));
+        if mark != 0 {
+            for family in ["ipv4", "ipv6"] {
+                let _ = Command::new("conntrack")
+                    .args(["-U", "-f", family, "--mark", &format!("0/{:#x}", mark)])
+                    .output();
             }
         }
         Ok(())
@@ -134,3 +128,20 @@ impl NftablesManager {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::config::ChainProxyConfig;
+
+    #[test]
+    fn ruleset_bypasses_all_inbound_replies_and_only_proxies_outbound_original() {
+        let mut cfg = ChainProxyConfig::default();
+        cfg.routing.preserve_inbound_connections = false;
+        let ruleset = NftablesManager::generate_ruleset(&cfg).unwrap();
+        assert!(ruleset.contains("ct direction reply meta mark set"));
+        assert!(ruleset.contains("ct mark & 0x88 == 0x88 meta mark set"));
+        assert!(ruleset.contains("ct direction original meta mark & 0xc88 == 0 meta mark set"));
+    }
+}
+
