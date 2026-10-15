@@ -587,7 +587,7 @@ fn run_kernel_packet_loop(
 
     while running.load(Ordering::Relaxed) {
         if let Some((ref mut v1, vep)) = vpn1_tunnel {
-            let due = (!v1.has_session() && last_vpn1_hs.elapsed() >= Duration::from_millis(1200))
+            let due = (!v1.has_session() && last_vpn1_hs.elapsed() >= Duration::from_millis(500))
                 || (v1.needs_handshake() && last_vpn1_hs.elapsed() >= Duration::from_secs(3));
             if due {
                 let init = v1.format_handshake_initiation();
@@ -601,7 +601,7 @@ fn run_kernel_packet_loop(
 
         if let Some(ref mut w) = warp_tunnel {
             if vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(true) {
-                let no_sess_due = !w.has_session() && last_warp_hs.elapsed() >= Duration::from_millis(1100);
+                let no_sess_due = !w.has_session() && last_warp_hs.elapsed() >= Duration::from_millis(500);
                 let rekey_due = w.needs_handshake() && last_warp_hs.elapsed() >= Duration::from_secs(3);
                 if no_sess_due || rekey_due {
                     if no_sess_due && !warp_candidates.is_empty() {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sooya Console — Rare UI Edition</title>
+<title>Sooya 面板</title>
 <style>
 :root {
   --bg-outer: #09090b;
@@ -62,7 +62,7 @@ body {
   overflow-x: hidden;
 }
 
-/* Rare UI Squircle Stage */
+/* Main Stage */
 .rare-stage {
   position: relative;
   min-height: calc(100vh - 20px);
@@ -87,7 +87,7 @@ body {
   max-width: 1280px; margin: 0 auto;
 }
 
-/* ==================== Rare UI Gooey Floating Navbar ==================== */
+/* ==================== Floating Navbar ==================== */
 .gooey-header {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 22px; flex-wrap: wrap;
@@ -220,7 +220,7 @@ html.light .ring-bg { stroke: #ececf0; }
 .metric-val { font-size: 15px; font-weight: 700; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .metric-sub { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 3px; }
 
-/* ==================== Rare UI Mode Dock (Segmented Pills) ==================== */
+/* ==================== Mode Dock (Segmented Pills) ==================== */
 .mode-dock-wrap {
   background: var(--card); border: 1px solid var(--border);
   box-shadow: var(--shadow-card); border-radius: 22px;
@@ -351,7 +351,7 @@ html.light .ring-bg { stroke: #ececf0; }
 .rare-table tr:hover td { background: var(--card-hover); }
 .rare-table tr.active-row td { background: rgba(16, 185, 129, 0.06); }
 
-/* Rare UI Spring Toggle Switch */
+/* Spring Toggle Switch */
 .x-switch {
   position: relative; display: inline-block; width: 46px; height: 24px; cursor: pointer;
 }
@@ -458,14 +458,14 @@ html.light .ring-bg { stroke: #ececf0; }
   <div class="ambient-orb"></div>
 
   <div class="container">
-    <!-- ==================== Rare UI Gooey Floating Header ==================== -->
+    <!-- ==================== Top Navigation Header ==================== -->
     <header class="gooey-header">
       <div class="brand-cluster">
         <div class="brand-orb">S</div>
         <div>
           <div class="brand-title">
-            <span>Sooya</span>
-            <span class="brand-ver" id="siderVersion">v1.5.9</span>
+            <span>Sooya 面板</span>
+            <span class="brand-ver" id="siderVersion">v1.6.0</span>
           </div>
           <div style="font-size:11.5px;color:var(--muted);">仅接管出站 (0x800) · 入站 100% 原路返回</div>
         </div>
@@ -498,16 +498,16 @@ html.light .ring-bg { stroke: #ececf0; }
       <button onclick="hideAlert()" style="background:none;border:none;color:inherit;cursor:pointer;font-size:15px;">✕</button>
     </div>
 
-    <!-- ==================== Global Mode Dock (Rare UI Interactive Pills) ==================== -->
+    <!-- ==================== Global Mode Dock ==================== -->
     <div class="mode-dock-wrap">
       <div class="mode-dock-label">⚡ 出站模式与 SOCKS5 服务一键切换</div>
       <div class="mode-dock" id="globalModeBar">
-        <button class="dock-pill" data-mode="direct" onclick="quickSwitchMode('direct')">🚫 直连 (关闭出站隧道)</button>
-        <button class="dock-pill" data-mode="standalone_wg" onclick="quickSwitchMode('standalone_wg')">🛡️ 仅 WireGuard 出站</button>
-        <button class="dock-pill" data-mode="wg_chain_warp" onclick="quickSwitchMode('wg_chain_warp')">🔗 WG + WARP 链式</button>
-        <button class="dock-pill" data-mode="standalone_warp" onclick="quickSwitchMode('standalone_warp')">☁️ 仅 WARP 出站</button>
-        <button class="dock-pill" data-mode="socks_chain_warp" onclick="quickSwitchMode('socks_chain_warp')">🧦 SOCKS5 + WARP</button>
-        <button class="dock-pill" data-mode="socks5_server" onclick="quickSwitchMode('socks5_server')">🔌 本机 SOCKS5 服务端</button>
+        <button type="button" class="dock-pill" data-mode="direct" onclick="quickSwitchMode('direct')">🚫 直连 (关闭出站隧道)</button>
+        <button type="button" class="dock-pill" data-mode="standalone_wg" onclick="quickSwitchMode('standalone_wg')">🛡️ 仅 WireGuard 出站</button>
+        <button type="button" class="dock-pill" data-mode="wg_chain_warp" onclick="quickSwitchMode('wg_chain_warp')">🔗 WG + WARP 链式</button>
+        <button type="button" class="dock-pill" data-mode="standalone_warp" onclick="quickSwitchMode('standalone_warp')">☁️ 仅 WARP 出站</button>
+        <button type="button" class="dock-pill" data-mode="socks_chain_warp" onclick="quickSwitchMode('socks_chain_warp')">🧦 SOCKS5 + WARP</button>
+        <button type="button" class="dock-pill" data-mode="socks5_server" onclick="quickSwitchMode('socks5_server')">🔌 本机 SOCKS5 服务端</button>
       </div>
     </div>
 
@@ -1153,6 +1153,15 @@ function makeDefaultSocks5Item() {
   };
 }
 
+function ensureBuiltinItems() {
+  if (!outbounds.some(o => normalizeMode(o.config?.mode) === 'standalone_warp')) {
+    outbounds.unshift(makeDefaultWarpItem());
+  }
+  if (!outbounds.some(o => normalizeMode(o.config?.mode) === 'socks5_server')) {
+    outbounds.push(makeDefaultSocks5Item());
+  }
+}
+
 /* ==================== Instant 1-Request Bootstrap & Cache Hydration ==================== */
 function hydrateFromLocalCache() {
   try {
@@ -1160,9 +1169,10 @@ function hydrateFromLocalCache() {
     if (Array.isArray(cached) && cached.length > 0) {
       outbounds = cached;
       outbounds.forEach(o => { if (o.config) o.config.mode = normalizeMode(o.config.mode); });
-      renderOutboundTable();
     }
   } catch (_) {}
+  ensureBuiltinItems();
+  renderOutboundTable();
 }
 
 async function bootstrapDashboard() {
@@ -1181,12 +1191,7 @@ async function bootstrapDashboard() {
     const isSocks5Running = !!ch.socks5_running;
     lastChainStatus = ch;
 
-    if (!outbounds.some(o => normalizeMode(o.config?.mode) === 'standalone_warp')) {
-      outbounds.unshift(makeDefaultWarpItem());
-    }
-    if (!outbounds.some(o => normalizeMode(o.config?.mode) === 'socks5_server')) {
-      outbounds.push(makeDefaultSocks5Item());
-    }
+    ensureBuiltinItems();
 
     const hasCustomSaved =
       (c.mode === 'standalone_wg' && c.vpn1?.wireguard_config?.trim()) ||
@@ -1240,7 +1245,7 @@ async function bootstrapDashboard() {
 function updateModeHighlight() {
   const isTunnelRunning = !!(lastChainStatus && lastChainStatus.state === 'Running');
   const isSocks5Running = !!(lastChainStatus && lastChainStatus.socks5_running);
-  const activeTunnel = isTunnelRunning ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
+  const activeTunnel = outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server' && (isTunnelRunning || switchingId === o.id));
   const activeTunnelMode = activeTunnel ? normalizeMode(activeTunnel.config?.mode) : 'direct';
 
   const bar = document.getElementById('globalModeBar');
@@ -1264,7 +1269,7 @@ function renderOutboundTable() {
 
   const isTunnelRunning = !!(lastChainStatus && lastChainStatus.state === 'Running');
   const isSocks5Running = !!(lastChainStatus && lastChainStatus.socks5_running);
-  const activeTunnel = isTunnelRunning ? outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server') : null;
+  const activeTunnel = outbounds.find(o => o.enabled && normalizeMode(o.config?.mode) !== 'socks5_server' && (isTunnelRunning || switchingId === o.id));
   const activeS5 = isSocks5Running ? outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server') : null;
 
   const activeNames = [];
@@ -1281,8 +1286,8 @@ function renderOutboundTable() {
   document.getElementById('ob-tx').textContent = fmtBytes(tunTx + s5Tx);
   document.getElementById('ob-rx').textContent = fmtBytes(tunRx + s5Rx);
 
-  // Only rebuild DOM skeleton if item IDs/remarks/endpoints changed
-  const sig = outbounds.map(o => `${o.id}:${o.remark}:${normalizeMode(o.config?.mode)}:${getEndpointSummary(o)}`).join('|');
+  // Only rebuild DOM skeleton if item IDs or remarks changed (never destroy <select> during mode switch)
+  const sig = outbounds.map(o => `${o.id}:${o.remark}`).join('|');
   if (sig !== lastRenderedSignature) {
     lastRenderedSignature = sig;
     tbody.innerHTML = outbounds.map((item) => {
@@ -1291,7 +1296,7 @@ function renderOutboundTable() {
       const isS5Row = modeKey === 'socks5_server';
       const isBuiltin = item.id === 'builtin-warp' || item.id === 'builtin-socks5';
 
-      let modeCell = `<span class="tag ${meta.tag}">${meta.label}</span>`;
+      let modeCell = `<span class="tag ${meta.tag}" data-mode-tag="${item.id}">${meta.label}</span>`;
       if (modeKey === 'standalone_wg' || modeKey === 'wg_chain_warp') {
         modeCell = `<select class="select" data-mode-select="${item.id}" style="height:30px;padding:0 10px;font-size:12px;width:auto;" onchange="changeItemMode('${item.id}', this.value)">
           <option value="standalone_wg" ${modeKey === 'standalone_wg' ? 'selected' : ''}>🛡️ WireGuard 出站 (直出)</option>
@@ -1302,9 +1307,9 @@ function renderOutboundTable() {
       return `<tr data-row-id="${item.id}">
         <td>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
-            <button class="btn btn-sm" onclick="openOutboundModal('${item.id}')">编辑</button>
-            ${isS5Row ? `<button class="btn btn-sm" onclick="copySocks5Link('${item.id}')">📋 链接</button>` : ''}
-            ${isBuiltin ? '' : `<button class="btn btn-sm btn-danger-ghost" onclick="deleteOutbound('${item.id}')">删除</button>`}
+            <button type="button" class="btn btn-sm" onclick="openOutboundModal('${item.id}')">编辑</button>
+            ${isS5Row ? `<button type="button" class="btn btn-sm" onclick="copySocks5Link('${item.id}')">📋 链接</button>` : ''}
+            ${isBuiltin ? '' : `<button type="button" class="btn btn-sm btn-danger-ghost" onclick="deleteOutbound('${item.id}')">删除</button>`}
           </div>
         </td>
         <td>
@@ -1315,7 +1320,7 @@ function renderOutboundTable() {
         </td>
         <td style="font-weight:700;">${escapeHtml(item.remark || '未命名节点')}</td>
         <td>${modeCell}</td>
-        <td style="font-family:var(--mono);font-size:12px;color:var(--text-secondary);">${escapeHtml(getEndpointSummary(item))}</td>
+        <td data-endpoint="${item.id}" style="font-family:var(--mono);font-size:12px;color:var(--text-secondary);">${escapeHtml(getEndpointSummary(item))}</td>
         <td data-traffic="${item.id}"></td>
         <td data-status="${item.id}"></td>
       </tr>`;
@@ -1326,8 +1331,8 @@ function renderOutboundTable() {
   for (const item of outbounds) {
     const modeKey = normalizeMode(item.config?.mode);
     const isS5Row = modeKey === 'socks5_server';
-    const rowActive = isS5Row ? isSocks5Running : (isTunnelRunning && item.enabled);
     const busy = switchingId === item.id;
+    const rowActive = isS5Row ? isSocks5Running : ((isTunnelRunning || busy) && item.enabled);
 
     const tr = tbody.querySelector(`tr[data-row-id="${item.id}"]`);
     if (tr) tr.className = rowActive ? 'active-row' : '';
@@ -1343,11 +1348,15 @@ function renderOutboundTable() {
       sel.value = modeKey;
     }
 
+    const epEl = tbody.querySelector(`td[data-endpoint="${item.id}"]`);
+    const epTxt = getEndpointSummary(item);
+    if (epEl && epEl.textContent !== epTxt) epEl.textContent = epTxt;
+
     let statusHtml = '<span class="tag tag-gray">未启用</span>';
     let trafficHtml = '<span style="color:var(--muted);font-family:var(--mono);">0 B / 0 B</span>';
 
     if (busy) {
-      statusHtml = `<span class="tag tag-orange">⏳ 正在极速切换...</span>`;
+      statusHtml = `<span class="tag tag-orange">⚡ 正在切换...</span>`;
     } else if (rowActive) {
       const f = lastChainStatus?.final_hop || {};
       if (isS5Row) {
@@ -1356,7 +1365,7 @@ function renderOutboundTable() {
         statusHtml = `<span class="tag tag-green">● 运行中 (端口 ${s.port} · ${viaTxt})</span>`;
         trafficHtml = `<span style="font-family:var(--mono);color:var(--blue);">↑ ${fmtBytes(s5Tx)}</span> / <span style="font-family:var(--mono);color:var(--emerald);">↓ ${fmtBytes(s5Rx)}</span>`;
       } else {
-        const ipStr = f.exit_ip ? `${f.exit_ip} ${f.exit_country ? '(' + f.exit_country + ')' : ''}` : '已握手连通';
+        const ipStr = f.exit_ip ? `${f.exit_ip} ${f.exit_country ? '(' + f.exit_country + ')' : ''}` : '已连通运行中';
         statusHtml = `<span class="tag tag-green">● 运行中 · ${escapeHtml(ipStr)}</span>`;
         trafficHtml = `<span style="font-family:var(--mono);color:var(--blue);">↑ ${fmtBytes(tunTx)}</span> / <span style="font-family:var(--mono);color:var(--emerald);">↓ ${fmtBytes(tunRx)}</span>`;
       }
@@ -1376,32 +1385,26 @@ async function changeItemMode(id, newMode) {
   item.config.mode = normalizeMode(newMode);
   persistOutbounds();
   renderOutboundTable();
-  if (item.enabled && lastChainStatus?.state === 'Running') {
-    await onToggleOutbound(id, true);
-  } else {
-    showAlert(`已将 [${item.remark}] 模式切换为「${MODE_META[item.config.mode]?.label || newMode}」，打开开关即可生效`, 'info');
-  }
+  await onToggleOutbound(id, true);
 }
 
 async function quickSwitchMode(targetMode) {
+  ensureBuiltinItems();
   if (targetMode === 'socks5_server') {
-    let s5Srv = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
-    if (!s5Srv) {
-      s5Srv = makeDefaultSocks5Item();
-      outbounds.push(s5Srv);
-      persistOutbounds();
-    }
+    const s5Srv = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
     const isSocks5Running = !!(lastChainStatus && lastChainStatus.socks5_running);
     await onToggleOutbound(s5Srv.id, !isSocks5Running);
     return;
   }
-  if (switchingId) return;
   if (targetMode === 'direct') {
     await stopTunnelOnly();
     return;
   }
   if (targetMode === 'standalone_wg' || targetMode === 'wg_chain_warp') {
-    const wgItem = outbounds.find(o => ['standalone_wg', 'wg_chain_warp'].includes(normalizeMode(o.config?.mode)) && o.config?.vpn1?.wireguard_config?.trim());
+    const wgItem =
+      outbounds.find(o => o.enabled && ['standalone_wg', 'wg_chain_warp'].includes(normalizeMode(o.config?.mode)) && o.config?.vpn1?.wireguard_config?.trim()) ||
+      outbounds.find(o => ['standalone_wg', 'wg_chain_warp'].includes(normalizeMode(o.config?.mode)) && o.config?.vpn1?.wireguard_config?.trim()) ||
+      outbounds.find(o => o.config?.vpn1?.wireguard_config?.trim());
     if (wgItem) {
       wgItem.config.mode = targetMode;
       persistOutbounds();
@@ -1415,12 +1418,7 @@ async function quickSwitchMode(targetMode) {
     return;
   }
   if (targetMode === 'standalone_warp') {
-    let warpItem = outbounds.find(o => normalizeMode(o.config?.mode) === 'standalone_warp');
-    if (!warpItem) {
-      warpItem = makeDefaultWarpItem();
-      outbounds.unshift(warpItem);
-      persistOutbounds();
-    }
+    const warpItem = outbounds.find(o => normalizeMode(o.config?.mode) === 'standalone_warp');
     await onToggleOutbound(warpItem.id, true);
     return;
   }
@@ -1467,27 +1465,32 @@ async function onToggleOutbound(id, checked) {
       if (lastChainStatus) lastChainStatus.socks5_running = !checked;
       showAlert(`❌ 操作 SOCKS5 服务端失败: ${e.message}`, 'error');
     } finally {
-      await refreshStatus(false);
+      refreshStatus(false);
     }
     return;
   }
 
+  // Save previous state for rollback if apply fails, and optimistically update UI immediately (0ms)
+  const prevEnabled = outbounds.map(o => ({ id: o.id, enabled: o.enabled }));
+  const prevChainState = lastChainStatus ? lastChainStatus.state : 'Stopped';
+
+  outbounds.forEach(o => {
+    if (normalizeMode(o.config?.mode) !== 'socks5_server') {
+      o.enabled = checked ? (o.id === id) : false;
+    }
+  });
+  if (lastChainStatus) lastChainStatus.state = checked ? 'Running' : 'Stopped';
   switchingId = id;
+  updateModeHighlight();
   renderOutboundTable();
 
   try {
     if (!checked) {
-      showAlert(`正在关闭出站隧道 [${item.remark}] 并恢复物理网卡直连...`, 'info');
       await api('./api/v1/stop', 'POST', { all: false });
-      outbounds.forEach(o => {
-        if (normalizeMode(o.config?.mode) !== 'socks5_server') o.enabled = false;
-      });
-      if (lastChainStatus) lastChainStatus.state = 'Stopped';
       persistOutbounds();
       const s5Keep = lastChainStatus?.socks5_running ? '（本机 SOCKS5 服务端继续保持运行）' : '';
       showAlert(`已关闭出站隧道，宿主机已恢复物理网卡直连 ${s5Keep}`, 'success');
     } else {
-      showAlert(`正在启用出站 [${item.remark}] (${MODE_META[modeKey]?.label || modeKey})，正在握手...`, 'info');
       const cfgToApply = JSON.parse(JSON.stringify(item.config));
       const s5Item = outbounds.find(o => normalizeMode(o.config?.mode) === 'socks5_server');
       if (lastChainStatus?.socks5_running && s5Item?.config?.socks5_server) {
@@ -1496,29 +1499,36 @@ async function onToggleOutbound(id, checked) {
         delete cfgToApply.socks5_server;
       }
       const rep = await api('./api/v1/config/apply', 'POST', { config: cfgToApply });
-      const latest = await api('./panel/api/chain/config');
-      if (latest && latest.config) item.config = latest.config;
-      outbounds.forEach(o => {
-        if (normalizeMode(o.config?.mode) === 'socks5_server') {
-          o.enabled = !!(lastChainStatus?.socks5_running);
-        } else {
-          o.enabled = (o.id === id);
-        }
-      });
-      if (lastChainStatus) lastChainStatus.state = 'Running';
+      // If WARP credentials were auto-generated on backend, sync config in background without blocking
+      if (['standalone_warp', 'wg_chain_warp', 'socks_chain_warp'].includes(modeKey) && !item.config?.vpn2?.wireguard_config?.trim()) {
+        api('./panel/api/chain/config').then(latest => {
+          if (latest && latest.config) {
+            item.config = latest.config;
+            persistOutbounds();
+          }
+        }).catch(() => {});
+      }
       persistOutbounds();
-      const ip = rep.final_exit?.exit_ip || '握手已连通';
+      const ip = rep.final_exit?.exit_ip || '隧道已开启';
       const loc = rep.final_exit?.exit_country || '';
       const s5Note = lastChainStatus?.socks5_running ? ' · 本机 SOCKS5 服务端流量已自动切换走此节点出站' : '';
-      showAlert(`✅ 出站 [${item.remark}] 已启用！出口: ${ip} ${loc}${s5Note}`, 'success');
+      showAlert(`✅ 出站 [${item.remark}] (${MODE_META[modeKey]?.label || modeKey}) 已启用！${ip} ${loc}${s5Note}`, 'success');
+      // Refresh status shortly after so background exit IP probe updates the badge
+      setTimeout(() => refreshStatus(false), 900);
+      setTimeout(() => refreshStatus(false), 2200);
     }
   } catch (e) {
-    item.enabled = false;
+    prevEnabled.forEach(p => {
+      const o = outbounds.find(x => x.id === p.id);
+      if (o) o.enabled = p.enabled;
+    });
+    if (lastChainStatus) lastChainStatus.state = prevChainState;
     persistOutbounds();
     showAlert(`❌ 启用 [${item.remark}] 失败 (已自动安全恢复原网络): ${e.message}`, 'error');
   } finally {
     switchingId = null;
-    await refreshStatus(false);
+    renderOutboundTable();
+    refreshStatus(false);
   }
 }
 
