@@ -1,122 +1,101 @@
-# Sooya
+# Sooya (`v1.5.9` · Rare UI Edition)
 
-> **轻量化、高性能的 Linux 链式 WireGuard + WARP 代理面板（x-ui 风格 Web 控制台）**  
-> 一键将自建/商业 WireGuard 或 SOCKS5 节点与 Cloudflare WARP 串联或独立出站，预编译静态二进制秒级安装，无需在机器上编译源码。  
-> 支持 **6 种运行模式**：`WG -> WARP`、`Socks5 -> WARP`、`单独 WireGuard`、`单独 Socks5`、`单独 WARP`、`SOCKS5 服务端（本机直连）`。
+> **极致轻量、纯 Rust 原生内核的 Linux 链式 WireGuard + WARP + SOCKS5 出站代理面板（Rare UI 视觉重构版）**  
+> 一键将自建/商业 WireGuard 或 SOCKS5 节点与 Cloudflare WARP 串联或独立出站；支持**本机 SOCKS5 服务端与任意 WireGuard/WARP 出站节点同时开启**，让其他设备连接本机 SOCKS5 即可直接共享当前 WireGuard/WARP 出站线路！  
+> **仅接管本机主动出站流量 (`0x800`) 与隧道内 DNS，入站连接 (`0x88`，SSH / Web / 业务端口) 100% 原路物理网卡返回，绝不失联。**
 
 ---
 
 ## ⚡ 一键安装与升级
 
-在你的 Linux 服务器（Debian 12/13、Ubuntu 22.04/24.04、CentOS 7+ `amd64`）上直接运行：
+在你的 Linux 服务器（Debian 11/12/13、Ubuntu 20.04/22.04/24.04、CentOS 7+ `x86_64 / amd64`）上直接运行以下任意一条命令：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/scripts/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/install.sh)
 ```
 
-或使用 `curl | sudo bash` 静默安装：
+或使用 `scripts/install.sh` 路径（两者完全等效）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/scripts/install.sh | sudo bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/scripts/install.sh)
+```
+
+如果已安装过 `sooya`，也可以直接在终端执行：
+
+```bash
+sooya update
 ```
 
 支持通过环境变量在安装时直接指定面板端口与账号密码（可选）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/scripts/install.sh | sudo PANEL_PORT=54321 PANEL_USER=admin PANEL_PASS=admin bash
+curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/install.sh | sudo PANEL_PORT=54321 PANEL_USER=admin PANEL_PASS=admin bash
 ```
 
-> **轻量化设计**：安装脚本直接拉取 GitHub Releases 预编译压缩包 `sooya-linux-amd64.tar.gz`（~2.8 MB）解压至 `/usr/local/sooya/`，**绝不在目标机器上拉取源码或执行本地编译**，零额外内存/CPU 负担。
+> **极致轻量**：安装脚本直接拉取 GitHub Releases 预编译静态二进制包 `sooya-linux-amd64.tar.gz`，**不在目标机器上拉取源码或执行本地编译**，运行时内存占用仅 **~2.5 MB**，空闲 CPU **0.0%**。
 
 ---
 
-## 🖥️ Sooya Web 控制台
+## 🖥️ Rare UI Web 控制台
 
 安装完成后，终端会自动输出面板访问信息：
 
-- **访问地址**：`http://<服务器IP>:54321/`
+- **访问地址**：`http://<服务器IP>:54321/`（若之前自定义过端口如 `5000`，会自动保留原端口）
 - **默认用户名**：`admin`
 - **默认密码**：`admin`
 
-### 面板核心功能：
+### 核心亮点与功能
 
-1. **系统状态监控 (Dashboard)**
-   - 实时仪表盘监控 CPU、内存、Swap、硬盘使用率、TCP/UDP 连接数、实时上下行速率与累计流量。
-   - 可视化展示 **第一跳（入口 WG / SOCKS5）** 与 **第二跳（Cloudflare WARP / 最终出口）** 的连通状态、延迟与公网出口 IP / 归属地 / 运营商。
-   - 一键执行 **启动/重载**、**停止代理**、**分跳连通性探测**。
+1. **Rare UI (`rareui.com`) 视觉与微交互体系**
+   - **Squircle 圆角画布 + 双主题切换**：采用 Rare UI 标志性曜石深色 (`#121214`) 与浅色 (`#F5F5F7`) 画布、火焰橙主色 (`#FC4C01`) 与翡翠绿运行态 (`#10B981`)，右上角支持一键切换深浅模式。
+   - **Gooey Pill 悬浮胶囊导航栏**：弹簧物理曲线指示器 + 全 GPU 合成动画，零外部 CDN 阻塞。
+   - **单请求极速首屏 (`/panel/api/bootstrap`) + 细粒度原位 DOM 更新**：首帧 `0ms` 本地缓存水合，单次请求聚合加载全部状态，后台 3 秒轮询原位更新数值，**零重绘闪烁、零卡顿**。
 
-2. **链式与节点配置**
-   - **6 种工作模式一键卡片切换**：自动按所选模式精简下方表单配置项。
-   - **入口 WireGuard 节点**：支持导入 `.conf` 文件或直接粘贴标准配置。
-   - **入口 SOCKS5 节点**：支持粘贴 `user:pass@host:port`、`socks5://...`、`host:port:user:pass` 一键智能解析。
-   - **Cloudflare WARP 出口**：内置官方接口，点击 **「⚡ 一键自动注册生成 WARP」** 即可自动生成密钥与配置。
-   - **本机 SOCKS5 服务端**：支持多账号认证管理与一键复制 `socks5://` 分享链接。
+2. **全局模式胶囊坞 & 5 大出站模式 + 并行 SOCKS5 服务端**
+   - **`🛡️ 仅 WireGuard 出站` (`standalone_wg`)**：本机主动出站流量与全量 DNS 直接走您配置的 WireGuard 节点出站（解决就近 CDN 解析，杜绝 DNS 泄露与回环绕路）。
+   - **`🔗 WG + WARP 链式出站` (`wg_chain_warp`)**：`VPS -> 前置 WireGuard -> Cloudflare WARP -> 目标公网`，前置节点列表中可随时下拉切换「仅 WG 直出」或「WG + WARP 链式」。
+   - **`☁️ 仅 WARP 免配置出站` (`standalone_warp`)**：零配置自动向 Cloudflare 注册免费 WARP 密钥并优选低延迟 Anycast 端点。
+   - **`🧦 SOCKS5 + WARP 链式出站` (`socks_chain_warp`)**：`VPS -> 前置 SOCKS5 -> Cloudflare WARP -> 目标公网`。
+   - **`🔌 本机 SOCKS5 服务端` (`socks5_server`，支持与任意出站模式同时开启！)**：
+     - 独立守护运行，开关耗时 **< 2ms**，绝不打断正在运行的 WireGuard / WARP 隧道。
+     - **共享出站能力**：当与 `WireGuard` 或 `WARP` 同时开启时，外部设备连接本机 SOCKS5 服务端（支持 TCP `CONNECT` 与 UDP `UDP ASSOCIATE`）的流量与域名解析将**自动走当前启用的 WireGuard / WARP 节点出站**，且回包强制打标 `0x400` 走物理网卡直回客户端，绝不回环！
 
-3. **运行日志与系统诊断**
-   - 在线切换 `sing-box` 日志级别（`info` / `debug` / `warn` / `none`）。
-   - 在线查看实时运行日志与一键生成系统策略路由 / `nftables` 诊断报告。
-
-4. **面板设置**
-   - 在线修改面板监听 IP、监听端口、URL 根路径（Base Path）以及登录用户名与密码。
+3. **运行日志与策略路由诊断**
+   - 在线查看 `journalctl -u sooya` 实时日志。
+   - 一键检查 Linux 策略路由表 (`ip rule` / `table 2023`) 与 `nftables` 防火墙规则。
 
 ---
 
-## 🛠️ Sooya 终端管理脚本使用方法
+## 🛠️ Sooya 终端管理命令
 
-在终端直接输入 `sooya` 即可呼出 `x-ui` 风格管理菜单：
-
-```text
-  Sooya 面板管理脚本 v1.4.0
-  Web 面板地址: http://<IP>:54321/
-  面板状态: 运行中  |  sing-box 引擎: 运行中
-  0. 退出脚本
-————————————————
-  1. 更新 Sooya
-  2. 卸载 Sooya
-————————————————
-  3. 重置用户名密码
-  4. 重置面板设置
-  5. 设置面板端口与根路径
-  6. 查看当前面板设置
-————————————————
-  7. 启动 Sooya
-  8. 停止 Sooya
-  9. 重启 Sooya
- 10. 查看 Sooya 状态
- 11. 查看 Sooya 日志
-————————————————
- 12. 设置 Sooya 开机自启
- 13. 取消 Sooya 开机自启
-```
-
-### 常用命令行快捷指令：
+在终端直接输入 `sooya` 即可呼出交互式管理菜单，或使用快捷子命令：
 
 ```bash
-sooya              # 显示管理菜单 (功能更多)
+sooya              # 显示交互式管理菜单
 sooya start        # 启动 Sooya 面板
-sooya stop         # 停止 Sooya 面板与代理并恢复网络
+sooya stop         # 停止代理并安全恢复宿主机原网络
 sooya restart      # 重启 Sooya 面板
-sooya status       # 查看 Sooya 状态
+sooya status       # 查看 Sooya 实时链路状态
 sooya enable       # 设置 Sooya 开机自启
 sooya disable      # 取消 Sooya 开机自启
 sooya log          # 查看 Sooya 运行日志
-sooya update       # 在线更新 Sooya 面板
+sooya update       # 在线更新 Sooya 至最新版本
 sooya uninstall    # 卸载 Sooya 面板
 sooya setting --port 54321 --username admin --password 新密码
 ```
 
 ---
 
-## ✨ 性能与安全特性
+## ✨ 底层架构与安全保证
 
-- **自研内置 Rust WARP 与 WireGuard 内核 (`Sooya WarpKernel`)**：
-  - 彻底摆脱官方 `cloudflare-warp` (`warp-svc`, 150MB+ 内存) 与外部 `sing-box` Go 运行时（80~200MB 内存），**运行时内存占用不足 3 MB**，空闲 CPU 占用 **0.0%**。
-  - **L3 零用户态协议栈双层隧道 (`WgChainWarp`)**：直接在 Layer 3 将内层 WARP WireGuard 报文封装进外层 `vpn1` 隧道，所有 TCP 状态机交由 Linux 内核原生处理，零 `gVisor` 开销。
-  - **Cloudflare `client_id` (`reserved` 3 字节) 原生签名支持 + 多端口 Anycast Happy-Eyeballs 竞速**：自动提取并注入 Cloudflare 注册 `client_id`，并在 `2408 / 500 / 4500 / 1701` 多端口与多个 Anycast 网段间毫秒级自动竞速切换，彻底解决 WARP 出站握手失败与卡死问题。
-  - **双向 TCP MSS 自动钳制 (`1200`)**：在内核与 `nftables` 双重钳制双层隧道 MSS，彻底杜绝大包 TLS/HTTPS 卡死。
-- **零子进程轮询开销**：系统监控直接读取 Linux `/proc` 虚拟文件系统（含 `/proc/net/sockstat` $O(1)$ 计数）并直接读写 `/proc/sys/`，极低资源占用。
-- **SSH 与面板零失联保护 (`conntrack 0x88`)**：入站管理连接自动打标并强制走物理网卡主路由表回程，开启全局代理后 SSH 与 Web 面板永不断联。
-- **30 秒事务看门狗回滚**：应用配置异常时自动回滚至上一可用版本并清理防火墙/策略路由规则。
+- **自研纯 Rust 用户态 WireGuard & WARP 内核 (`Sooya WarpKernel`)**：
+  - 彻底摒弃官方 `cloudflare-warp` (`warp-svc`，150MB+ 内存) 与外部 Go/C 进程，单二进制零外部运行时依赖。
+  - 原生实现 Noise_IK 握手、X25519、ChaCha20-Poly1305、BLAKE2s、Cloudflare 3 字节 `reserved` (`client_id`) 注入，以及 `2408 / 500 / 4500 / 1701` 多端口 Anycast 自动优选。
+- **严格出入站隔离（100% 不影响入站流量）**：
+  - 入站连接在 `prerouting` 自动记录 `ct mark 0x88`，回包强制走主路由表从原物理网卡返回，SSH、Web 面板及本机所有对外服务端口 100% 不受影响。
+  - 仅本机发起的主动出站连接（`ct state new`）打标 `0x800` 路由至 `table 2023` (`chain0`)，并自动接管全量 UDP/TCP 53 DNS 请求通过隧道远端解析。
+- **毫秒级批处理路由切换与事务自愈回滚**：
+  - 采用 `ip -force -batch -` 单次批处理清理规则，启停切换丝滑顺畅；任何异常自动回滚恢复原网络。
 
 ---
 
