@@ -11,18 +11,19 @@ pub enum ProxyMode {
     /// 1. Layer 1 WireGuard -> Layer 2 Cloudflare WARP (双层链式: WG -> WARP)
     WgChainWarp,
 
-    /// 2. Layer 1 Socks5 -> Layer 2 Cloudflare WARP (双层链式: Socks5 作为入口中继 WARP)
+    /// 2. Layer 1 Socks5 -> Layer 2 Cloudflare WARP (双层链式: Socks5 -> WARP)
     SocksChainWarp,
 
-    /// 3. Standalone WireGuard -> Internet (单独 WireGuard 直连出站，不带 WARP)
+    /// 3. Standalone WireGuard -> Internet (单独 WireGuard 直连出站)
     StandaloneWg,
 
-    /// 4. Standalone Socks5 -> Internet (单独 Socks5 代理直连出站，不带 WARP)
+    /// 4. Standalone Socks5 -> Internet (单独 Socks5 代理直连出站)
     StandaloneSocks,
 
     /// 5. Standalone Cloudflare WARP -> Internet (单独 WARP 直连出站)
     StandaloneWarp,
 
+    /// 6. Local SOCKS5 Server -> Direct Internet (本机 SOCKS5 服务端)
     Socks5Server,
 }
 
@@ -66,16 +67,10 @@ pub struct RoutingConfig {
     pub proxy_host_outbound: bool,
 
     #[serde(default = "default_true")]
-    pub proxy_forwarded_outbound: bool,
-
-    #[serde(default = "default_true")]
     pub preserve_inbound_connections: bool,
 
     #[serde(default = "default_connection_mark")]
     pub connection_mark: String,
-
-    #[serde(default)]
-    pub forwarded_subnets: Vec<String>,
 
     #[serde(default)]
     pub exclude_destinations: Vec<String>,
@@ -94,23 +89,18 @@ fn default_connection_mark() -> String {
 
 impl RoutingConfig {
     pub fn inbound_mark(&self) -> Result<u32> {
-        use crate::network::iproute::{MARK_FORWARD_PROXY, MARK_HOST_PROXY, MARK_PHYSICAL_DIRECT};
+        use crate::network::iproute::{MARK_HOST_PROXY, MARK_PHYSICAL_DIRECT};
         let value = self
             .connection_mark
             .strip_prefix("0x")
             .map(|hex| u32::from_str_radix(hex, 16))
             .unwrap_or_else(|| self.connection_mark.parse());
         match value {
-            Ok(mark)
-                if mark != 0
-                    && mark & (MARK_PHYSICAL_DIRECT | MARK_HOST_PROXY | MARK_FORWARD_PROXY)
-                        == 0 =>
-            {
+            Ok(mark) if mark != 0 && mark & (MARK_PHYSICAL_DIRECT | MARK_HOST_PROXY) == 0 => {
                 Ok(mark)
             }
             _ => Err(ChainError::ValidationError(
-                "connection_mark must be nonzero and disjoint from physical/host/forward marks"
-                    .to_string(),
+                "connection_mark must be nonzero and disjoint from physical/host marks".to_string(),
             )),
         }
     }
@@ -120,10 +110,8 @@ impl Default for RoutingConfig {
     fn default() -> Self {
         Self {
             proxy_host_outbound: true,
-            proxy_forwarded_outbound: true,
             preserve_inbound_connections: true,
             connection_mark: default_connection_mark(),
-            forwarded_subnets: vec![],
             exclude_destinations: vec![],
             ipv6: false,
         }
@@ -149,31 +137,6 @@ impl Default for DnsConfig {
         Self {
             mode: default_dns_mode(),
             custom_servers: vec![],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GatewayConfig {
-    /// Whether LAN transparent gateway mode is enabled (局域网透明网关/旁路由)
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// Whether to automatically detect and allow the actual interface subnet (e.g. 192.168.1.0/24)
-    #[serde(default = "default_true")]
-    pub auto_allow_lan: bool,
-
-    /// Additional or custom allowed subnets in CIDR notation (e.g. ["192.168.2.0/24"])
-    #[serde(default)]
-    pub allowed_subnets: Vec<String>,
-}
-
-impl Default for GatewayConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            auto_allow_lan: true,
-            allowed_subnets: vec![],
         }
     }
 }
@@ -207,9 +170,6 @@ pub struct ChainProxyConfig {
     #[serde(default)]
     pub dns: DnsConfig,
 
-    #[serde(default)]
-    pub gateway: GatewayConfig,
-
     /// Log level: "none", "info", "warn", "debug"
     #[serde(default = "default_log_level")]
     pub log_level: String,
@@ -231,7 +191,6 @@ impl Default for ChainProxyConfig {
             socks5_server: None,
             routing: RoutingConfig::default(),
             dns: DnsConfig::default(),
-            gateway: GatewayConfig::default(),
             log_level: default_log_level(),
         }
     }
@@ -342,23 +301,6 @@ impl ChainProxyConfig {
             }
         }
 
-        // Validate forwarded subnets
-        for subnet in &self.routing.forwarded_subnets {
-            subnet.parse::<IpNet>().map_err(|e| {
-                ChainError::ValidationError(format!("Invalid forwarded_subnet '{}': {}", subnet, e))
-            })?;
-        }
-
-        // Validate gateway allowed subnets
-        for subnet in &self.gateway.allowed_subnets {
-            subnet.parse::<IpNet>().map_err(|e| {
-                ChainError::ValidationError(format!(
-                    "Invalid gateway allowed_subnet '{}': {}",
-                    subnet, e
-                ))
-            })?;
-        }
-
         // Validate exclude destinations
         for dest in &self.routing.exclude_destinations {
             dest.parse::<IpNet>().map_err(|e| {
@@ -370,36 +312,6 @@ impl ChainProxyConfig {
         }
 
         Ok(parsed)
-    }
-
-    /// Compute all active forwarded subnets taking into account GatewayConfig
-    pub fn get_effective_forwarded_subnets(
-        &self,
-        detected_lan_subnet: Option<&str>,
-    ) -> Vec<String> {
-        let mut subnets = self.routing.forwarded_subnets.clone();
-
-        if self.gateway.enabled {
-            if self.gateway.auto_allow_lan {
-                if let Some(lan) = detected_lan_subnet {
-                    if !subnets.contains(&lan.to_string()) {
-                        subnets.push(lan.to_string());
-                    }
-                }
-            }
-            for s in &self.gateway.allowed_subnets {
-                if !subnets.contains(s) {
-                    subnets.push(s.clone());
-                }
-            }
-        }
-
-        subnets
-    }
-
-    /// The forwarding switch is authoritative; gateway only supplies LAN discovery settings.
-    pub fn is_forwarding_enabled(&self) -> bool {
-        self.mode != ProxyMode::Socks5Server && self.routing.proxy_forwarded_outbound
     }
 
     /// Redacted copy of config safe for public logging and API responses
@@ -445,39 +357,6 @@ impl ChainProxyConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_gateway_config_effective_subnets() {
-        let mut cfg = ChainProxyConfig {
-            enabled: true,
-            socks5_server: None,
-            mode: ProxyMode::WgChainWarp,
-            uplink_interface: Some("eth0".to_string()),
-            vpn1: VpnNodeConfig::default(),
-            vpn2: VpnNodeConfig::default(),
-            socks5: None,
-            routing: RoutingConfig::default(),
-            dns: DnsConfig::default(),
-            gateway: GatewayConfig {
-                enabled: true,
-                auto_allow_lan: true,
-                allowed_subnets: vec!["10.200.0.0/24".to_string()],
-            },
-            log_level: "info".to_string(),
-        };
-
-        // When enabled with auto_allow_lan
-        let eff = cfg.get_effective_forwarded_subnets(Some("192.168.1.0/24"));
-        assert!(eff.contains(&"192.168.1.0/24".to_string()));
-        assert!(eff.contains(&"10.200.0.0/24".to_string()));
-        assert!(cfg.is_forwarding_enabled());
-
-        // When disabled
-        cfg.gateway.enabled = false;
-        let eff_disabled = cfg.get_effective_forwarded_subnets(Some("192.168.1.0/24"));
-        assert!(!eff_disabled.contains(&"192.168.1.0/24".to_string()));
-        assert!(!eff_disabled.contains(&"10.200.0.0/24".to_string()));
-    }
 
     #[test]
     fn test_log_level_default_and_serde() {

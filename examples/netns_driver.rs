@@ -47,8 +47,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let uplink = config.uplink_interface.as_deref().unwrap();
-    let lans = IpRouteManager::lan_subnets(&config, uplink)?;
-    let plan = IpRouteManager::route_plan(&config, &lans, &[])?;
+    let plan = IpRouteManager::route_plan(&config, &[])?;
     IpRouteManager::check_available(&plan)?;
     let snapshot = NetworkSnapshot::capture(plan, &config)?;
     let local_ip = IpRouteManager::get_interface_ipv4(uplink)?.to_string();
@@ -63,13 +62,10 @@ async fn main() -> anyhow::Result<()> {
     SingBoxManager::check_config("sing-box", &path)?;
     let mut process = SingBoxManager::new();
     let result = (|| -> anyhow::Result<()> {
-        let mut interfaces = vec![uplink.to_string()];
-        interfaces.extend(lans.iter().map(|l| l.interface.clone()));
-        interfaces.sort();
-        interfaces.dedup();
+        let interfaces = vec![uplink.to_string()];
         SysctlManager::configure_for_proxy(
             &interfaces,
-            config.is_forwarding_enabled() && !lans.is_empty(),
+            false,
             config.routing.ipv6,
         )?;
         IpRouteManager::install_rules(&snapshot.plan)?;
@@ -80,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         );
         SysctlManager::configure_tun_sysctl("chain0")?;
         IpRouteManager::install_routes(&snapshot.plan)?;
-        NftablesManager::apply_ruleset(&NftablesManager::generate_ruleset(&config, &lans)?)?;
+        NftablesManager::apply_ruleset(&NftablesManager::generate_ruleset(&config)?)?;
         println!("READY");
         std::io::stdout().flush()?;
         let _ = std::io::stdin().lock().lines().next();

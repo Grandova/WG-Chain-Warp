@@ -575,6 +575,7 @@ async fn test_config_handler(
     let report =
         HealthChecker::run_full_test(&config, Some(&uplink), &v1_name, &v1_ep, &v2_name, &v2_ep)
             .await;
+    state.engine.lock().await.update_last_report(report.clone());
     Json(ApiResponse::ok(report))
 }
 

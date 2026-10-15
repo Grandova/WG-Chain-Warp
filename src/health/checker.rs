@@ -22,6 +22,7 @@ fn map_country_code(code: &str) -> &'static str {
         "NL" => "Netherlands (荷兰)",
         "CA" => "Canada (加拿大)",
         "AU" => "Australia (澳大利亚)",
+        "IS" => "Iceland (冰岛)",
         _ => "",
     }
 }
@@ -55,49 +56,29 @@ impl HealthChecker {
         }
     }
 
-    /// Single probe via sing-box local test inbound
+    /// Single probe via sing-box local mixed test inbound
     async fn single_probe_proxy(
         proxy_port: u16,
         hop_name: &str,
         test_url: &str,
         timeout: Duration,
     ) -> Result<(String, u64)> {
-        // 1. Try HTTP proxy scheme (sing-box mixed inbound natively handles HTTP proxy with zero overhead)
         let http_proxy_url = format!("http://127.0.0.1:{}", proxy_port);
-        if let Ok(proxy) = Proxy::all(&http_proxy_url) {
-            if let Ok(client) = reqwest::Client::builder()
-                .proxy(proxy)
-                .timeout(timeout)
-                .build()
-            {
-                let start = Instant::now();
-                if let Ok(resp) = client.get(test_url).send().await {
-                    let elapsed = start.elapsed().as_millis() as u64;
-                    if let Ok(text) = resp.text().await {
-                        if Self::parse_trace(&text).0.is_some() {
-                            return Ok((text.trim().to_string(), elapsed));
-                        }
-                    }
-                }
-            }
-        }
+        let proxy = Proxy::all(&http_proxy_url)
+            .map_err(|e| ChainError::NetworkError(e.to_string()))?;
+        let client = reqwest::Client::builder()
+            .proxy(proxy)
+            .timeout(timeout)
+            .pool_max_idle_per_host(0)
+            .build()
+            .map_err(|e| ChainError::NetworkError(e.to_string()))?;
 
-        // 2. Secondary fallback to SOCKS5 proxy scheme
-        let socks_proxy_url = format!("socks5://127.0.0.1:{}", proxy_port);
-        if let Ok(proxy) = Proxy::all(&socks_proxy_url) {
-            if let Ok(client) = reqwest::Client::builder()
-                .proxy(proxy)
-                .timeout(timeout)
-                .build()
-            {
-                let start = Instant::now();
-                if let Ok(resp) = client.get(test_url).send().await {
-                    let elapsed = start.elapsed().as_millis() as u64;
-                    if let Ok(text) = resp.text().await {
-                        if Self::parse_trace(&text).0.is_some() {
-                            return Ok((text.trim().to_string(), elapsed));
-                        }
-                    }
+        let start = Instant::now();
+        if let Ok(resp) = client.get(test_url).send().await {
+            let elapsed = start.elapsed().as_millis() as u64;
+            if let Ok(text) = resp.text().await {
+                if Self::parse_trace(&text).0.is_some() {
+                    return Ok((text.trim().to_string(), elapsed));
                 }
             }
         }
@@ -108,7 +89,7 @@ impl HealthChecker {
         )))
     }
 
-    /// Test a hop via sing-box local test inbound with retry
+    /// Test a hop via sing-box local test inbound with fast retry
     pub async fn test_hop_via_proxy(
         proxy_port: u16,
         hop_name: &str,
@@ -116,13 +97,13 @@ impl HealthChecker {
         timeout: Duration,
     ) -> Result<(String, u64)> {
         let mut last_err = None;
-        for attempt in 1..=3 {
+        for attempt in 1..=2 {
             match Self::single_probe_proxy(proxy_port, hop_name, test_url, timeout).await {
                 Ok(res) => return Ok(res),
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt < 3 {
-                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                    if attempt < 2 {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
                     }
                 }
             }
@@ -151,7 +132,6 @@ impl HealthChecker {
         (exit_ip, loc_code, colo_code, warp_status)
     }
 
-    /// Format location description
     fn format_location(loc_code: Option<String>, colo_code: Option<String>) -> Option<String> {
         match (loc_code, colo_code) {
             (Some(loc), Some(colo)) => {
@@ -197,7 +177,7 @@ impl HealthChecker {
             .basic_auth(&user.username, &user.password);
         let client = reqwest::Client::builder()
             .proxy(proxy)
-            .timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(6))
             .build()
             .map_err(network_error)?;
         let start = Instant::now();
@@ -231,7 +211,6 @@ impl HealthChecker {
         let mode = config.mode;
         info!("Running per-hop health probe for mode {:?}", mode);
 
-        // 1. Physical test
         let phys_status = Self::probe_physical(uplink);
         let phys_hop = VpnHopStatus {
             name: "Physical Gateway".to_string(),
@@ -245,11 +224,8 @@ impl HealthChecker {
             message: None,
         };
 
-        // 2. Branch based on standalone vs chained mode
         match mode {
             ProxyMode::StandaloneWg | ProxyMode::StandaloneSocks | ProxyMode::Socks5Server => {
-                // In standalone mode, only 1 outbound hop is configured.
-                // TEST_WARP_PORT (25432) routes directly to vpn1 or socks-out.
                 let probe = if mode == ProxyMode::Socks5Server {
                     Self::test_socks_server(config).await
                 } else {
@@ -261,7 +237,7 @@ impl HealthChecker {
                         } else {
                             "https://1.1.1.1/cdn-cgi/trace"
                         },
-                        Duration::from_secs(5),
+                        Duration::from_secs(4),
                     )
                     .await
                 };
@@ -361,7 +337,7 @@ impl HealthChecker {
                     TEST_WARP_PORT,
                     vpn2_name,
                     "https://1.1.1.1/cdn-cgi/trace",
-                    Duration::from_secs(5),
+                    Duration::from_secs(4),
                 )
                 .await
                 {
@@ -446,15 +422,23 @@ impl HealthChecker {
                 }
             }
             ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp => {
-                // 2. Test Hop 1 (VPN1 or Socks-Relay) via TEST_VPN1_PORT
-                let (vpn1_hop, vpn1_ok) = match Self::test_hop_via_proxy(
+                // Probe Hop 2 (WARP over Hop 1) and Hop 1 concurrently for maximum speed!
+                let hop1_fut = Self::single_probe_proxy(
                     TEST_VPN1_PORT,
                     vpn1_name,
                     "http://1.1.1.1/cdn-cgi/trace",
-                    Duration::from_secs(5),
-                )
-                .await
-                {
+                    Duration::from_millis(2200),
+                );
+                let hop2_fut = Self::test_hop_via_proxy(
+                    TEST_WARP_PORT,
+                    vpn2_name,
+                    "https://1.1.1.1/cdn-cgi/trace",
+                    Duration::from_secs(4),
+                );
+
+                let (hop1_res, hop2_res) = tokio::join!(hop1_fut, hop2_fut);
+
+                let (vpn1_hop, vpn1_ok) = match hop1_res {
                     Ok((trace, latency)) => {
                         let (exit_ip, loc_code, colo_code, _) = Self::parse_trace(&trace);
                         let loc_desc = Self::format_location(loc_code, colo_code)
@@ -477,34 +461,23 @@ impl HealthChecker {
                             true,
                         )
                     }
-                    Err(e) => {
-                        warn!("Hop 1 test failed: {}", e);
-                        (
-                            VpnHopStatus {
-                                name: vpn1_name.to_string(),
-                                endpoint: vpn1_endpoint.to_string(),
-                                config_valid: true,
-                                reachable: false,
-                                bytes_sent: 0,
-                                bytes_received: 0,
-                                latency_ms: None,
-                                status: "FAILED".to_string(),
-                                message: Some(e.to_string()),
-                            },
-                            false,
-                        )
-                    }
+                    Err(e) => (
+                        VpnHopStatus {
+                            name: vpn1_name.to_string(),
+                            endpoint: vpn1_endpoint.to_string(),
+                            config_valid: true,
+                            reachable: false,
+                            bytes_sent: 0,
+                            bytes_received: 0,
+                            latency_ms: None,
+                            status: "FAILED".to_string(),
+                            message: Some(e.to_string()),
+                        },
+                        false,
+                    ),
                 };
 
-                // 3. Test WARP (detoured via Hop 1) via TEST_WARP_PORT
-                let (vpn2_hop, final_exit, vpn2_ok) = match Self::test_hop_via_proxy(
-                    TEST_WARP_PORT,
-                    vpn2_name,
-                    "https://1.1.1.1/cdn-cgi/trace",
-                    Duration::from_secs(5),
-                )
-                .await
-                {
+                let (vpn2_hop, final_exit, vpn2_ok) = match hop2_res {
                     Ok((trace, latency)) => {
                         let (exit_ip, loc_code, colo_code, warp_status) = Self::parse_trace(&trace);
                         let exit_country = Self::format_location(loc_code, colo_code);
@@ -566,19 +539,12 @@ impl HealthChecker {
                 let mut vpn1_hop = vpn1_hop;
                 let mut vpn1_ok = vpn1_ok;
 
-                // 5. 核心链式代理状态拓扑推导:
-                // 在 sing-box 中，WARP (vpn2) 的 detour 严格指向第一跳。
-                // 若 WARP (vpn2_ok) 连通或最终公网出口 (final_exit.internet_ok) 畅通，
-                // 则在物理拓扑与网络链路上绝对证明：第一跳已成功承载 WARP 数据包转发。
                 if !vpn1_ok && vpn2_ok && final_exit.internet_ok {
                     vpn1_ok = true;
                     vpn1_hop.reachable = true;
-                    vpn1_hop.status = "OK (已作为 WARP 载体成功转发)".to_string();
+                    vpn1_hop.status = "OK (已承载 WARP)".to_string();
                     vpn1_hop.latency_ms = vpn2_hop.latency_ms.map(|l| (l * 4) / 10);
-                    vpn1_hop.message = Some(
-                        "✅ 隧道已连通 (作为第一层底层载体，已成功承载 WARP 实现双层链式封装出站)"
-                            .to_string(),
-                    );
+                    vpn1_hop.message = Some("已成功承载 WARP 隧道转发".to_string());
                 }
 
                 let overall_success =

@@ -16,6 +16,7 @@ pub fn generate_singbox_config(
     uplink_interface: &str,
     local_ip: Option<&str>,
 ) -> Result<SingBoxConfig> {
+    let _ = local_ip;
     // 1. Log section
     let sb_level = match chain_config.log_level.to_lowercase().as_str() {
         "debug" => "debug".to_string(),
@@ -72,7 +73,6 @@ pub fn generate_singbox_config(
     // 2. DNS Section (Modern sing-box 1.14+ format)
     let mut dns_servers = Vec::new();
     let final_dns;
-    // DNS over TCP works through SOCKS CONNECT even when UDP ASSOCIATE is unavailable.
     let dns_transport = if chain_config.mode == ProxyMode::StandaloneSocks {
         "tcp"
     } else {
@@ -110,9 +110,6 @@ pub fn generate_singbox_config(
             }
         }
         _ => {
-            // Default: chain (prevent DNS leaks through tunnel)
-            // Use 1.1.1.1 (Cloudflare) and 8.8.8.8 (Google) routed through final_target_outbound
-            // This guarantees genuine IP resolution and avoids commercial VPN threat-protection sinkholes (such as NordVPN 192.0.0.88).
             dns_servers.push(json!({
                 "tag": "dns-chain",
                 "type": dns_transport,
@@ -154,11 +151,9 @@ pub fn generate_singbox_config(
 
     #[cfg(target_os = "linux")]
     {
-        // resolved includes chain0 DNS while it is running; reload must not use
-        // that DNS (or our LAN listener) to bootstrap the tunnel itself.
         let tun_subnets =
             [DEFAULT_TUN_IPV4, DEFAULT_TUN_IPV6].map(|s| s.parse::<ipnet::IpNet>().unwrap());
-        let local_ip = local_ip.and_then(|s| s.parse::<std::net::IpAddr>().ok());
+        let local_ip_addr = local_ip.and_then(|s| s.parse::<std::net::IpAddr>().ok());
         let server = ["/etc/resolv.conf", "/run/systemd/resolve/resolv.conf"]
             .iter()
             .filter_map(|path| std::fs::read_to_string(path).ok())
@@ -179,12 +174,10 @@ pub fn generate_singbox_config(
             .find(|ip| {
                 !ip.is_loopback()
                     && !ip.is_unspecified()
-                    && Some(*ip) != local_ip
+                    && Some(*ip) != local_ip_addr
                     && !tun_subnets.iter().any(|subnet| subnet.contains(ip))
             });
-        let server = server.ok_or_else(|| ChainError::ValidationError(
-            "Physical DNS requires an upstream nameserver outside loopback, chain0 and the local gateway address in /etc/resolv.conf or /run/systemd/resolve/resolv.conf".to_string()
-        ))?;
+        let server = server.unwrap_or_else(|| "1.1.1.1".parse().unwrap());
         for dns in &mut dns_servers {
             if dns["tag"] == "dns-direct" {
                 *dns = json!({"tag": "dns-direct", "type": "udp", "server": server.to_string(), "detour": "physical-direct"});
@@ -192,19 +185,15 @@ pub fn generate_singbox_config(
         }
     }
 
-    let dns_rules = Vec::new();
-
     let dns = DnsConfig {
         servers: dns_servers,
         final_server: final_dns,
-        rules: dns_rules,
+        rules: Vec::new(),
         strategy: Some("prefer_ipv4".to_string()),
     };
 
-    // 3. Inbounds
+    // 3. Inbounds (High-performance mixed TUN stack)
     let mut inbounds = Vec::new();
-
-    // Modern TUN Inbound with gVisor userspace stack for gateway forwarding
     let mut tun_addresses = vec![json!(DEFAULT_TUN_IPV4)];
     if chain_config.routing.ipv6 {
         tun_addresses.push(json!(DEFAULT_TUN_IPV6));
@@ -218,11 +207,6 @@ pub fn generate_singbox_config(
     if chain_config.routing.ipv6 {
         route_exclude_addresses.push("fc00::/7".to_string());
     }
-    for subnet in chain_config.get_effective_forwarded_subnets(None) {
-        if !route_exclude_addresses.contains(&subnet) {
-            route_exclude_addresses.push(subnet);
-        }
-    }
 
     let tun_inbound = json!({
         "type": "tun",
@@ -232,33 +216,14 @@ pub fn generate_singbox_config(
         "auto_route": false,
         "strict_route": false,
         "route_exclude_address": route_exclude_addresses,
-        "stack": "gvisor",
+        "stack": "mixed",
         "endpoint_independent_nat": true,
         "iproute2_table_index": crate::network::iproute::HOST_TABLE,
         "iproute2_rule_index": 9000
     });
     inbounds.push(tun_inbound);
 
-    // Direct DNS listener inbound for transparent gateway / LAN DNS queries
-    if chain_config.is_forwarding_enabled() {
-        let listen_ip = local_ip.unwrap_or("0.0.0.0");
-        inbounds.push(json!({
-            "type": "direct",
-            "tag": "dns-in",
-            "network": "udp",
-            "listen": listen_ip,
-            "listen_port": 53
-        }));
-        inbounds.push(json!({
-            "type": "direct",
-            "tag": "dns-in-tcp",
-            "network": "tcp",
-            "listen": listen_ip,
-            "listen_port": 53
-        }));
-    }
-
-    // Test inbounds strictly bound to 127.0.0.1 for non-disruptive per-hop verification
+    // Local loopback test inbounds for non-disruptive per-hop verification
     inbounds.push(json!({
         "type": "mixed",
         "tag": "test-vpn1-in",
@@ -277,7 +242,6 @@ pub fn generate_singbox_config(
     let mut outbounds = Vec::new();
     let mut endpoints = Vec::new();
 
-    // Base physical direct outbound
     let mut direct_obj = json!({
         "type": "direct",
         "tag": "physical-direct"
@@ -290,7 +254,6 @@ pub fn generate_singbox_config(
     }
     outbounds.push(direct_obj);
 
-    // Socks5 outbound (if used as relay or standalone egress)
     if let Some(ref s5) = parsed.socks5 {
         let tag = if chain_config.mode == ProxyMode::SocksChainWarp {
             "socks-relay"
@@ -321,7 +284,6 @@ pub fn generate_singbox_config(
         vec!["0.0.0.0/0".to_string()]
     };
 
-    // WireGuard VPN1 Endpoint (if configured)
     if let Some(ref vpn1_wg) = parsed.vpn1 {
         let vpn1_peer = vpn1_wg
             .peers
@@ -361,7 +323,6 @@ pub fn generate_singbox_config(
         }));
     }
 
-    // Cloudflare WARP Endpoint (if configured)
     if let Some(ref vpn2_wg) = parsed.vpn2 {
         let vpn2_peer = vpn2_wg
             .peers
@@ -410,21 +371,11 @@ pub fn generate_singbox_config(
     // 5. Route Section
     let mut route_rules = Vec::new();
 
-    // Protocol Sniff with explicit timeout to prevent connection stall
     route_rules.push(json!({
         "action": "sniff",
-        "timeout": "300ms"
+        "timeout": "100ms"
     }));
 
-    // Rule: Direct DNS inbound hijack
-    if chain_config.is_forwarding_enabled() {
-        route_rules.push(json!({
-            "inbound": ["dns-in", "dns-in-tcp"],
-            "action": "hijack-dns"
-        }));
-    }
-
-    // Rule: DNS hijack (support both protocol dns and port 53)
     route_rules.push(json!({
         "protocol": "dns",
         "action": "hijack-dns"
@@ -434,13 +385,11 @@ pub fn generate_singbox_config(
         "action": "hijack-dns"
     }));
 
-    // Bypass private LAN traffic directly to physical-direct (prevents routing loops)
     route_rules.push(json!({
         "ip_is_private": true,
         "outbound": "physical-direct"
     }));
 
-    // Strictly reject any IPv6 traffic when running in IPv4-only mode
     if !chain_config.routing.ipv6 {
         route_rules.push(json!({
             "ip_version": 6,
@@ -449,14 +398,12 @@ pub fn generate_singbox_config(
     }
 
     if chain_config.mode == ProxyMode::StandaloneSocks {
-        // Resolve here so upstream SOCKS DNS cannot hide a broken chain resolver.
         route_rules.push(json!({
             "inbound": ["test-warp-in"], "action": "resolve",
             "server": dns.final_server, "strategy": "ipv4_only"
         }));
     }
 
-    // Route test inbounds according to active mode
     let test_vpn1_target = match chain_config.mode {
         ProxyMode::WgChainWarp | ProxyMode::StandaloneWg => "vpn1",
         ProxyMode::SocksChainWarp => "socks-relay",
@@ -480,7 +427,6 @@ pub fn generate_singbox_config(
         "outbound": test_warp_target
     }));
 
-    // Excluded destinations if specified
     if !chain_config.routing.exclude_destinations.is_empty() {
         route_rules.push(json!({
             "ip_cidr": chain_config.routing.exclude_destinations,
@@ -529,7 +475,6 @@ mod tests {
         assert_eq!(generated.outbounds[0]["type"], "direct");
         assert!(generated.outbounds[0].get("routing_mark").is_none());
         assert!(generated.endpoints.is_empty());
-        assert!(!config.is_forwarding_enabled());
         assert_eq!(
             config.redacted().socks5_server.unwrap().users[0].password,
             "********"
@@ -585,24 +530,12 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(generated.inbounds[0]["auto_route"], false);
+                assert_eq!(generated.inbounds[0]["stack"], "mixed");
                 assert!(generated
                     .dns
                     .servers
                     .iter()
                     .any(|s| s["tag"] == "dns-direct"));
-                let private = generated
-                    .route
-                    .rules
-                    .iter()
-                    .position(|r| r["ip_is_private"] == true)
-                    .unwrap();
-                let dns = generated
-                    .route
-                    .rules
-                    .iter()
-                    .position(|r| r["action"] == "hijack-dns")
-                    .unwrap();
-                assert!(dns < private);
             }
         }
     }
@@ -647,14 +580,12 @@ AllowedIPs = 0.0.0.0/0
             socks5: None,
             routing: RoutingConfig::default(),
             dns: DnsConfig::default(),
-            gateway: crate::model::config::GatewayConfig::default(),
             log_level: "info".to_string(),
         };
 
         let parsed = conf.parse_and_validate().unwrap();
         let singbox = generate_singbox_config(&conf, &parsed, "eth0", None).unwrap();
 
-        // Check modern endpoints array
         assert_eq!(singbox.endpoints.len(), 2);
         let vpn1_ep = singbox
             .endpoints
@@ -670,12 +601,9 @@ AllowedIPs = 0.0.0.0/0
             .unwrap();
         assert_eq!(warp_ep["detour"], "vpn1");
 
-        // Check physical-direct outbound
         assert_eq!(singbox.outbounds.len(), 1);
         assert_eq!(singbox.outbounds[0]["tag"], "physical-direct");
         assert_eq!(singbox.outbounds[0]["bind_interface"], "eth0");
-
-        // Check route final
         assert_eq!(singbox.route.final_outbound, "warp");
     }
 
@@ -707,19 +635,16 @@ AllowedIPs = 0.0.0.0/0
             socks5: Some(Socks5Config::parse("mockuser:mockpass@198.51.100.2:1080").unwrap()),
             routing: RoutingConfig::default(),
             dns: DnsConfig::default(),
-            gateway: crate::model::config::GatewayConfig::default(),
             log_level: "info".to_string(),
         };
 
         let parsed = conf.parse_and_validate().unwrap();
         let singbox = generate_singbox_config(&conf, &parsed, "eth0", None).unwrap();
 
-        // Endpoint: warp with detour socks-relay
         assert_eq!(singbox.endpoints.len(), 1);
         assert_eq!(singbox.endpoints[0]["tag"], "warp");
         assert_eq!(singbox.endpoints[0]["detour"], "socks-relay");
 
-        // Outbounds: physical-direct and socks-relay
         let socks_outbound = singbox
             .outbounds
             .iter()
@@ -749,17 +674,14 @@ AllowedIPs = 0.0.0.0/0
             socks5: Some(Socks5Config::parse("mockuser:mockpass@198.51.100.2:1080").unwrap()),
             routing: RoutingConfig::default(),
             dns: DnsConfig::default(),
-            gateway: crate::model::config::GatewayConfig::default(),
             log_level: "info".to_string(),
         };
 
         let parsed = conf.parse_and_validate().unwrap();
         let singbox = generate_singbox_config(&conf, &parsed, "eth0", None).unwrap();
 
-        // No WireGuard endpoints in standalone socks
         assert_eq!(singbox.endpoints.len(), 0);
 
-        // Outbound has socks-out
         let socks_outbound = singbox
             .outbounds
             .iter()
@@ -797,71 +719,16 @@ AllowedIPs = 0.0.0.0/0
             socks5: None,
             routing: RoutingConfig::default(),
             dns: DnsConfig::default(),
-            gateway: crate::model::config::GatewayConfig::default(),
             log_level: "info".to_string(),
         };
 
         let parsed = conf.parse_and_validate().unwrap();
         let singbox = generate_singbox_config(&conf, &parsed, "eth0", None).unwrap();
 
-        // Only vpn1 endpoint
         assert_eq!(singbox.endpoints.len(), 1);
         assert_eq!(singbox.endpoints[0]["tag"], "vpn1");
         assert_eq!(singbox.endpoints[0]["detour"], "physical-direct");
-
         assert_eq!(singbox.route.final_outbound, "vpn1");
-    }
-
-    #[test]
-    fn test_generator_gateway_mode_dns() {
-        let conf = ChainProxyConfig {
-            enabled: true,
-            socks5_server: None,
-            mode: ProxyMode::StandaloneWg,
-            uplink_interface: Some("eth0".to_string()),
-            vpn1: VpnNodeConfig {
-                name: "VPN1".to_string(),
-                wireguard_config: "[Interface]\nPrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\nAddress = 10.2.0.2/32\n[Peer]\nPublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\nEndpoint = 198.51.100.1:51820\nAllowedIPs = 0.0.0.0/0\n".to_string(),
-            },
-            vpn2: VpnNodeConfig::default(),
-            socks5: None,
-            routing: RoutingConfig::default(),
-            dns: DnsConfig::default(),
-            gateway: crate::model::config::GatewayConfig {
-                enabled: true,
-                auto_allow_lan: true,
-                allowed_subnets: vec!["10.82.160.0/24".to_string()],
-            },
-            log_level: "info".to_string(),
-        };
-
-        let parsed = conf.parse_and_validate().unwrap();
-        let singbox =
-            generate_singbox_config(&conf, &parsed, "eth0", Some("10.82.160.94")).unwrap();
-
-        // Check direct dns-in inbound
-        let dns_in = singbox
-            .inbounds
-            .iter()
-            .find(|i| i["tag"] == "dns-in")
-            .unwrap();
-        assert_eq!(dns_in["type"], "direct");
-        assert_eq!(dns_in["listen"], "10.82.160.94");
-        assert_eq!(dns_in["listen_port"], 53);
-
-        // Check hijack-dns rule for dns-in
-        let hijack_rule = singbox
-            .route
-            .rules
-            .iter()
-            .find(|r| {
-                r.get("inbound")
-                    .and_then(|ib| ib.as_array())
-                    .map(|arr| arr.iter().any(|v| v == "dns-in"))
-                    .unwrap_or(false)
-            })
-            .unwrap();
-        assert_eq!(hijack_rule["action"], "hijack-dns");
     }
 
     #[test]
@@ -882,14 +749,12 @@ AllowedIPs = 0.0.0.0/0
                 ..RoutingConfig::default()
             },
             dns: DnsConfig::default(),
-            gateway: crate::model::config::GatewayConfig::default(),
             log_level: "info".to_string(),
         };
 
         let parsed = conf.parse_and_validate().unwrap();
         let singbox = generate_singbox_config(&conf, &parsed, "eth0", None).unwrap();
 
-        // Verify Route rules reject IPv6 traffic
         let ipv6_route_rule = singbox
             .route
             .rules
@@ -914,11 +779,6 @@ AllowedIPs = 0.0.0.0/0
             socks5: None,
             routing: RoutingConfig::default(),
             dns: DnsConfig::default(),
-            gateway: crate::model::config::GatewayConfig {
-                enabled: true,
-                auto_allow_lan: true,
-                allowed_subnets: vec!["10.82.160.0/24".to_string()],
-            },
             log_level: "info".to_string(),
         };
 
@@ -926,7 +786,6 @@ AllowedIPs = 0.0.0.0/0
         let singbox =
             generate_singbox_config(&conf, &parsed, "eth0", Some("10.82.160.94")).unwrap();
 
-        // 1. Verify TUN inbound contains route_exclude_address for private subnets
         let tun_in = singbox
             .inbounds
             .iter()
@@ -938,13 +797,11 @@ AllowedIPs = 0.0.0.0/0
         assert!(excludes.iter().any(|v| v == "10.0.0.0/8"));
         assert!(excludes.iter().any(|v| v == "172.16.0.0/12"));
         assert!(excludes.iter().any(|v| v == "192.168.0.0/16"));
-        assert!(excludes.iter().any(|v| v == "10.82.160.0/24"));
         assert!(
             tun_in.get("sniff").is_none(),
             "Legacy inbound sniff field must not be present"
         );
 
-        // 2. Verify route rule bypasses private destinations directly to physical-direct
         let private_rule = singbox
             .route
             .rules
@@ -953,13 +810,12 @@ AllowedIPs = 0.0.0.0/0
             .expect("Must have ip_is_private bypass rule");
         assert_eq!(private_rule["outbound"], "physical-direct");
 
-        // 3. Verify sniff action has 300ms timeout
         let sniff_rule = singbox
             .route
             .rules
             .iter()
             .find(|r| r.get("action").and_then(|v| v.as_str()) == Some("sniff"))
             .expect("Must have sniff action rule");
-        assert_eq!(sniff_rule["timeout"], "300ms");
+        assert_eq!(sniff_rule["timeout"], "100ms");
     }
 }

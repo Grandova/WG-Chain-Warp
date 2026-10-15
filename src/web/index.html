@@ -1094,12 +1094,24 @@
                 document.getElementById('hopPhysBox').className = 'hop-box ' + (chain.physical.status === 'UP' ? 'hop-ok' : '');
 
                 document.getElementById('hopVpn1Name').textContent = chain.vpn1.name || '第一跳入口';
-                document.getElementById('hopVpn1Meta').innerHTML = `地址: ${escapeHtml(chain.vpn1.endpoint || '未设置')}<br>状态: <strong>${escapeHtml(chain.vpn1.status)}</strong>`;
+                const lat1 = chain.vpn1.latency_ms != null ? ` (${chain.vpn1.latency_ms} ms)` : '';
+                document.getElementById('hopVpn1Meta').innerHTML = `地址: ${escapeHtml(chain.vpn1.endpoint || '未设置')}<br>状态: <strong>${escapeHtml(chain.vpn1.status)}${lat1}</strong>`;
                 document.getElementById('hopVpn1Box').className = 'hop-box ' + (chain.vpn1.reachable ? 'hop-ok' : '');
 
                 document.getElementById('hopVpn2Name').textContent = chain.vpn2.name || 'Cloudflare WARP';
-                document.getElementById('hopVpn2Meta').innerHTML = `地址: ${escapeHtml(chain.vpn2.endpoint || '未设置')}<br>状态: <strong>${escapeHtml(chain.vpn2.status)}</strong>`;
+                const lat2 = chain.vpn2.latency_ms != null ? ` (${chain.vpn2.latency_ms} ms)` : '';
+                document.getElementById('hopVpn2Meta').innerHTML = `地址: ${escapeHtml(chain.vpn2.endpoint || '未设置')}<br>状态: <strong>${escapeHtml(chain.vpn2.status)}${lat2}</strong>`;
                 document.getElementById('hopVpn2Box').className = 'hop-box ' + (chain.vpn2.reachable ? 'hop-ok' : (chain.vpn2.status === '未使用' ? 'hop-off' : ''));
+
+                if (chain.final_hop) {
+                    const fe = chain.final_hop;
+                    if (fe.exit_ip) {
+                        const latF = fe.latency_ms != null ? `${fe.latency_ms} ms` : '--';
+                        document.getElementById('hopExitName').textContent = `出口 IP: ${fe.exit_ip}`;
+                        document.getElementById('hopExitMeta').innerHTML = `归属: ${escapeHtml(fe.exit_country || '--')} · ${escapeHtml(fe.exit_isp || '--')}<br>延迟: <strong>${latF}</strong> (${escapeHtml(fe.status)})`;
+                    }
+                    document.getElementById('hopExitBox').className = 'hop-box ' + (fe.internet_ok ? 'hop-ok' : '');
+                }
             } catch (e) {
                 console.warn('status poll err:', e);
             }
@@ -1213,21 +1225,14 @@
                 socks5_server: socks5ServerObj,
                 routing: {
                     proxy_host_outbound: document.getElementById('routeHostProxy').value === 'true',
-                    proxy_forwarded_outbound: false,
                     preserve_inbound_connections: true,
                     connection_mark: '0x88',
-                    forwarded_subnets: [],
                     exclude_destinations: excludeDestinations,
                     ipv6: false
                 },
                 dns: {
                     mode: document.getElementById('dnsMode').value || 'chain',
                     custom_servers: []
-                },
-                gateway: {
-                    enabled: false,
-                    auto_allow_lan: false,
-                    allowed_subnets: []
                 },
                 log_level: document.getElementById('logLevelSelect').value || 'info'
             };

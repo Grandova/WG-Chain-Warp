@@ -73,32 +73,24 @@ impl SystemDiagnostician {
         for (heading, args) in [
             ("MAIN ROUTE", vec!["route", "show", "table", "main"]),
             ("POLICY RULES", vec!["rule", "show"]),
-            ("TABLE 2022", vec!["route", "show", "table", "2022"]),
             ("TABLE 2023", vec!["route", "show", "table", "2023"]),
             ("TUN", vec!["addr", "show", "dev", "chain0"]),
         ] {
-            for family in ["-4", "-6"] {
-                out.push_str(&format!("=== {} ({}) ===\n", heading, family));
-                match Command::new("ip").arg(family).args(&args).output() {
-                    Ok(result) => {
-                        out.push_str(&String::from_utf8_lossy(&result.stdout));
-                        out.push_str(&String::from_utf8_lossy(&result.stderr));
-                    }
-                    Err(e) => out.push_str(&format!("Unavailable: {}\n", e)),
+            out.push_str(&format!("=== {} ===\n", heading));
+            match Command::new("ip").arg("-4").args(&args).output() {
+                Ok(result) => {
+                    out.push_str(&String::from_utf8_lossy(&result.stdout));
+                    out.push_str(&String::from_utf8_lossy(&result.stderr));
                 }
+                Err(e) => out.push_str(&format!("Unavailable: {}\n", e)),
             }
         }
         out.push_str("=== NFTABLES ===\n");
         match NftablesManager::list_table_rules() {
             Ok(rules) => {
                 out.push_str(&format!(
-                    "Host outbound: {}\nLAN forwarding: {}\n",
+                    "Host outbound: {}\n",
                     if rules.contains("host-proxy") {
-                        "PROXY"
-                    } else {
-                        "DIRECT"
-                    },
-                    if rules.contains("lan-proxy") {
                         "PROXY"
                     } else {
                         "DIRECT"
@@ -108,53 +100,11 @@ impl SystemDiagnostician {
             }
             Err(e) => out.push_str(&format!("Unavailable: {}\n", e)),
         }
-        use crate::network::iproute::{
-            FORWARD_TABLE, HOST_TABLE, MARK_INBOUND_RETURN, MARK_PHYSICAL_DIRECT,
-        };
-        out.push_str(&format!("Physical bypass mark: {:#x}\nInbound return mark (default; active value shown in nft/rules): {:#x}\nHost proxy table: {}\nLAN proxy table: {}\n", MARK_PHYSICAL_DIRECT, MARK_INBOUND_RETURN, HOST_TABLE, FORWARD_TABLE));
-        out.push_str("=== CONNTRACK/MARK ===\n");
-        match Command::new("conntrack")
-            .args(["-L", "-o", "extended"])
-            .output()
-        {
-            Ok(result) => {
-                out.push_str(&String::from_utf8_lossy(&result.stdout));
-                out.push_str(&String::from_utf8_lossy(&result.stderr));
-            }
-            Err(e) => out.push_str(&format!("Unavailable: {}\n", e)),
-        }
-        out.push_str("=== SYSCTL ===\n");
-        for key in [
-            "net.ipv4.ip_forward",
-            "net.ipv4.conf.all.rp_filter",
-            "net.ipv4.conf.all.send_redirects",
-            "net.ipv6.conf.all.forwarding",
-        ] {
-            out.push_str(&format!(
-                "{} = {}\n",
-                key,
-                crate::network::sysctl::SysctlManager::get(key)
-                    .unwrap_or_else(|| "unavailable".to_string())
-            ));
-        }
-        if let Ok(uplink) = IpRouteManager::detect_default_uplink() {
-            for iface in [uplink.interface.as_str(), "chain0"] {
-                for name in ["rp_filter", "send_redirects"] {
-                    let key = format!("net/ipv4/conf/{}/{}", iface, name);
-                    out.push_str(&format!(
-                        "{} = {}\n",
-                        key,
-                        crate::network::sysctl::SysctlManager::get(&key)
-                            .unwrap_or_else(|| "unavailable".to_string())
-                    ));
-                }
-            }
-        }
-        out.push_str("External firewall chains can still drop forwarded packets; chainproxy does not override them.\n");
-
-        // 6. Security Note
-        out.push_str("--- [6] Secret Redaction Audit ---\n");
-        out.push_str("All PrivateKey, PresharedKey, and credential tokens are strictly redacted (********).\n");
+        use crate::network::iproute::{HOST_TABLE, MARK_INBOUND_RETURN, MARK_PHYSICAL_DIRECT};
+        out.push_str(&format!(
+            "Physical bypass mark: {:#x}\nInbound return mark: {:#x}\nHost proxy table: {}\n",
+            MARK_PHYSICAL_DIRECT, MARK_INBOUND_RETURN, HOST_TABLE
+        ));
         out.push_str("===========================================\n");
 
         out

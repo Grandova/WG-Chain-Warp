@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# chainproxy - Linux 链式 WireGuard 代理与 WARP 出口一键安装部署脚本
+# chainproxy - Linux 链式 WireGuard + WARP 代理与 Web 控制台一键安装脚本
 # 支持系统: Debian 12/13, Ubuntu 22.04/24.04 (amd64)
+# 支持全自动静默安装，可选环境变量: PANEL_PORT=54321 PANEL_USER=admin PANEL_PASS=admin
 # ==============================================================================
 
 set -euo pipefail
@@ -21,7 +22,7 @@ log_err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 echo -e "${CYAN}"
 echo "=================================================================="
 echo "          chainproxy 链式 WireGuard + WARP 一键安装脚本           "
-echo "        自动双层嵌套 | conntrack 回程保护 | WARP 自动注册         "
+echo "       x-ui 风格 Web 控制台 | 零失联回程保护 | WARP 自动注册      "
 echo "=================================================================="
 echo -e "${NC}"
 
@@ -42,14 +43,26 @@ if [[ -f /etc/os-release ]]; then
     log_ok "检测到系统: ${PRETTY_NAME:-Linux}"
 fi
 
-# 1. 安装核心网络依赖
-log_info "正在更新软件包源并安装依赖工具 (nftables, iproute2, conntrack, curl, jq, tar)..."
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y -q
-apt-get install -y -q nftables iproute2 conntrack curl jq ca-certificates tar
+# 1. 按需极速安装核心网络依赖 (若已齐备则跳过 apt-get update 节省时间)
+MISSING_PKGS=()
+command -v nft >/dev/null 2>&1       || MISSING_PKGS+=("nftables")
+command -v ip >/dev/null 2>&1        || MISSING_PKGS+=("iproute2")
+command -v conntrack >/dev/null 2>&1 || MISSING_PKGS+=("conntrack")
+command -v curl >/dev/null 2>&1      || MISSING_PKGS+=("curl" "ca-certificates")
+command -v jq >/dev/null 2>&1        || MISSING_PKGS+=("jq")
+command -v tar >/dev/null 2>&1       || MISSING_PKGS+=("tar")
+
+if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
+    log_info "正在安装缺失依赖工具 (${MISSING_PKGS[*]})..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y -q
+    apt-get install -y -q --no-install-recommends nftables iproute2 conntrack curl jq ca-certificates tar
+    log_ok "系统依赖安装完成"
+else
+    log_ok "核心网络依赖已齐备 (nftables, iproute2, conntrack, curl, jq, tar)"
+fi
 
 # 1.1 检查并初始化 /dev/net/tun 设备 (支持 Docker / LXC / Incus 等容器与标准 VPS 环境)
-log_info "正在检测并配置 TUN 设备 (/dev/net/tun)..."
 modprobe tun 2>/dev/null || true
 mkdir -p /dev/net
 if [[ ! -c /dev/net/tun ]]; then
@@ -77,12 +90,11 @@ if [[ $NEED_SINGBOX -eq 1 ]]; then
     INSTALLED_SB=0
 
     # 方式 1: 官方安装脚本
-    log_info "正在通过官方脚本安装 sing-box..."
     if curl -fsSL https://sing-box.app/install.sh 2>/dev/null | bash 2>/dev/null; then
         INSTALLED_SB=1
     fi
 
-    # 方式 2: 若官方脚本受网络影响，使用官方 Debian/Ubuntu APT 仓库
+    # 方式 2: 官方 Debian/Ubuntu APT 仓库
     if [[ $INSTALLED_SB -eq 0 ]]; then
         log_info "尝试通过官方 APT 存储库安装 sing-box..."
         mkdir -p /etc/apt/keyrings
@@ -98,7 +110,7 @@ if [[ $NEED_SINGBOX -eq 1 ]]; then
     # 方式 3: 从 GitHub Releases 稳定版本直链获取
     if [[ $INSTALLED_SB -eq 0 ]]; then
         log_info "尝试从 GitHub 下载 sing-box 预编译二进制..."
-        for try_ver in "1.11.5" "1.11.4" "1.11.0"; do
+        for try_ver in "1.14.2" "1.13.2" "1.12.12"; do
             SB_TAR="sing-box-${try_ver}-linux-amd64.tar.gz"
             SB_URL="https://github.com/SagerNet/sing-box/releases/download/v${try_ver}/${SB_TAR}"
             TMP_DIR=$(mktemp -d)
@@ -115,7 +127,6 @@ if [[ $NEED_SINGBOX -eq 1 ]]; then
     fi
 fi
 
-# 只验证现有安装路径，不覆盖包管理器文件或创建自指软链接。
 REAL_SB=$(command -v sing-box 2>/dev/null || true)
 if [[ -z "$REAL_SB" || ! -x "$REAL_SB" ]]; then
     log_err "未能找到可执行的 sing-box，请检查安装路径。"
@@ -144,11 +155,8 @@ install_chainproxy() {
         return 1
     fi
     if systemctl is-active --quiet chainproxy; then
-        log_info "正在停止旧实例并恢复其网络配置..."
-        if ! systemctl stop chainproxy; then
-            rm -f "$staged"
-            return 1
-        fi
+        log_info "正在平滑更新 chainproxy 服务实例..."
+        systemctl stop chainproxy || true
     fi
     mv -f "$staged" "$CHAINPROXY_BIN"
 }
@@ -162,8 +170,7 @@ elif command -v cargo >/dev/null 2>&1 && [[ -f "./Cargo.toml" ]]; then
     install_chainproxy "./target/release/chainproxy"
     log_ok "编译并安装完成: $CHAINPROXY_BIN"
 else
-    # 尝试从预编译 Release 获取，若失败且支持则通过 git + cargo 源码编译
-    log_info "尝试拉取预编译 chainproxy 静态二进制..."
+    log_info "正在拉取最新预编译 chainproxy 静态二进制..."
     TMP_DIR=$(mktemp -d)
     DOWNLOADED=0
     for try_url in \
@@ -181,7 +188,7 @@ else
         if command -v git >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
             log_warn "拉取预编译程序失败，正在通过 git clone 源码并本地编译..."
             CLONE_DIR=$(mktemp -d)
-            if git clone https://github.com/Grandova/WG-Chain-Warp.git "$CLONE_DIR"; then
+            if git clone --depth=1 https://github.com/Grandova/WG-Chain-Warp.git "$CLONE_DIR"; then
                 if (cd "$CLONE_DIR" && cargo build --release) && install_chainproxy "$CLONE_DIR/target/release/chainproxy"; then
                     log_ok "源码拉取并编译安装完成: $CHAINPROXY_BIN"
                     DOWNLOADED=1
@@ -192,14 +199,13 @@ else
     fi
 
     if [[ $DOWNLOADED -eq 0 ]]; then
-        log_err "未能成功获取或编译 chainproxy。请检查网络，或先安装 Rust (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh) 后重试。"
+        log_err "未能成功获取或编译 chainproxy。请检查网络后重试。"
         rm -rf "$TMP_DIR"
         exit 1
     fi
     rm -rf "$TMP_DIR"
 fi
 
-# 校验二进制程序可执行性
 if ! "$CHAINPROXY_BIN" --version >/dev/null 2>&1; then
     log_err "chainproxy 运行自检失败，无法在当前系统执行: $CHAINPROXY_BIN"
     "$CHAINPROXY_BIN" --version || true
@@ -213,32 +219,23 @@ ln -sf "$CHAINPROXY_BIN" /usr/bin/chainproxy
 DATA_DIR="/var/lib/chainproxy"
 mkdir -p "$DATA_DIR/versions"
 chmod 700 "$DATA_DIR"
-log_ok "运行数据目录就绪: $DATA_DIR"
 
-if [ -t 0 ]; then
-    echo ""
-    read -r -p "是否自定义设置 Web 面板登录账号、密码与端口？[y/N] (默认端口 54321, 账号密码 admin): " CUSTOM_PANEL || true
-    if [[ "${CUSTOM_PANEL:-N}" =~ ^[Yy]$ ]]; then
-        read -r -p "请设置面板登录用户名 [默认 admin]: " PANEL_USER || true
-        PANEL_USER=${PANEL_USER:-admin}
-        read -r -p "请设置面板登录密码 [默认 admin]: " PANEL_PASS || true
-        PANEL_PASS=${PANEL_PASS:-admin}
-        read -r -p "请设置面板监听端口 [默认 54321]: " PANEL_PORT || true
-        PANEL_PORT=${PANEL_PORT:-54321}
-        "$CHAINPROXY_BIN" --data-dir "$DATA_DIR" setting \
-            --username "$PANEL_USER" \
-            --password "$PANEL_PASS" \
-            --port "$PANEL_PORT" >/dev/null 2>&1 || true
-        log_ok "已完成自定义 Web 面板配置！"
-    fi
+# 若环境变量指定了自定义面板参数则自动写入，否则保留现有配置或生成默认配置 (54321 / admin / admin)
+SETTING_ARGS=()
+[[ -n "${PANEL_USER:-}" ]] && SETTING_ARGS+=("--username" "$PANEL_USER")
+[[ -n "${PANEL_PASS:-}" ]] && SETTING_ARGS+=("--password" "$PANEL_PASS")
+[[ -n "${PANEL_PORT:-}" ]] && SETTING_ARGS+=("--port" "$PANEL_PORT")
+
+if [[ ${#SETTING_ARGS[@]} -gt 0 ]]; then
+    "$CHAINPROXY_BIN" --data-dir "$DATA_DIR" setting "${SETTING_ARGS[@]}" >/dev/null 2>&1 || true
+    log_ok "已应用环境变量指定的 Web 面板配置"
+else
+    "$CHAINPROXY_BIN" --data-dir "$DATA_DIR" setting --show >/dev/null 2>&1 || true
 fi
-
-# 确保 panel.json 初始化
-"$CHAINPROXY_BIN" --data-dir "$DATA_DIR" setting --show >/dev/null 2>&1 || true
 
 # 5. 配置并启动 systemd 后台服务
 SERVICE_DST="/etc/systemd/system/chainproxy.service"
-log_info "正在配置 systemd 守护服务..."
+log_info "正在配置并启动 systemd 守护服务..."
 
 cat > "$SERVICE_DST" << 'EOF'
 [Unit]
@@ -258,8 +255,6 @@ RestartSec=3s
 KillMode=mixed
 TimeoutStopSec=15s
 LimitNOFILE=1048576
-
-# 系统资源保障
 LimitMEMLOCK=infinity
 
 [Install]
@@ -267,18 +262,17 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable chainproxy
+systemctl enable chainproxy >/dev/null 2>&1 || true
 systemctl restart chainproxy
 
-# 检查服务运行状态
-log_info "正在检测后台守护进程与 Web 面板响应..."
+# 快速轮询检测服务就绪 (每 0.25s 检测一次)
 DAEMON_OK=0
-for i in {1..8}; do
-    sleep 1
+for _ in {1..24}; do
     if curl -s "http://127.0.0.1:8880/api/v1/status" >/dev/null 2>&1; then
         DAEMON_OK=1
         break
     fi
+    sleep 0.25
 done
 
 if [[ $DAEMON_OK -eq 1 ]]; then
@@ -293,19 +287,18 @@ PANEL_PORT_VAL=$(jq -r '.port // 54321' "$DATA_DIR/panel.json" 2>/dev/null || ec
 PANEL_USER_VAL=$(jq -r '.username // "admin"' "$DATA_DIR/panel.json" 2>/dev/null || echo "admin")
 PANEL_PASS_VAL=$(jq -r '.password // "admin"' "$DATA_DIR/panel.json" 2>/dev/null || echo "admin")
 PANEL_PATH_VAL=$(jq -r '.base_path // "/"' "$DATA_DIR/panel.json" 2>/dev/null || echo "/")
-SERVER_IP=$(curl -s4m 4 https://api.ipify.org 2>/dev/null || ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -n1 || echo "<服务器IP>")
+SERVER_IP=$(curl -s4m 3 https://api.ipify.org 2>/dev/null || ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -n1 || echo "<服务器IP>")
 
 echo ""
 echo -e "${GREEN}==================================================================${NC}"
-echo -e "${GREEN}          🎉 chainproxy Web 控制台安装与配置就绪！                ${NC}"
+echo -e "${GREEN}          🎉 chainproxy Web 控制台一键安装完成！                  ${NC}"
 echo -e "${GREEN}==================================================================${NC}"
 echo -e " Web 面板地址  : ${CYAN}http://${SERVER_IP}:${PANEL_PORT_VAL}${PANEL_PATH_VAL}${NC}"
 echo -e " 登录用户名    : ${CYAN}${PANEL_USER_VAL}${NC}"
 echo -e " 登录密  码    : ${CYAN}${PANEL_PASS_VAL}${NC}"
 echo -e "------------------------------------------------------------------"
-echo -e " 终端管理菜单  : ${CYAN}chainproxy${NC} (管理服务启停、修改面板端口/密码)"
+echo -e " 终端服务管理  : ${CYAN}chainproxy${NC} (启停服务 / 修改面板端口与密码 / 查看日志)"
 echo -e " 命令行修改面板: ${CYAN}chainproxy setting --port 54321 --username admin --password 新密码${NC}"
 echo -e "${GREEN}==================================================================${NC}"
-echo -e "${YELLOW} 提示: 请在浏览器打开上方 Web 面板地址配置 WireGuard / WARP / SOCKS5 节点${NC}"
+echo -e "${YELLOW} 提示: 请在浏览器打开上方 Web 面板地址可视化管理 WireGuard / WARP / SOCKS5 节点${NC}"
 echo ""
-

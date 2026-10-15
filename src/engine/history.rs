@@ -149,7 +149,6 @@ mod tests {
             socks5: None,
             routing: RoutingConfig::default(),
             dns: DnsConfig::default(),
-            gateway: crate::model::config::GatewayConfig::default(),
             log_level: "info".to_string(),
         };
 

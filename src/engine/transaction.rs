@@ -2,11 +2,13 @@ use crate::engine::history::HistoryManager;
 use crate::error::{ChainError, Result};
 use crate::health::checker::HealthChecker;
 use crate::model::config::{ChainProxyConfig, ProxyMode};
-use crate::model::state::{ChainStatus, FinalHopStatus, ServiceState, TestReport, VpnHopStatus};
+use crate::model::state::{
+    ChainStatus, FinalHopStatus, PhysicalHopStatus, ServiceState, TestReport, VpnHopStatus,
+};
 use crate::network::iproute::{IpRouteManager, RoutePlan};
 use crate::network::nftables::NftablesManager;
 use crate::network::sysctl::{SysctlManager, SysctlSnapshot};
-use crate::singbox::generator::generate_singbox_config;
+use crate::singbox::generator::{generate_singbox_config, TEST_WARP_PORT};
 use crate::singbox::process::SingBoxManager;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -53,9 +55,7 @@ impl NetworkSnapshot {
             ])?)?;
             original_routes.push(serde_json::json!(routes
                 .into_iter()
-                .filter(|r| ["2022", "2023"]
-                    .iter()
-                    .any(|t| r["table"].as_str() == Some(t)))
+                .filter(|r| r["table"].as_str() == Some("2023"))
                 .collect::<Vec<_>>()));
         }
         Ok(Self {
@@ -88,6 +88,8 @@ pub struct ChainEngine {
     start_time: Option<Instant>,
     active_version: Arc<Mutex<Option<String>>>,
     watchdog_timeout_secs: AtomicU64,
+    cached_physical: Arc<Mutex<Option<(Instant, PhysicalHopStatus)>>>,
+    last_report: Arc<Mutex<Option<TestReport>>>,
 }
 
 impl ChainEngine {
@@ -118,11 +120,29 @@ impl ChainEngine {
             start_time: None,
             active_version: Arc::new(Mutex::new(None)),
             watchdog_timeout_secs: AtomicU64::new(30),
+            cached_physical: Arc::new(Mutex::new(None)),
+            last_report: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn set_watchdog_timeout(&self, secs: u64) {
         self.watchdog_timeout_secs.store(secs, Ordering::SeqCst);
+    }
+
+    pub fn update_last_report(&self, report: TestReport) {
+        *self.last_report.lock().unwrap() = Some(report);
+    }
+
+    fn get_cached_physical(&self, uplink: Option<&str>) -> PhysicalHopStatus {
+        let mut guard = self.cached_physical.lock().unwrap();
+        if let Some((ts, ref status)) = *guard {
+            if ts.elapsed() < Duration::from_secs(60) {
+                return status.clone();
+            }
+        }
+        let fresh = HealthChecker::probe_physical(uplink);
+        *guard = Some((Instant::now(), fresh.clone()));
+        fresh
     }
 
     /// Validate before touching the running configuration. All mutations share one rollback path.
@@ -133,25 +153,16 @@ impl ChainEngine {
             None => IpRouteManager::detect_default_uplink()?.interface,
         };
         let local_ip = IpRouteManager::get_interface_ipv4(&uplink)?.to_string();
-        let lans = if config.mode == ProxyMode::Socks5Server {
-            vec![]
-        } else {
-            IpRouteManager::lan_subnets(&config, &uplink)?
-        };
         let plan = if config.mode == ProxyMode::Socks5Server {
             RoutePlan::default()
         } else {
-            IpRouteManager::route_plan(
-                &config,
-                &lans,
-                &IpRouteManager::detect_current_ssh_client_ips(),
-            )?
+            IpRouteManager::route_plan(&config, &IpRouteManager::detect_current_ssh_client_ips())?
         };
         let singbox_cfg = generate_singbox_config(&config, &parsed, &uplink, Some(&local_ip))?;
         let nft_rules = if config.mode == ProxyMode::Socks5Server {
             String::new()
         } else {
-            NftablesManager::generate_ruleset(&config, &lans)?
+            NftablesManager::generate_ruleset(&config)?
         };
         let resolved_sb = SingBoxManager::resolve_binary(&self.singbox_bin)?;
         let temp_dir = tempfile::tempdir()?;
@@ -189,17 +200,8 @@ impl ChainEngine {
             let actual_cfg_path = self.base_dir.join("singbox_active.json");
             std::fs::write(&actual_cfg_path, serde_json::to_vec_pretty(&singbox_cfg)?)?;
             if config.mode != ProxyMode::Socks5Server {
-                let mut interfaces = vec![uplink.clone()];
-                for lan in &lans {
-                    if !interfaces.contains(&lan.interface) {
-                        interfaces.push(lan.interface.clone());
-                    }
-                }
-                SysctlManager::configure_for_proxy(
-                    &interfaces,
-                    config.is_forwarding_enabled() && !lans.is_empty(),
-                    config.routing.ipv6,
-                )?;
+                let interfaces = vec![uplink.clone()];
+                SysctlManager::configure_for_proxy(&interfaces, false, config.routing.ipv6)?;
                 IpRouteManager::install_rules(&self.network_snapshot.as_ref().unwrap().plan)?;
                 IpRouteManager::ensure_tun_device()?;
             }
@@ -215,10 +217,23 @@ impl ChainEngine {
                 }
                 SysctlManager::configure_tun_sysctl("chain0")?;
                 IpRouteManager::install_routes(&self.network_snapshot.as_ref().unwrap().plan)?;
-                // Enable marking only after the routes and physical bypass are usable.
                 NftablesManager::apply_ruleset(&nft_rules)?;
             }
-            tokio::time::sleep(Duration::from_secs(3)).await;
+
+            // Poll local test port readiness instead of sleeping 3 full seconds blindly
+            if config.mode != ProxyMode::Socks5Server {
+                let wait_start = Instant::now();
+                let test_addr = format!("127.0.0.1:{}", TEST_WARP_PORT);
+                while wait_start.elapsed() < Duration::from_millis(1800) {
+                    if tokio::net::TcpStream::connect(&test_addr).await.is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                }
+                tokio::time::sleep(Duration::from_millis(350)).await;
+            } else {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
 
             let (v1_name, v1_ep) = match config.mode {
                 ProxyMode::Socks5Server => (
@@ -283,6 +298,7 @@ impl ChainEngine {
             *self.active_version.lock().unwrap() = Some(version);
             *self.state.lock().unwrap() = ServiceState::Running;
             self.start_time = Some(Instant::now());
+            *self.last_report.lock().unwrap() = Some(report.clone());
             Ok(report)
         })
         .await
@@ -298,7 +314,6 @@ impl ChainEngine {
             self.stop()?;
             *self.state.lock().unwrap() = ServiceState::Failed;
             if let Some(previous) = previous {
-                // The old network is regenerated from its committed configuration after restoring the baseline.
                 if let Err(restore_error) = Box::pin(self.apply(previous)).await {
                     return Err(ChainError::TransactionError {
                         stage: "ROLLBACK".to_string(),
@@ -325,7 +340,6 @@ impl ChainEngine {
             self.network_snapshot = Some(serde_json::from_slice(&std::fs::read(&journal)?)?);
         }
         if let Some(snapshot) = &self.network_snapshot {
-            // Remove selection before the TUN goes away. Never flush main or another firewall table.
             let nft = NftablesManager::restore(None);
             self.singbox.lock().unwrap().stop();
             let restored = snapshot.restore();
@@ -340,38 +354,21 @@ impl ChainEngine {
         *self.state.lock().unwrap() = ServiceState::Stopped;
         self.start_time = None;
         *self.active_version.lock().unwrap() = None;
+        *self.last_report.lock().unwrap() = None;
         info!("Original network state restored");
         Ok(())
     }
 
-    /// Query current status
+    /// Query current status (Zero subprocess / Zero disk I/O on hot path)
     pub fn get_status(&self) -> ChainStatus {
         let state = self.state.lock().unwrap().clone();
         let uptime = self.start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
         let active_ver = self.active_version.lock().unwrap().clone();
-
-        let cfg_opt = {
-            let in_memory = self.active_config.lock().unwrap().clone();
-            if in_memory.is_some() && state == ServiceState::Running {
-                in_memory
-            } else {
-                let cfg_path = self.base_dir.join("config.json");
-                if cfg_path.exists() {
-                    if let Ok(c) = std::fs::read_to_string(&cfg_path) {
-                        serde_json::from_str::<ChainProxyConfig>(&c)
-                            .ok()
-                            .or(in_memory)
-                    } else {
-                        in_memory
-                    }
-                } else {
-                    in_memory
-                }
-            }
-        };
+        let cfg_opt = self.active_config.lock().unwrap().clone();
 
         let uplink = cfg_opt.as_ref().and_then(|c| c.uplink_interface.as_deref());
-        let phys = HealthChecker::probe_physical(uplink);
+        let phys = self.get_cached_physical(uplink);
+        let cached_rep = self.last_report.lock().unwrap().clone();
 
         let (vpn1_hop, vpn2_hop, final_hop) = if let Some(ref cfg) = cfg_opt {
             let v1_configured = match cfg.mode {
@@ -414,7 +411,9 @@ impl ChainEngine {
                     } else {
                         cfg.vpn1.name.clone()
                     },
-                    if v1_configured {
+                    if let Some(ref rep) = cached_rep {
+                        rep.vpn1.endpoint.clone()
+                    } else if v1_configured {
                         "已就绪".to_string()
                     } else {
                         "".to_string()
@@ -432,7 +431,9 @@ impl ChainEngine {
                     } else {
                         cfg.vpn2.name.clone()
                     },
-                    if v2_configured {
+                    if let Some(ref rep) = cached_rep {
+                        rep.vpn2.endpoint.clone()
+                    } else if v2_configured {
                         "已就绪".to_string()
                     } else {
                         "".to_string()
@@ -467,6 +468,30 @@ impl ChainEngine {
                 }
             };
 
+            let f_hop = if state == ServiceState::Running {
+                if let Some(ref rep) = cached_rep {
+                    rep.final_exit.clone()
+                } else {
+                    FinalHopStatus {
+                        internet_ok: true,
+                        exit_ip: None,
+                        exit_country: None,
+                        exit_isp: None,
+                        latency_ms: None,
+                        status: "正常".to_string(),
+                    }
+                }
+            } else {
+                FinalHopStatus {
+                    internet_ok: false,
+                    exit_ip: None,
+                    exit_country: None,
+                    exit_isp: None,
+                    latency_ms: None,
+                    status: "离线".to_string(),
+                }
+            };
+
             (
                 VpnHopStatus {
                     name: v1_name,
@@ -475,7 +500,7 @@ impl ChainEngine {
                     reachable: state == ServiceState::Running && v1_configured,
                     bytes_sent: 0,
                     bytes_received: 0,
-                    latency_ms: None,
+                    latency_ms: cached_rep.as_ref().and_then(|r| r.vpn1.latency_ms),
                     status: v1_status,
                     message: None,
                 },
@@ -486,22 +511,11 @@ impl ChainEngine {
                     reachable: state == ServiceState::Running && v2_configured,
                     bytes_sent: 0,
                     bytes_received: 0,
-                    latency_ms: None,
+                    latency_ms: cached_rep.as_ref().and_then(|r| r.vpn2.latency_ms),
                     status: v2_status,
                     message: None,
                 },
-                FinalHopStatus {
-                    internet_ok: state == ServiceState::Running,
-                    exit_ip: None,
-                    exit_country: None,
-                    exit_isp: None,
-                    latency_ms: None,
-                    status: if state == ServiceState::Running {
-                        "正常".to_string()
-                    } else {
-                        "离线".to_string()
-                    },
-                },
+                f_hop,
             )
         } else {
             (
@@ -598,6 +612,7 @@ impl ChainEngine {
         if cfg_path.exists() {
             if let Ok(c) = std::fs::read_to_string(&cfg_path) {
                 if let Ok(parsed) = serde_json::from_str::<ChainProxyConfig>(&c) {
+                    *self.active_config.lock().unwrap() = Some(parsed.clone());
                     return Some(parsed);
                 }
             }

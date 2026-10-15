@@ -5,47 +5,34 @@ use tracing::{info, warn};
 
 pub const TABLE_NAME: &str = "chainproxy";
 pub const TABLE_FAMILY: &str = "inet";
-pub const RULE_COMMENT: &str = "chainproxy-managed";
 
 pub struct NftablesManager;
 
 impl NftablesManager {
-    pub fn generate_ruleset(
-        config: &crate::model::config::ChainProxyConfig,
-        lans: &[crate::network::iproute::LanSubnet],
-    ) -> Result<String> {
-        use crate::network::iproute::{
-            MARK_FORWARD_PROXY, MARK_HOST_PROXY, MARK_MASK, MARK_PHYSICAL_DIRECT,
-        };
+    pub fn generate_ruleset(config: &crate::model::config::ChainProxyConfig) -> Result<String> {
+        use crate::network::iproute::{MARK_HOST_PROXY, MARK_MASK, MARK_PHYSICAL_DIRECT};
         let inbound = config.routing.inbound_mark()?;
         let mask = MARK_MASK | inbound;
         let keep = !mask;
         let mut script =
             "add table inet chainproxy\nflush table inet chainproxy\ntable inet chainproxy {\n"
                 .to_string();
-        script.push_str("    chain prerouting {\n        type filter hook prerouting priority mangle; policy accept;\n");
+        script.push_str(
+            "    chain prerouting {\n        type filter hook prerouting priority mangle; policy accept;\n",
+        );
         if config.routing.preserve_inbound_connections {
-            // Direction matters: replies to our own physical sockets must not become inbound connections.
-            script.push_str(&format!("        iifname != \"chain0\" iifname != \"lo\" fib daddr type local ct direction original ct state new,established ct mark & {mask:#x} == 0 ct mark set ct mark | {inbound:#x} counter comment \"inbound-return\"\n"));
-        }
-        script.push_str("        fib daddr type local return\n");
-        if config.is_forwarding_enabled() {
-            for lan in lans {
-                let family = if lan.subnet.addr().is_ipv4() {
-                    "ip"
-                } else {
-                    "ip6"
-                };
-                let iface = serde_json::to_string(&lan.interface)?;
-                script.push_str(&format!("        iifname {iface} {family} saddr {} meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_FORWARD_PROXY:#x} counter comment \"lan-proxy\"\n", lan.subnet));
-            }
+            script.push_str(&format!(
+                "        iifname != \"chain0\" iifname != \"lo\" fib daddr type local ct direction original ct state new,established ct mark & {mask:#x} == 0 ct mark set ct mark | {inbound:#x} comment \"inbound-return\"\n"
+            ));
         }
         script.push_str("    }\n    chain output {\n        type route hook output priority mangle; policy accept;\n");
         script.push_str(&format!(
-            "        meta mark & {MARK_PHYSICAL_DIRECT:#x} != 0 counter return\n"
+            "        meta mark & {MARK_PHYSICAL_DIRECT:#x} != 0 return\n"
         ));
         if config.routing.preserve_inbound_connections {
-            script.push_str(&format!("        ct direction reply ct mark & {inbound:#x} == {inbound:#x} meta mark set (meta mark & {keep:#x}) | {inbound:#x} counter return\n"));
+            script.push_str(&format!(
+                "        ct direction reply ct mark & {inbound:#x} == {inbound:#x} meta mark set (meta mark & {keep:#x}) | {inbound:#x} return\n"
+            ));
         }
         script.push_str("        fib daddr type local return\n");
         if config.routing.proxy_host_outbound {
@@ -54,32 +41,11 @@ impl NftablesManager {
             } else {
                 "meta nfproto ipv4 "
             };
-            script.push_str(&format!("        {family}meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} counter comment \"host-proxy\"\n"));
+            script.push_str(&format!(
+                "        {family}meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"host-proxy\"\n"
+            ));
         }
-        script.push_str("    }\n");
-        if config.is_forwarding_enabled() && !lans.is_empty() {
-            script.push_str("    chain forward {\n        type filter hook forward priority filter; policy accept;\n");
-            // Clamp before any accepting verdict, including retransmitted SYNs.
-            script.push_str("        oifname \"chain0\" tcp flags & (syn | rst) == syn tcp option maxseg size set rt mtu\n");
-            script.push_str("        iifname \"chain0\" tcp flags & (syn | rst) == syn tcp option maxseg size set rt mtu\n");
-            script.push_str(
-                "        iifname \"chain0\" ct state established,related counter accept\n",
-            );
-            for lan in lans {
-                let family = if lan.subnet.addr().is_ipv4() {
-                    "ip"
-                } else {
-                    "ip6"
-                };
-                let iface = serde_json::to_string(&lan.interface)?;
-                script.push_str(&format!(
-                    "        iifname {iface} {family} saddr {} oifname \"chain0\" counter accept\n",
-                    lan.subnet
-                ));
-            }
-            script.push_str("    }\n");
-        }
-        script.push_str("}\n");
+        script.push_str("    }\n}\n");
         Ok(script)
     }
 
@@ -88,7 +54,6 @@ impl NftablesManager {
             return Ok(());
         }
         for family in ["ipv4", "ipv6"] {
-            // Update only our reserved bits; do not delete connections or their other marks.
             let out = Command::new("conntrack")
                 .args(["-U", "-f", family, "--mark", &format!("0/{:#x}", mark)])
                 .output()?;
@@ -134,7 +99,6 @@ impl NftablesManager {
         Ok(())
     }
 
-    /// Check if nftables is installed and working
     pub fn probe_nftables() -> Result<String> {
         let output = Command::new("nft").arg("--version").output().map_err(|e| {
             ChainError::CommandError {
@@ -150,7 +114,6 @@ impl NftablesManager {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    /// Check if inet chainproxy table currently exists
     pub fn table_exists() -> bool {
         let output = Command::new("nft")
             .args(["list", "table", TABLE_FAMILY, TABLE_NAME])
@@ -162,7 +125,6 @@ impl NftablesManager {
         }
     }
 
-    /// Atomically apply nftables ruleset without touching other tables
     pub fn apply_ruleset(ruleset: &str) -> Result<()> {
         info!(
             "Applying nftables ruleset for table {} {}",
@@ -207,7 +169,6 @@ impl NftablesManager {
         Ok(())
     }
 
-    /// Delete table inet chainproxy (cleans up all rules and chains we created)
     pub fn delete_table() {
         if Self::table_exists() {
             info!("Deleting nftables table {} {}", TABLE_FAMILY, TABLE_NAME);
@@ -226,7 +187,6 @@ impl NftablesManager {
         }
     }
 
-    /// List active rules in inet chainproxy
     pub fn list_table_rules() -> Result<String> {
         let output = Command::new("nft")
             .args(["list", "table", TABLE_FAMILY, TABLE_NAME])
