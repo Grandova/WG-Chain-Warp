@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-release:
-    name: Build & Release Linux Binaries
+    name: Build & Release Sooya Linux Package
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -27,34 +27,36 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl
 
-      - name: Build Static x86_64 Binary
+      - name: Build Static x86_64 Package (sooya-linux-amd64.tar.gz)
         run: |
           cargo build --release --target x86_64-unknown-linux-musl
-          mkdir -p dist
-          cp target/x86_64-unknown-linux-musl/release/chainproxy dist/chainproxy-linux-amd64
-          chmod +x dist/chainproxy-linux-amd64
-          tar -czvf dist/chainproxy-linux-amd64.tar.gz -C dist chainproxy-linux-amd64
+          mkdir -p dist/sooya
+          cp target/x86_64-unknown-linux-musl/release/sooya dist/sooya/sooya
+          cp systemd/sooya.service dist/sooya/sooya.service
+          chmod +x dist/sooya/sooya
+          tar -czvf dist/sooya-linux-amd64.tar.gz -C dist sooya
+          cp dist/sooya/sooya dist/sooya-linux-amd64
 
       - name: Verify Static Binary
         run: |
-          file dist/chainproxy-linux-amd64
-          ldd dist/chainproxy-linux-amd64 || true
+          file dist/sooya-linux-amd64
+          ldd dist/sooya-linux-amd64 || true
 
       - name: Generate Checksums
         run: |
           cd dist
-          sha256sum chainproxy-linux-amd64 > chainproxy-linux-amd64.sha256
-          sha256sum chainproxy-linux-amd64.tar.gz > chainproxy-linux-amd64.tar.gz.sha256
+          sha256sum sooya-linux-amd64 > sooya-linux-amd64.sha256
+          sha256sum sooya-linux-amd64.tar.gz > sooya-linux-amd64.tar.gz.sha256
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            dist/chainproxy-linux-amd64
-            dist/chainproxy-linux-amd64.tar.gz
-            dist/chainproxy-linux-amd64.sha256
-            dist/chainproxy-linux-amd64.tar.gz.sha256
+            dist/sooya-linux-amd64.tar.gz
+            dist/sooya-linux-amd64
+            dist/sooya-linux-amd64.tar.gz.sha256
+            dist/sooya-linux-amd64.sha256
             scripts/install.sh
           draft: false
           prerelease: false

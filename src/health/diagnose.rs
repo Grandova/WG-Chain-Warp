@@ -9,7 +9,7 @@ impl SystemDiagnostician {
     /// Gather comprehensive, sanitized system diagnostic report
     pub fn generate_report(singbox_bin: &str) -> String {
         let mut out = String::new();
-        out.push_str("=== CHAINPROXY SYSTEM DIAGNOSTIC REPORT ===\n\n");
+        out.push_str("=== SOOYA SYSTEM DIAGNOSTIC REPORT ===\n\n");
 
         // 1. OS & Kernel
         out.push_str("--- [1] Operating System & Kernel ---\n");

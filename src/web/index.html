@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>chainproxy Web 控制台</title>
+    <title>Sooya Web 控制台</title>
     <style>
         :root {
             --primary: #1890ff;
@@ -446,8 +446,8 @@
         <!-- Sidebar -->
         <aside class="app-sider">
             <div class="sider-logo">
-                <span class="logo-badge">CP</span>
-                <span>chainproxy 面板</span>
+                <span class="logo-badge">S</span>
+                <span>Sooya 面板</span>
             </div>
             <ul class="sider-menu">
                 <li class="menu-item active" data-view="dashboard" onclick="switchView('dashboard')">
@@ -467,7 +467,7 @@
                 </li>
             </ul>
             <div class="sider-footer" id="siderVer">
-                chainproxy Web Console
+                Sooya Web Console
             </div>
         </aside>
 
@@ -1005,7 +1005,7 @@
                 logs: '运行日志与系统诊断',
                 settings: '面板设置'
             };
-            document.getElementById('pageTitle').textContent = titles[view] || 'chainproxy';
+            document.getElementById('pageTitle').textContent = titles[view] || 'Sooya';
             if (view === 'logs') loadLogs();
             if (view === 'settings') loadPanelSettings();
         }
@@ -1053,7 +1053,7 @@
                 document.getElementById('gaugeDiskSub').textContent = `硬盘: ${formatBytes(system.disk.current)} / ${formatBytes(system.disk.total)}`;
 
                 // Cards
-                document.getElementById('siderVer').textContent = `chainproxy v${system.chainproxy_version}`;
+                document.getElementById('siderVer').textContent = `Sooya v${system.chainproxy_version}`;
                 document.getElementById('dashSbVer').textContent = `sing-box: ${system.singbox_version}`;
                 document.getElementById('dashSysUptime').textContent = formatDuration(system.uptime);
                 document.getElementById('dashProxyUptime').textContent = formatDuration(chain.uptime_seconds);
@@ -1611,7 +1611,7 @@
         }
 
         async function restartPanelService() {
-            if (!confirm('确定要重启 chainproxy 面板服务吗？若修改了端口或路径，请使用新地址访问。')) return;
+            if (!confirm('确定要重启 Sooya 面板服务吗？若修改了端口或路径，请使用新地址访问。')) return;
             try {
                 await apiCall('./panel/api/setting/restart', { method: 'POST' });
                 showToast('重启指令已下发，正在等待面板重新上线...');

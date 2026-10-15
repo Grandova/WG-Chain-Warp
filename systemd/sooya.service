@@ -1,0 +1,21 @@
+[Unit]
+Description=Sooya - Linux Chained WireGuard & WARP Proxy Panel
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/lib/sooya
+ExecStartPre=-/bin/sh -c 'test -e /dev/net/tun || (mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun 2>/dev/null || true)'
+ExecStart=/usr/local/sooya/sooya --api 127.0.0.1:8880 --data-dir /var/lib/sooya --singbox sing-box daemon
+ExecStop=/usr/local/sooya/sooya stop
+Restart=always
+RestartSec=3s
+KillMode=mixed
+TimeoutStopSec=15s
+LimitNOFILE=1048576
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

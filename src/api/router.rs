@@ -91,7 +91,7 @@ pub fn create_router(engine: Arc<Mutex<ChainEngine>>, auth_token: Option<String>
         if let Ok(guard) = engine.try_lock() {
             (guard.base_dir().to_path_buf(), guard.singbox_bin().to_string())
         } else {
-            (PathBuf::from("/var/lib/chainproxy"), "sing-box".to_string())
+            (PathBuf::from("/var/lib/sooya"), "sing-box".to_string())
         }
     };
 
@@ -392,7 +392,7 @@ async fn panel_restart_handler(
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         let _ = std::process::Command::new("systemctl")
-            .args(["restart", "chainproxy"])
+            .args(["restart", "sooya"])
             .spawn();
     });
     (
@@ -647,13 +647,13 @@ async fn logs_handler() -> Json<ApiResponse<String>> {
     let mut logs = String::new();
 
     if let Ok(out) = std::process::Command::new("journalctl")
-        .args(["-u", "chainproxy", "-n", "50", "--no-pager"])
+        .args(["-u", "sooya", "-n", "50", "--no-pager"])
         .output()
     {
         logs.push_str(&String::from_utf8_lossy(&out.stdout));
     }
 
-    let sb_log = std::path::Path::new("/var/lib/chainproxy/singbox.log");
+    let sb_log = std::path::Path::new("/var/lib/sooya/singbox.log");
     if sb_log.exists() {
         if let Ok(content) = std::fs::read_to_string(sb_log) {
             let lines: Vec<&str> = content.lines().collect();
@@ -666,7 +666,7 @@ async fn logs_handler() -> Json<ApiResponse<String>> {
     }
 
     if logs.trim().is_empty() {
-        logs = "暂无系统日志，可通过终端执行: journalctl -u chainproxy -f 查看实时日志".to_string();
+        logs = "暂无系统日志，可通过终端执行: journalctl -u sooya -f 查看实时日志".to_string();
     }
 
     Json(ApiResponse::ok(logs))

@@ -1,4 +1,4 @@
-use chainproxy::cli::{Cli, CliHandler, Commands};
+use sooya::cli::{Cli, CliHandler, Commands};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 

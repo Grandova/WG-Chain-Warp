@@ -45,25 +45,27 @@ impl ConsoleMenu {
             self.print_header(&panel, daemon_status.as_ref(), &host_ip);
             self.print_menu_options();
 
-            let choice = self.prompt("\n请输入选项编号 [0-11]: ")?;
+            let choice = self.prompt("\n请输入选择 [0-13]: ")?;
             match choice.trim() {
-                "1" => self.start_panel_service().await?,
-                "2" => self.stop_panel_service().await?,
-                "3" => self.restart_panel_service().await?,
-                "4" => self.show_detailed_status(daemon_status.as_ref()).await?,
-                "5" => self.change_credentials().await?,
-                "6" => self.change_port_and_path().await?,
-                "7" => self.show_panel_access_info(&panel, &host_ip)?,
-                "8" => self.reset_panel_settings().await?,
-                "9" => self.view_logs().await?,
-                "10" => self.set_autostart(true)?,
-                "11" => self.set_autostart(false)?,
+                "1" => self.update_sooya().await?,
+                "2" => self.uninstall_sooya().await?,
+                "3" => self.change_credentials().await?,
+                "4" => self.reset_panel_settings().await?,
+                "5" => self.change_port_and_path().await?,
+                "6" => self.show_panel_access_info(&panel, &host_ip)?,
+                "7" => self.start_panel_service().await?,
+                "8" => self.stop_panel_service().await?,
+                "9" => self.restart_panel_service().await?,
+                "10" => self.show_detailed_status(daemon_status.as_ref()).await?,
+                "11" => self.view_logs().await?,
+                "12" => self.set_autostart(true)?,
+                "13" => self.set_autostart(false)?,
                 "0" | "q" | "exit" => {
-                    println!("已退出 chainproxy 面板管理脚本。");
+                    println!("已退出 Sooya 管理脚本。");
                     break;
                 }
                 _ => {
-                    println!("{}无效选项，请输入 0-11 之间的数字。{}", YELLOW, RESET);
+                    println!("{}请输入正确的数字 [0-13]{}", RED, RESET);
                     self.pause()?;
                 }
             }
@@ -81,63 +83,53 @@ impl ConsoleMenu {
     }
 
     fn print_header(&self, panel: &PanelSetting, status: Option<&ChainStatus>, host_ip: &str) {
-        println!("\n{}{}=================================================================={}", BOLD, CYAN, RESET);
-        println!("{}{}             chainproxy Web 面板管理脚本 (x-ui 架构)              {}", BOLD, CYAN, RESET);
-        println!("{}{}=================================================================={}", BOLD, CYAN, RESET);
-
-        match status {
-            Some(st) => {
-                let proxy_badge = match st.state {
-                    ServiceState::Running => format!("{}运行中 (Running){}", GREEN, RESET),
-                    ServiceState::Failed => format!("{}异常 (Failed){}", RED, RESET),
-                    _ => format!("{}未启动 (Stopped){}", YELLOW, RESET),
-                };
-                println!(
-                    " 面板守护进程 : {}运行中 (Active){}  | 代理引擎: {}",
-                    GREEN, RESET, proxy_badge
-                );
-                println!(" 当前链路拓扑 : {}", st.chain_visual);
-            }
-            None => {
-                println!(
-                    " 面板守护进程 : {}未运行 (Stopped){} (可执行选项 1 启动面板)",
-                    RED, RESET
-                );
-            }
-        }
-
+        println!("\n  {}{}Sooya 面板管理脚本 v{}{}", BOLD, GREEN, env!("CARGO_PKG_VERSION"), RESET);
         let display_ip = if panel.listen == "0.0.0.0" || panel.listen == "::" || panel.listen.is_empty() {
             host_ip
         } else {
             panel.listen.as_str()
         };
         println!(
-            " Web 控制台   : {}{}http://{}:{}{}{}",
-            BOLD, GREEN, display_ip, panel.port, panel.base_path, RESET
+            "  Web 面板地址: {}{}http://{}:{}{}{}",
+            BOLD, CYAN, display_ip, panel.port, panel.base_path, RESET
         );
-        println!(
-            " 登录用户名   : {}{}{} (所有 WireGuard / WARP / 节点配置均在网页端完成)",
-            CYAN, panel.username, RESET
-        );
-        println!("{}{}------------------------------------------------------------------{}", BOLD, CYAN, RESET);
+        match status {
+            Some(st) => {
+                let proxy_badge = match st.state {
+                    ServiceState::Running => format!("{}运行中{}", GREEN, RESET),
+                    ServiceState::Failed => format!("{}异常{}", RED, RESET),
+                    _ => format!("{}待机中{}", YELLOW, RESET),
+                };
+                println!(
+                    "  面板状态: {}运行中{}  |  sing-box 引擎: {}",
+                    GREEN, RESET, proxy_badge
+                );
+            }
+            None => {
+                println!("  面板状态: {}未运行{}", RED, RESET);
+            }
+        }
     }
 
     fn print_menu_options(&self) {
-        println!("  {}1.{} 启动面板服务 (Start Panel)", GREEN, RESET);
-        println!("  {}2.{} 停止面板与代理并恢复原网络 (Stop Panel & Proxy)", GREEN, RESET);
-        println!("  {}3.{} 重启面板服务 (Restart Panel)", GREEN, RESET);
-        println!("  {}4.{} 查看面板与链路运行状态 (Status)", GREEN, RESET);
-        println!(" -----------------------------------------------------------------");
-        println!("  {}5.{} 重置/修改面板登录用户名与密码 (Reset Username & Password)", CYAN, RESET);
-        println!("  {}6.{} 修改面板监听端口与 URL 根路径 (Change Port & Base Path)", CYAN, RESET);
-        println!("  {}7.{} 查看当前面板访问地址与账号信息 (Show Panel Info)", CYAN, RESET);
-        println!("  {}8.{} 恢复面板出厂默认设置 (Reset Panel Settings)", CYAN, RESET);
-        println!(" -----------------------------------------------------------------");
-        println!("  {}9.{} 查看面板与引擎实时日志 (View Logs)", YELLOW, RESET);
-        println!(" {}10.{} 设置面板开机自启 (Enable Autostart)", YELLOW, RESET);
-        println!(" {}11.{} 取消面板开机自启 (Disable Autostart)", YELLOW, RESET);
-        println!(" -----------------------------------------------------------------");
-        println!("  {}0.{} 退出管理脚本 (Exit)", RED, RESET);
+        println!("  {}0.{} 退出脚本", GREEN, RESET);
+        println!("————————————————");
+        println!("  {}1.{} 更新 Sooya", GREEN, RESET);
+        println!("  {}2.{} 卸载 Sooya", GREEN, RESET);
+        println!("————————————————");
+        println!("  {}3.{} 重置用户名密码", GREEN, RESET);
+        println!("  {}4.{} 重置面板设置", GREEN, RESET);
+        println!("  {}5.{} 设置面板端口与根路径", GREEN, RESET);
+        println!("  {}6.{} 查看当前面板设置", GREEN, RESET);
+        println!("————————————————");
+        println!("  {}7.{} 启动 Sooya", GREEN, RESET);
+        println!("  {}8.{} 停止 Sooya", GREEN, RESET);
+        println!("  {}9.{} 重启 Sooya", GREEN, RESET);
+        println!(" {}10.{} 查看 Sooya 状态", GREEN, RESET);
+        println!(" {}11.{} 查看 Sooya 日志", GREEN, RESET);
+        println!("————————————————");
+        println!(" {}12.{} 设置 Sooya 开机自启", GREEN, RESET);
+        println!(" {}13.{} 取消 Sooya 开机自启", GREEN, RESET);
     }
 
     async fn fetch_status(&self) -> Option<ChainStatus> {
@@ -148,18 +140,50 @@ impl ConsoleMenu {
         serde_json::from_value(data).ok()
     }
 
+    async fn update_sooya(&self) -> Result<()> {
+        let confirm = self.prompt("\n本功能会强制重装当前最新版，数据不会丢失，是否继续? [y/N]: ")?;
+        if confirm.trim().eq_ignore_ascii_case("y") {
+            let _ = Command::new("bash")
+                .args([
+                    "-c",
+                    "curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/scripts/install.sh | bash",
+                ])
+                .status();
+            std::process::exit(0);
+        }
+        self.pause()
+    }
+
+    async fn uninstall_sooya(&self) -> Result<()> {
+        let confirm = self.prompt("\n确定要卸载面板吗，sing-box 代理规则也将自动恢复? [y/N]: ")?;
+        if confirm.trim().eq_ignore_ascii_case("y") {
+            let stop_url = format!("{}/api/v1/stop", self.api_url);
+            let _ = self.client.post(&stop_url).send().await;
+            let _ = Command::new("systemctl").args(["stop", "sooya"]).status();
+            let _ = Command::new("systemctl").args(["disable", "sooya"]).status();
+            let _ = std::fs::remove_file("/etc/systemd/system/sooya.service");
+            let _ = Command::new("systemctl").arg("daemon-reload").status();
+            let _ = std::fs::remove_dir_all("/usr/local/sooya");
+            let _ = std::fs::remove_file("/usr/bin/sooya");
+            let _ = std::fs::remove_file("/usr/local/bin/sooya");
+            println!("{}✅ 卸载成功！{}", GREEN, RESET);
+            std::process::exit(0);
+        }
+        self.pause()
+    }
+
     async fn start_panel_service(&self) -> Result<()> {
-        println!("\n正在启动 chainproxy 面板服务...");
+        println!("\n正在启动 Sooya 面板服务...");
         let status = Command::new("systemctl")
-            .args(["start", "chainproxy"])
+            .args(["start", "sooya"])
             .status();
         match status {
             Ok(s) if s.success() => {
-                tokio::time::sleep(Duration::from_millis(800)).await;
-                println!("{}✅ chainproxy 面板服务已启动！{}", GREEN, RESET);
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                println!("{}✅ Sooya 启动成功！{}", GREEN, RESET);
             }
             _ => {
-                println!("{}⚠️ 未能通过 systemctl 启动，请检查 systemd 服务配置。{}", YELLOW, RESET);
+                println!("{}⚠️ 面板启动失败，请使用日志功能查看原因。{}", RED, RESET);
             }
         }
         self.pause()
@@ -170,33 +194,33 @@ impl ConsoleMenu {
         let stop_url = format!("{}/api/v1/stop", self.api_url);
         let _ = self.client.post(&stop_url).send().await;
 
-        println!("正在停止 chainproxy 守护服务...");
+        println!("正在停止 Sooya 守护服务...");
         let _ = Command::new("systemctl")
-            .args(["stop", "chainproxy"])
+            .args(["stop", "sooya"])
             .status();
-        println!("{}✅ 服务已停止，原始网络已恢复。{}", GREEN, RESET);
+        println!("{}✅ 停止成功，原始网络已恢复。{}", GREEN, RESET);
         self.pause()
     }
 
     async fn restart_panel_service(&self) -> Result<()> {
-        println!("\n正在重启 chainproxy 面板服务...");
+        println!("\n正在重启 Sooya 面板服务...");
         let status = Command::new("systemctl")
-            .args(["restart", "chainproxy"])
+            .args(["restart", "sooya"])
             .status();
         match status {
             Ok(s) if s.success() => {
-                tokio::time::sleep(Duration::from_millis(800)).await;
-                println!("{}✅ chainproxy 面板服务已重启！{}", GREEN, RESET);
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                println!("{}✅ Sooya 重启成功！{}", GREEN, RESET);
             }
             _ => {
-                println!("{}⚠️ 重启命令返回非零状态，请使用选项 9 查看运行日志。{}", YELLOW, RESET);
+                println!("{}⚠️ 重启失败，请查看运行日志。{}", RED, RESET);
             }
         }
         self.pause()
     }
 
     async fn show_detailed_status(&self, status: Option<&ChainStatus>) -> Result<()> {
-        println!("\n--- [面板与服务运行状态] ---");
+        println!("\n--- [Sooya 面板与服务状态] ---");
         if let Some(st) = status {
             println!("代理引擎状态 : {:?}", st.state);
             println!("持续运行时间 : {} 秒", st.uptime_seconds);
@@ -206,23 +230,21 @@ impl ConsoleMenu {
             println!("第一跳节点   : {} ({}) [{}]", st.vpn1.name, st.vpn1.endpoint, st.vpn1.status);
             println!("第二跳节点   : {} ({}) [{}]", st.vpn2.name, st.vpn2.endpoint, st.vpn2.status);
         } else {
-            println!("{}守护进程当前未响应。{}", YELLOW, RESET);
+            println!("{}守护进程当前未运行。{}", YELLOW, RESET);
         }
-        println!("\n--- [systemd 服务状态摘要] ---");
         if let Ok(out) = Command::new("systemctl")
-            .args(["status", "chainproxy", "--no-pager", "-n", "10"])
+            .args(["status", "sooya", "--no-pager", "-n", "8"])
             .output()
         {
-            println!("{}", String::from_utf8_lossy(&out.stdout));
+            println!("\n{}", String::from_utf8_lossy(&out.stdout));
         }
         self.pause()
     }
 
     async fn change_credentials(&self) -> Result<()> {
-        println!("\n--- [修改 Web 面板登录用户名与密码] ---");
         let mut panel = PanelSetting::load_or_default(&self.data_dir);
-        let new_user = self.prompt(&format!("请输入新用户名 [当前: {}]: ", panel.username))?;
-        let new_pass = self.prompt("请输入新登录密码: ")?;
+        let new_user = self.prompt(&format!("请设置您的账户名 [默认 {}]: ", panel.username))?;
+        let new_pass = self.prompt("请设置您的账户密码: ")?;
 
         if !new_user.trim().is_empty() {
             panel.username = new_user.trim().to_string();
@@ -230,26 +252,24 @@ impl ConsoleMenu {
         if !new_pass.trim().is_empty() {
             panel.password = new_pass.trim().to_string();
         } else {
-            println!("{}❌ 密码未输入，已取消修改。{}", RED, RESET);
+            println!("{}❌ 密码不能为空，已取消修改。{}", RED, RESET);
             return self.pause();
         }
 
         panel.rotate_session_secret();
         panel.save(&self.data_dir)?;
-        let _ = Command::new("systemctl").args(["restart", "chainproxy"]).status();
-        tokio::time::sleep(Duration::from_millis(600)).await;
+        let _ = Command::new("systemctl").args(["restart", "sooya"]).status();
         println!(
-            "{}✅ 面板登录凭证已更新并生效！新用户名: {}{}",
+            "{}✅ 账户用户名密码设定完成！新用户名: {}{}",
             GREEN, panel.username, RESET
         );
         self.pause()
     }
 
     async fn change_port_and_path(&self) -> Result<()> {
-        println!("\n--- [修改 Web 面板监听端口与根路径] ---");
         let mut panel = PanelSetting::load_or_default(&self.data_dir);
 
-        let port_str = self.prompt(&format!("请输入新面板端口 (1-65535) [当前: {}]: ", panel.port))?;
+        let port_str = self.prompt(&format!("输入面板端口号 (1-65535) [当前: {}]: ", panel.port))?;
         if !port_str.trim().is_empty() {
             match port_str.trim().parse::<u16>() {
                 Ok(p) if p > 0 => panel.port = p,
@@ -260,61 +280,56 @@ impl ConsoleMenu {
             }
         }
 
-        let bp_str = self.prompt(&format!("请输入面板 URL 根路径 [当前: {}]: ", panel.base_path))?;
+        let bp_str = self.prompt(&format!("输入面板 URL 根路径 [当前: {}]: ", panel.base_path))?;
         if !bp_str.trim().is_empty() {
             panel.base_path = bp_str.trim().to_string();
         }
 
         panel.normalize();
         panel.save(&self.data_dir)?;
-        let _ = Command::new("systemctl").args(["restart", "chainproxy"]).status();
-        tokio::time::sleep(Duration::from_millis(600)).await;
+        let _ = Command::new("systemctl").args(["restart", "sooya"]).status();
         let host_ip = Self::detect_server_ip();
         println!(
-            "{}✅ 面板端口与路径已更新并重启生效！新访问地址: http://{}:{}{}{}",
+            "{}✅ 设置端口完毕！新访问地址: http://{}:{}{}{}",
             GREEN, host_ip, panel.port, panel.base_path, RESET
         );
         self.pause()
     }
 
     fn show_panel_access_info(&self, panel: &PanelSetting, host_ip: &str) -> Result<()> {
-        println!("\n================ Web 面板访问与账号信息 ================");
+        println!("\n================ Sooya 当前面板设置 ================");
         println!(" 面板访问地址 : {}http://{}:{}{}{}", GREEN, host_ip, panel.port, panel.base_path, RESET);
         println!(" 面板监听地址 : {}:{}", panel.listen, panel.port);
         println!(" 面板根路径   : {}", panel.base_path);
         println!(" 登录用户名   : {}", panel.username);
         println!(" 登录密  码   : {}", panel.password);
-        println!("========================================================");
+        println!("====================================================");
         self.pause()
     }
 
     async fn reset_panel_settings(&self) -> Result<()> {
-        let confirm = self.prompt("\n确认将面板端口重置为 54321、账密重置为 admin/admin 吗？(y/N): ")?;
+        let confirm = self.prompt("\n确定要将所有面板设置重置为默认值吗（端口 54321，账号密码 admin）？[y/N]: ")?;
         if confirm.trim().eq_ignore_ascii_case("y") {
             let mut panel = PanelSetting::default();
             panel.save(&self.data_dir)?;
-            let _ = Command::new("systemctl").args(["restart", "chainproxy"]).status();
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            println!("{}✅ 已恢复面板默认设置 (端口: 54321, 用户名: admin, 密码: admin)。{}", GREEN, RESET);
-        } else {
-            println!("已取消重置。");
+            let _ = Command::new("systemctl").args(["restart", "sooya"]).status();
+            println!("{}✅ 所有面板设置已重置为默认值，请重启面板后使用默认端口 54321 访问。{}", GREEN, RESET);
         }
         self.pause()
     }
 
     async fn view_logs(&self) -> Result<()> {
-        println!("\n--- [面板与 sing-box 最近运行日志] ---");
         let url = format!("{}/api/v1/logs", self.api_url);
         if let Ok(resp) = self.client.get(&url).send().await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 if let Some(logs) = json.get("data").and_then(|d| d.as_str()) {
-                    println!("{}", logs);
+                    println!("\n{}", logs);
                     return self.pause();
                 }
             }
         }
         if let Ok(out) = Command::new("journalctl")
-            .args(["-u", "chainproxy", "-n", "40", "--no-pager"])
+            .args(["-u", "sooya", "-n", "40", "--no-pager"])
             .output()
         {
             println!("{}", String::from_utf8_lossy(&out.stdout));
@@ -325,18 +340,18 @@ impl ConsoleMenu {
     fn set_autostart(&self, enable: bool) -> Result<()> {
         let action = if enable { "enable" } else { "disable" };
         let status = Command::new("systemctl")
-            .args([action, "chainproxy"])
+            .args([action, "sooya"])
             .status();
         match status {
             Ok(s) if s.success() => {
                 if enable {
-                    println!("{}✅ 已设置 chainproxy 开机自启。{}", GREEN, RESET);
+                    println!("{}✅ 设置 Sooya 开机自启成功{}", GREEN, RESET);
                 } else {
-                    println!("{}✅ 已取消 chainproxy 开机自启。{}", GREEN, RESET);
+                    println!("{}✅ 取消 Sooya 开机自启成功{}", GREEN, RESET);
                 }
             }
             _ => {
-                println!("{}⚠️ 执行 systemctl {} 失败。{}", YELLOW, action, RESET);
+                println!("{}⚠️ 操作失败{}", RED, RESET);
             }
         }
         self.pause()
@@ -357,7 +372,7 @@ impl ConsoleMenu {
     }
 
     fn pause(&self) -> Result<()> {
-        let _ = self.prompt("\n按回车键返回管理主菜单...");
+        let _ = self.prompt("\n按回车键返回主菜单: ");
         Ok(())
     }
 }
