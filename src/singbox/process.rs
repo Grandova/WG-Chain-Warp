@@ -29,27 +29,42 @@ impl SingBoxManager {
 
     /// Automatically resolve an available sing-box binary path across system locations
     pub fn resolve_binary(hint: &str) -> Result<String> {
-        let mut candidates = Vec::new();
+        static CACHED_BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         let trimmed = hint.trim();
-        if !trimmed.is_empty() {
+        if trimmed.is_empty() || trimmed == "sing-box" {
+            if let Some(cached) = CACHED_BIN.get() {
+                if cached == "sing-box" || Path::new(cached).is_file() {
+                    return Ok(cached.clone());
+                }
+            }
+        }
+
+        let mut candidates = Vec::with_capacity(6);
+        if !trimmed.is_empty() && trimmed != "sing-box" {
             candidates.push(trimmed.to_string());
         }
         candidates.push("/usr/local/bin/sing-box".to_string());
         candidates.push("/usr/bin/sing-box".to_string());
         candidates.push("/bin/sing-box".to_string());
-        candidates.push("/var/lib/chainproxy/sing-box".to_string());
+        candidates.push("/var/lib/sooya/sing-box".to_string());
         candidates.push("sing-box".to_string());
 
         for c in &candidates {
+            if c.starts_with('/') && !Path::new(c).is_file() {
+                continue;
+            }
             if let Ok(out) = Command::new(c).arg("version").output() {
                 if out.status.success() {
+                    if trimmed.is_empty() || trimmed == "sing-box" {
+                        let _ = CACHED_BIN.set(c.clone());
+                    }
                     return Ok(c.clone());
                 }
             }
         }
 
         Err(ChainError::SingBoxError(
-            "未在系统上检测到 sing-box 代理引擎！\n请执行以下命令一键安装官方 sing-box:\n  curl -fsSL https://sing-box.app/install.sh | sudo bash\n安装完成后重新执行 [5] 即可启动链路。".to_string(),
+            "未在系统上检测到 sing-box 代理引擎！\n请执行以下命令一键安装官方 sing-box:\n  curl -fsSL https://sing-box.app/install.sh | sudo bash".to_string(),
         ))
     }
 
@@ -165,23 +180,28 @@ impl SingBoxManager {
             ChainError::SingBoxError(format!("Failed to spawn sing-box ('{}'): {}", bin, e))
         })?;
 
-        // Background threads: stream sing-box output to tracing (for journalctl -f) and singbox.log file
+        // Background threads: stream sing-box output to tracing and bounded singbox.log file
         if let Some(stdout) = child.stdout.take() {
             let log_path_clone = log_path.clone();
             std::thread::spawn(move || {
-                use std::io::{BufRead, BufReader, Write};
+                use std::io::{BufRead, BufReader, BufWriter, Write};
                 let reader = BufReader::new(stdout);
-                let mut file = std::fs::OpenOptions::new()
+                let mut writer = std::fs::OpenOptions::new()
                     .create(true)
                     .write(true)
                     .truncate(true)
                     .open(&log_path_clone)
-                    .ok();
+                    .ok()
+                    .map(BufWriter::new);
+                let mut written_bytes: usize = 0;
                 for line in reader.lines().map_while(std::result::Result::ok) {
                     tracing::info!(target: "singbox", "{}", line);
-                    if let Some(ref mut f) = file {
-                        let _ = writeln!(f, "{}", line);
-                        let _ = f.flush();
+                    if let Some(ref mut w) = writer {
+                        if written_bytes < 262_144 {
+                            let _ = writeln!(w, "{}", line);
+                            let _ = w.flush();
+                            written_bytes += line.len() + 1;
+                        }
                     }
                 }
             });
@@ -189,26 +209,31 @@ impl SingBoxManager {
         if let Some(stderr) = child.stderr.take() {
             let log_path_clone = log_path.clone();
             std::thread::spawn(move || {
-                use std::io::{BufRead, BufReader, Write};
+                use std::io::{BufRead, BufReader, BufWriter, Write};
                 let reader = BufReader::new(stderr);
-                let mut file = std::fs::OpenOptions::new()
+                let mut writer = std::fs::OpenOptions::new()
                     .create(true)
                     .write(true)
                     .append(true)
                     .open(&log_path_clone)
-                    .ok();
+                    .ok()
+                    .map(BufWriter::new);
+                let mut written_bytes: usize = 0;
                 for line in reader.lines().map_while(std::result::Result::ok) {
                     tracing::warn!(target: "singbox", "{}", line);
-                    if let Some(ref mut f) = file {
-                        let _ = writeln!(f, "{}", line);
-                        let _ = f.flush();
+                    if let Some(ref mut w) = writer {
+                        if written_bytes < 262_144 {
+                            let _ = writeln!(w, "{}", line);
+                            let _ = w.flush();
+                            written_bytes += line.len() + 1;
+                        }
                     }
                 }
             });
         }
 
-        // Sleep briefly to ensure it doesn't immediately crash on invalid config/permission
-        std::thread::sleep(Duration::from_millis(800));
+        // Brief check for immediate startup crash (config was already validated by `sing-box check`)
+        std::thread::sleep(Duration::from_millis(120));
         match child.try_wait() {
             Ok(Some(status)) => {
                 self.is_running.store(false, Ordering::SeqCst);
@@ -240,21 +265,21 @@ impl SingBoxManager {
         Ok(())
     }
 
-    /// Stop running sing-box process
+    /// Stop running sing-box process using direct SIGTERM syscall
     pub fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
             info!("Stopping sing-box child process PID {}", child.id());
             #[cfg(target_os = "linux")]
             {
-                // SIGKILL skips sing-tun's own IPv6 route/rule cleanup.
-                let _ = Command::new("kill")
-                    .args(["-TERM", &child.id().to_string()])
-                    .output();
-                for _ in 0..30 {
+                // Send SIGTERM directly via libc::kill so sing-tun cleans up its routes without spawning `kill`
+                unsafe {
+                    let _ = libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+                }
+                for _ in 0..75 {
                     if matches!(child.try_wait(), Ok(Some(_))) {
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(20));
                 }
             }
             let _ = child.kill();

@@ -24,13 +24,10 @@ pub struct NetworkSnapshot {
     pub nft: Option<String>,
     pub sysctl: SysctlSnapshot,
     pub inbound_mark: u32,
-    pub original_rules: Vec<serde_json::Value>,
-    pub original_routes: Vec<serde_json::Value>,
 }
 
 impl NetworkSnapshot {
     pub fn capture(plan: RoutePlan, config: &ChainProxyConfig) -> Result<Self> {
-        IpRouteManager::check_available(&plan)?;
         let inbound_mark = if config.routing.preserve_inbound_connections {
             config.routing.inbound_mark()?
         } else {
@@ -44,27 +41,11 @@ impl NetworkSnapshot {
                 ));
             }
         }
-        let mut original_rules = Vec::new();
-        let mut original_routes = Vec::new();
-        for family in ["-4", "-6"] {
-            original_rules.push(serde_json::from_str(&IpRouteManager::run(&[
-                family, "-N", "-j", "rule", "show",
-            ])?)?);
-            let routes: Vec<serde_json::Value> = serde_json::from_str(&IpRouteManager::run(&[
-                family, "-N", "-j", "route", "show", "table", "all",
-            ])?)?;
-            original_routes.push(serde_json::json!(routes
-                .into_iter()
-                .filter(|r| r["table"].as_str() == Some("2023"))
-                .collect::<Vec<_>>()));
-        }
         Ok(Self {
             plan,
             nft: NftablesManager::snapshot()?,
             sysctl: SysctlManager::snapshot()?,
             inbound_mark,
-            original_rules,
-            original_routes,
         })
     }
 
@@ -77,17 +58,18 @@ impl NetworkSnapshot {
     }
 }
 
+#[derive(Clone)]
 pub struct ChainEngine {
     base_dir: PathBuf,
     singbox_bin: String,
     history: Arc<Mutex<HistoryManager>>,
     singbox: Arc<Mutex<SingBoxManager>>,
-    network_snapshot: Option<NetworkSnapshot>,
+    network_snapshot: Arc<Mutex<Option<NetworkSnapshot>>>,
     active_config: Arc<Mutex<Option<ChainProxyConfig>>>,
     state: Arc<Mutex<ServiceState>>,
-    start_time: Option<Instant>,
+    start_time: Arc<Mutex<Option<Instant>>>,
     active_version: Arc<Mutex<Option<String>>>,
-    watchdog_timeout_secs: AtomicU64,
+    watchdog_timeout_secs: Arc<AtomicU64>,
     cached_physical: Arc<Mutex<Option<(Instant, PhysicalHopStatus)>>>,
     last_report: Arc<Mutex<Option<TestReport>>>,
 }
@@ -114,12 +96,12 @@ impl ChainEngine {
             singbox_bin: singbox_bin.to_string(),
             history,
             singbox,
-            network_snapshot: None,
+            network_snapshot: Arc::new(Mutex::new(None)),
             active_config: Arc::new(Mutex::new(initial_config)),
             state: Arc::new(Mutex::new(ServiceState::Stopped)),
-            start_time: None,
+            start_time: Arc::new(Mutex::new(None)),
             active_version: Arc::new(Mutex::new(None)),
-            watchdog_timeout_secs: AtomicU64::new(30),
+            watchdog_timeout_secs: Arc::new(AtomicU64::new(30)),
             cached_physical: Arc::new(Mutex::new(None)),
             last_report: Arc::new(Mutex::new(None)),
         }
@@ -181,7 +163,12 @@ impl ChainEngine {
         let result = tokio::time::timeout(timeout, async {
             if config.mode != ProxyMode::Socks5Server {
                 IpRouteManager::check_available(&plan)?;
-                if IpRouteManager::run(&["link", "show", "dev", "chain0"]).is_ok() {
+                let chain0_exists = if cfg!(target_os = "linux") {
+                    Path::new("/sys/class/net/chain0").exists()
+                } else {
+                    IpRouteManager::run(&["link", "show", "dev", "chain0"]).is_ok()
+                };
+                if chain0_exists {
                     return Err(ChainError::NetworkError(
                         "chain0 already exists; refusing to take over another TUN".to_string(),
                     ));
@@ -190,19 +177,27 @@ impl ChainEngine {
                 std::fs::create_dir_all(&self.base_dir)?;
                 let journal = self.base_dir.join("network_snapshot.json");
                 let mut file = tempfile::NamedTempFile::new_in(&self.base_dir)?;
-                file.write_all(&serde_json::to_vec_pretty(&snapshot)?)?;
+                file.write_all(&serde_json::to_vec(&snapshot)?)?;
                 file.as_file().sync_all()?;
                 file.persist(&journal).map_err(|e| e.error)?;
-                self.network_snapshot = Some(snapshot);
+                *self.network_snapshot.lock().unwrap() = Some(snapshot);
             }
 
             std::fs::create_dir_all(&self.base_dir)?;
             let actual_cfg_path = self.base_dir.join("singbox_active.json");
-            std::fs::write(&actual_cfg_path, serde_json::to_vec_pretty(&singbox_cfg)?)?;
+            std::fs::write(&actual_cfg_path, serde_json::to_vec(&singbox_cfg)?)?;
             if config.mode != ProxyMode::Socks5Server {
                 let interfaces = vec![uplink.clone()];
                 SysctlManager::configure_for_proxy(&interfaces, false, config.routing.ipv6)?;
-                IpRouteManager::install_rules(&self.network_snapshot.as_ref().unwrap().plan)?;
+                let plan_clone = self
+                    .network_snapshot
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .plan
+                    .clone();
+                IpRouteManager::install_rules(&plan_clone)?;
                 IpRouteManager::ensure_tun_device()?;
             }
             self.singbox
@@ -216,23 +211,31 @@ impl ChainEngine {
                     ));
                 }
                 SysctlManager::configure_tun_sysctl("chain0")?;
-                IpRouteManager::install_routes(&self.network_snapshot.as_ref().unwrap().plan)?;
+                let plan_clone = self
+                    .network_snapshot
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .plan
+                    .clone();
+                IpRouteManager::install_routes(&plan_clone)?;
                 NftablesManager::apply_ruleset(&nft_rules)?;
             }
 
-            // Poll local test port readiness instead of sleeping 3 full seconds blindly
+            // Fast poll local test port readiness
             if config.mode != ProxyMode::Socks5Server {
                 let wait_start = Instant::now();
                 let test_addr = format!("127.0.0.1:{}", TEST_WARP_PORT);
-                while wait_start.elapsed() < Duration::from_millis(1800) {
+                while wait_start.elapsed() < Duration::from_millis(1500) {
                     if tokio::net::TcpStream::connect(&test_addr).await.is_ok() {
                         break;
                     }
-                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    tokio::time::sleep(Duration::from_millis(40)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(350)).await;
+                tokio::time::sleep(Duration::from_millis(80)).await;
             } else {
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
             let (v1_name, v1_ep) = match config.mode {
@@ -297,7 +300,7 @@ impl ChainEngine {
             *self.active_config.lock().unwrap() = Some(config);
             *self.active_version.lock().unwrap() = Some(version);
             *self.state.lock().unwrap() = ServiceState::Running;
-            self.start_time = Some(Instant::now());
+            *self.start_time.lock().unwrap() = Some(Instant::now());
             *self.last_report.lock().unwrap() = Some(report.clone());
             Ok(report)
         })
@@ -336,10 +339,14 @@ impl ChainEngine {
 
     pub fn stop(&mut self) -> Result<()> {
         let journal = self.base_dir.join("network_snapshot.json");
-        if self.network_snapshot.is_none() && journal.exists() {
-            self.network_snapshot = Some(serde_json::from_slice(&std::fs::read(&journal)?)?);
+        {
+            let mut snap_guard = self.network_snapshot.lock().unwrap();
+            if snap_guard.is_none() && journal.exists() {
+                *snap_guard = Some(serde_json::from_slice(&std::fs::read(&journal)?)?);
+            }
         }
-        if let Some(snapshot) = &self.network_snapshot {
+        let snapshot_opt = self.network_snapshot.lock().unwrap().take();
+        if let Some(snapshot) = snapshot_opt {
             let nft = NftablesManager::restore(None);
             self.singbox.lock().unwrap().stop();
             let restored = snapshot.restore();
@@ -347,22 +354,26 @@ impl ChainEngine {
             if journal.exists() {
                 std::fs::remove_file(&journal)?;
             }
-            self.network_snapshot = None;
         } else {
             self.singbox.lock().unwrap().stop();
         }
         *self.state.lock().unwrap() = ServiceState::Stopped;
-        self.start_time = None;
+        *self.start_time.lock().unwrap() = None;
         *self.active_version.lock().unwrap() = None;
         *self.last_report.lock().unwrap() = None;
         info!("Original network state restored");
         Ok(())
     }
 
-    /// Query current status (Zero subprocess / Zero disk I/O on hot path)
+    /// Query current status (Zero subprocess / Zero disk I/O / Non-blocking on hot path)
     pub fn get_status(&self) -> ChainStatus {
         let state = self.state.lock().unwrap().clone();
-        let uptime = self.start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let uptime = self
+            .start_time
+            .lock()
+            .unwrap()
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
         let active_ver = self.active_version.lock().unwrap().clone();
         let cfg_opt = self.active_config.lock().unwrap().clone();
 
@@ -620,7 +631,7 @@ impl ChainEngine {
         None
     }
 
-    pub fn save_config(&mut self, config: ChainProxyConfig) -> Result<()> {
+    pub fn save_config(&self, config: ChainProxyConfig) -> Result<()> {
         std::fs::create_dir_all(&self.base_dir)?;
         let cfg_path = self.base_dir.join("config.json");
         std::fs::write(&cfg_path, serde_json::to_vec_pretty(&config)?)?;

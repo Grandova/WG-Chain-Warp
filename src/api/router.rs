@@ -20,6 +20,7 @@ use tower_http::cors::CorsLayer;
 #[derive(Clone)]
 pub struct AppState {
     pub engine: Arc<Mutex<ChainEngine>>,
+    pub reader: ChainEngine,
     pub auth_token: Option<String>,
     pub panel: Arc<Mutex<PanelSetting>>,
     pub sysinfo: Arc<SysInfoCollector>,
@@ -87,11 +88,20 @@ fn build_core_routes() -> Router<AppState> {
 }
 
 pub fn create_router(engine: Arc<Mutex<ChainEngine>>, auth_token: Option<String>) -> Router {
-    let (data_dir, singbox_bin) = {
+    let (reader, data_dir, singbox_bin) = {
         if let Ok(guard) = engine.try_lock() {
-            (guard.base_dir().to_path_buf(), guard.singbox_bin().to_string())
+            (
+                guard.clone(),
+                guard.base_dir().to_path_buf(),
+                guard.singbox_bin().to_string(),
+            )
         } else {
-            (PathBuf::from("/var/lib/sooya"), "sing-box".to_string())
+            let fallback_dir = PathBuf::from("/var/lib/sooya");
+            (
+                ChainEngine::new(&fallback_dir, "sing-box"),
+                fallback_dir,
+                "sing-box".to_string(),
+            )
         }
     };
 
@@ -100,6 +110,7 @@ pub fn create_router(engine: Arc<Mutex<ChainEngine>>, auth_token: Option<String>
 
     let state = AppState {
         engine,
+        reader,
         auth_token,
         panel: Arc::new(Mutex::new(panel_setting)),
         sysinfo: Arc::new(SysInfoCollector::new()),
@@ -209,7 +220,7 @@ async fn panel_server_status_handler(
         );
     }
     let sys = state.sysinfo.collect(&state.singbox_bin);
-    let chain = state.engine.lock().await.get_status();
+    let chain = state.reader.get_status();
     (
         StatusCode::OK,
         Json(ApiResponse::ok(CombinedDashboardStatus {
@@ -229,9 +240,8 @@ async fn panel_get_config_handler(
             Json(ApiResponse::err("Unauthorized")),
         );
     }
-    let engine = state.engine.lock().await;
-    let status = engine.get_status();
-    let cfg = engine.get_active_config().unwrap_or_default();
+    let status = state.reader.get_status();
+    let cfg = state.reader.get_active_config().unwrap_or_default();
     (
         StatusCode::OK,
         Json(ApiResponse::ok(serde_json::json!({
@@ -259,8 +269,7 @@ async fn panel_save_config_handler(
             Json(ApiResponse::err(e.to_string())),
         );
     }
-    let mut engine = state.engine.lock().await;
-    match engine.save_config(payload.config) {
+    match state.reader.save_config(payload.config) {
         Ok(_) => (
             StatusCode::OK,
             Json(ApiResponse::ok("配置已保存".to_string())),
@@ -406,14 +415,12 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 async fn status_handler(State(state): State<AppState>) -> Json<ApiResponse<ChainStatus>> {
-    let engine = state.engine.lock().await;
-    Json(ApiResponse::ok(engine.get_status()))
+    Json(ApiResponse::ok(state.reader.get_status()))
 }
 
 async fn get_config_handler(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
-    let engine = state.engine.lock().await;
-    let status = engine.get_status();
-    let active_cfg = engine.get_active_config();
+    let status = state.reader.get_status();
+    let active_cfg = state.reader.get_active_config();
     Json(ApiResponse::ok(serde_json::json!({
         "status": status.state,
         "active_version": status.active_config_version,
@@ -476,24 +483,12 @@ async fn apply_config_handler(
     State(state): State<AppState>,
     Json(payload): Json<ValidatePayload>,
 ) -> (StatusCode, Json<ApiResponse<TestReport>>) {
-    let engine_arc = state.engine.clone();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    tokio::spawn(async move {
-        let mut engine = engine_arc.lock().await;
-        let res = engine.apply(payload.config).await;
-        let _ = tx.send(res);
-    });
-
-    match rx.await {
-        Ok(Ok(report)) => (StatusCode::OK, Json(ApiResponse::ok(report))),
-        Ok(Err(e)) => (
+    let mut engine = state.engine.lock().await;
+    match engine.apply(payload.config).await {
+        Ok(report) => (StatusCode::OK, Json(ApiResponse::ok(report))),
+        Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse::err(e.to_string())),
-        ),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::err("Apply task was interrupted".to_string())),
         ),
     }
 }
@@ -501,20 +496,14 @@ async fn apply_config_handler(
 async fn test_config_handler(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<TestReport>> {
-    let (uplink, v1_name, v1_ep, v2_name, v2_ep, is_running, config) = {
-        let engine = state.engine.lock().await;
-        let status = engine.get_status();
-        let config = engine.get_active_config().unwrap_or_default();
-        (
-            status.physical.interface,
-            status.vpn1.name,
-            status.vpn1.endpoint,
-            status.vpn2.name,
-            status.vpn2.endpoint,
-            status.state == crate::model::state::ServiceState::Running,
-            config,
-        )
-    };
+    let status = state.reader.get_status();
+    let config = state.reader.get_active_config().unwrap_or_default();
+    let uplink = status.physical.interface;
+    let v1_name = status.vpn1.name;
+    let v1_ep = status.vpn1.endpoint;
+    let v2_name = status.vpn2.name;
+    let v2_ep = status.vpn2.endpoint;
+    let is_running = status.state == crate::model::state::ServiceState::Running;
 
     if !is_running {
         let phys_status = HealthChecker::probe_physical(Some(&uplink));
@@ -575,7 +564,7 @@ async fn test_config_handler(
     let report =
         HealthChecker::run_full_test(&config, Some(&uplink), &v1_name, &v1_ep, &v2_name, &v2_ep)
             .await;
-    state.engine.lock().await.update_last_report(report.clone());
+    state.reader.update_last_report(report.clone());
     Json(ApiResponse::ok(report))
 }
 
@@ -607,27 +596,15 @@ async fn restart_handler(State(state): State<AppState>) -> (StatusCode, Json<Api
 }
 
 async fn rollback_handler(State(state): State<AppState>) -> (StatusCode, Json<ApiResponse<String>>) {
-    let engine_arc = state.engine.clone();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    tokio::spawn(async move {
-        let mut engine = engine_arc.lock().await;
-        let res = engine.rollback().await;
-        let _ = tx.send(res);
-    });
-
-    match rx.await {
-        Ok(Ok(_)) => (
+    let mut engine = state.engine.lock().await;
+    match engine.rollback().await {
+        Ok(_) => (
             StatusCode::OK,
             Json(ApiResponse::ok("Rollback successful".to_string())),
         ),
-        Ok(Err(e)) => (
+        Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse::err(e.to_string())),
-        ),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::err("Rollback task was interrupted".to_string())),
         ),
     }
 }
@@ -683,8 +660,8 @@ struct SetLogLevelPayload {
 }
 
 async fn get_log_level_handler(State(state): State<AppState>) -> Json<ApiResponse<String>> {
-    let engine = state.engine.lock().await;
-    let level = engine
+    let level = state
+        .reader
         .get_active_config()
         .map(|c| c.log_level)
         .unwrap_or_else(|| "info".to_string());
@@ -695,10 +672,9 @@ async fn set_log_level_handler(
     State(state): State<AppState>,
     Json(payload): Json<SetLogLevelPayload>,
 ) -> (StatusCode, Json<ApiResponse<String>>) {
-    let mut engine = state.engine.lock().await;
-    if let Some(mut cfg) = engine.get_active_config() {
+    if let Some(mut cfg) = state.reader.get_active_config() {
         cfg.log_level = payload.level.clone();
-        let _ = engine.save_config(cfg);
+        let _ = state.reader.save_config(cfg);
         (
             StatusCode::OK,
             Json(ApiResponse::ok(format!(

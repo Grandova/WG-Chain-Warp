@@ -1,16 +1,16 @@
 [package]
 name = "sooya"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2021"
 description = "Sooya - Lightweight Linux Chained WireGuard & WARP Proxy with Web Panel"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Grandova/WG-Chain-Warp"
 
 [dependencies]
-tokio = { version = "1.43", features = ["full"] }
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 axum = { version = "0.8", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.5", features = ["derive"] }
@@ -38,3 +38,4 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"

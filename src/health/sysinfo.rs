@@ -49,6 +49,7 @@ struct PrevSample {
 }
 
 pub struct SysInfoCollector {
+    cpu_cores: usize,
     prev: Mutex<PrevSample>,
 }
 
@@ -62,7 +63,9 @@ impl SysInfoCollector {
     pub fn new() -> Self {
         let (cpu_total, cpu_idle) = Self::read_cpu_jiffies().unwrap_or((0, 0));
         let (net_recv, net_sent) = Self::read_net_bytes().unwrap_or((0, 0));
+        let cpu_cores = Self::read_cpu_cores();
         Self {
+            cpu_cores,
             prev: Mutex::new(PrevSample {
                 cpu_total,
                 cpu_idle,
@@ -80,7 +83,8 @@ impl SysInfoCollector {
         let elapsed_secs = now.duration_since(guard.last_time).as_secs_f64();
 
         // 1. CPU %
-        let (cur_total, cur_idle) = Self::read_cpu_jiffies().unwrap_or((guard.cpu_total, guard.cpu_idle));
+        let (cur_total, cur_idle) =
+            Self::read_cpu_jiffies().unwrap_or((guard.cpu_total, guard.cpu_idle));
         let total_diff = cur_total.saturating_sub(guard.cpu_total);
         let idle_diff = cur_idle.saturating_sub(guard.cpu_idle);
         let cpu = if total_diff > 0 {
@@ -91,14 +95,19 @@ impl SysInfoCollector {
         };
 
         // 2. Network IO & Traffic
-        let (cur_recv, cur_sent) = Self::read_net_bytes().unwrap_or((guard.net_recv, guard.net_sent));
-        let (up_speed, down_speed) = if elapsed_secs >= 0.2 && (guard.net_sent > 0 || guard.net_recv > 0) {
-            let sent_diff = cur_sent.saturating_sub(guard.net_sent) as f64;
-            let recv_diff = cur_recv.saturating_sub(guard.net_recv) as f64;
-            ((sent_diff / elapsed_secs) as u64, (recv_diff / elapsed_secs) as u64)
-        } else {
-            (0, 0)
-        };
+        let (cur_recv, cur_sent) =
+            Self::read_net_bytes().unwrap_or((guard.net_recv, guard.net_sent));
+        let (up_speed, down_speed) =
+            if elapsed_secs >= 0.2 && (guard.net_sent > 0 || guard.net_recv > 0) {
+                let sent_diff = cur_sent.saturating_sub(guard.net_sent) as f64;
+                let recv_diff = cur_recv.saturating_sub(guard.net_recv) as f64;
+                (
+                    (sent_diff / elapsed_secs) as u64,
+                    (recv_diff / elapsed_secs) as u64,
+                )
+            } else {
+                (0, 0)
+            };
 
         if elapsed_secs >= 0.2 {
             guard.cpu_total = cur_total;
@@ -119,17 +128,15 @@ impl SysInfoCollector {
         };
         drop(guard);
 
-        let cpu_cores = Self::read_cpu_cores();
         let (mem, swap) = Self::read_mem_and_swap();
         let disk = Self::read_disk_usage();
         let uptime = Self::read_uptime();
         let loads = Self::read_loadavg();
-        let tcp_count = Self::count_proc_net_lines(&["/proc/net/tcp", "/proc/net/tcp6"]);
-        let udp_count = Self::count_proc_net_lines(&["/proc/net/udp", "/proc/net/udp6"]);
+        let (tcp_count, udp_count) = Self::read_socket_counts();
 
         ServerSystemStatus {
             cpu,
-            cpu_cores,
+            cpu_cores: self.cpu_cores,
             mem,
             swap,
             disk,
@@ -153,33 +160,34 @@ impl SysInfoCollector {
     fn read_cpu_jiffies() -> Option<(u64, u64)> {
         let content = fs::read_to_string("/proc/stat").ok()?;
         let first_line = content.lines().find(|l| l.starts_with("cpu "))?;
-        let parts: Vec<u64> = first_line
-            .split_whitespace()
-            .skip(1)
-            .filter_map(|s| s.parse::<u64>().ok())
-            .collect();
-        if parts.len() < 4 {
+        let mut total = 0u64;
+        let mut idle = 0u64;
+        let mut count = 0usize;
+        for (idx, token) in first_line.split_whitespace().skip(1).enumerate() {
+            if let Ok(v) = token.parse::<u64>() {
+                total = total.saturating_add(v);
+                if idx == 3 || idx == 4 {
+                    idle = idle.saturating_add(v);
+                }
+                count += 1;
+            }
+        }
+        if count < 4 {
             return None;
         }
-        let total: u64 = parts.iter().sum();
-        // idle is index 3, iowait is index 4
-        let idle = parts[3] + parts.get(4).copied().unwrap_or(0);
         Some((total, idle))
     }
 
     fn read_cpu_cores() -> usize {
-        if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
-            let count = content
-                .lines()
-                .filter(|l| l.starts_with("processor"))
-                .count();
-            if count > 0 {
-                return count;
-            }
-        }
         std::thread::available_parallelism()
             .map(|n| n.get())
-            .unwrap_or(1)
+            .unwrap_or_else(|_| {
+                fs::read_to_string("/proc/cpuinfo")
+                    .ok()
+                    .map(|c| c.lines().filter(|l| l.starts_with("processor")).count())
+                    .filter(|&n| n > 0)
+                    .unwrap_or(1)
+            })
     }
 
     fn read_mem_and_swap() -> (UsagePair, UsagePair) {
@@ -189,16 +197,31 @@ impl SysInfoCollector {
         let mut swap_free_kb = 0u64;
 
         if let Ok(content) = fs::read_to_string("/proc/meminfo") {
+            let mut found = 0u8;
             for line in content.lines() {
                 let mut parts = line.split_whitespace();
                 let key = parts.next().unwrap_or("");
-                let val = parts.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
                 match key {
-                    "MemTotal:" => mem_total_kb = val,
-                    "MemAvailable:" => mem_avail_kb = val,
-                    "SwapTotal:" => swap_total_kb = val,
-                    "SwapFree:" => swap_free_kb = val,
+                    "MemTotal:" => {
+                        mem_total_kb = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                        found |= 1;
+                    }
+                    "MemAvailable:" => {
+                        mem_avail_kb = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                        found |= 2;
+                    }
+                    "SwapTotal:" => {
+                        swap_total_kb = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                        found |= 4;
+                    }
+                    "SwapFree:" => {
+                        swap_free_kb = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                        found |= 8;
+                    }
                     _ => {}
+                }
+                if found == 15 {
+                    break;
                 }
             }
         }
@@ -240,7 +263,10 @@ impl SysInfoCollector {
                 }
             }
         }
-        UsagePair { current: 0, total: 0 }
+        UsagePair {
+            current: 0,
+            total: 0,
+        }
     }
 
     fn read_uptime() -> u64 {
@@ -255,17 +281,52 @@ impl SysInfoCollector {
     }
 
     fn read_loadavg() -> [f64; 3] {
+        let mut out = [0.0; 3];
         if let Ok(content) = fs::read_to_string("/proc/loadavg") {
-            let parts: Vec<f64> = content
-                .split_whitespace()
-                .take(3)
-                .filter_map(|s| s.parse::<f64>().ok())
-                .collect();
-            if parts.len() == 3 {
-                return [parts[0], parts[1], parts[2]];
+            for (idx, token) in content.split_whitespace().take(3).enumerate() {
+                if let Ok(v) = token.parse::<f64>() {
+                    out[idx] = v;
+                }
             }
         }
-        [0.0, 0.0, 0.0]
+        out
+    }
+
+    /// O(1) kernel socket counter via /proc/net/sockstat & /proc/net/sockstat6
+    /// Avoids O(N) full kernel socket hash table dumps from /proc/net/tcp & /proc/net/udp
+    fn read_socket_counts() -> (usize, usize) {
+        let mut tcp = 0usize;
+        let mut udp = 0usize;
+        let mut parsed_any = false;
+
+        for path in ["/proc/net/sockstat", "/proc/net/sockstat6"] {
+            if let Ok(content) = fs::read_to_string(path) {
+                parsed_any = true;
+                for line in content.lines() {
+                    let mut parts = line.split_whitespace();
+                    let proto = parts.next().unwrap_or("");
+                    if (proto == "TCP:" || proto == "TCP6:") && parts.next() == Some("inuse") {
+                        if let Some(n) = parts.next().and_then(|s| s.parse::<usize>().ok()) {
+                            tcp = tcp.saturating_add(n);
+                        }
+                    } else if (proto == "UDP:" || proto == "UDP6:") && parts.next() == Some("inuse")
+                    {
+                        if let Some(n) = parts.next().and_then(|s| s.parse::<usize>().ok()) {
+                            udp = udp.saturating_add(n);
+                        }
+                    }
+                }
+            }
+        }
+
+        if parsed_any {
+            return (tcp, udp);
+        }
+
+        (
+            Self::count_proc_net_lines(&["/proc/net/tcp", "/proc/net/tcp6"]),
+            Self::count_proc_net_lines(&["/proc/net/udp", "/proc/net/udp6"]),
+        )
     }
 
     fn count_proc_net_lines(paths: &[&str]) -> usize {
@@ -287,23 +348,26 @@ impl SysInfoCollector {
         let mut total_tx = 0u64;
 
         for line in content.lines().skip(2) {
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() != 2 {
+            let Some((iface_raw, stats_raw)) = line.split_once(':') else {
+                continue;
+            };
+            let iface = iface_raw.trim();
+            if iface == "lo"
+                || iface == "chain0"
+                || iface.starts_with("veth")
+                || iface.starts_with("docker")
+            {
                 continue;
             }
-            let iface = parts[0].trim();
-            // Skip loopback and internal virtual tun interfaces to avoid double counting
-            if iface == "lo" || iface == "chain0" || iface.starts_with("veth") || iface.starts_with("docker") {
+            let mut cols = stats_raw.split_whitespace();
+            let Some(rx) = cols.next().and_then(|s| s.parse::<u64>().ok()) else {
                 continue;
-            }
-            let nums: Vec<u64> = parts[1]
-                .split_whitespace()
-                .filter_map(|s| s.parse::<u64>().ok())
-                .collect();
-            if nums.len() >= 9 {
-                total_rx = total_rx.saturating_add(nums[0]);
-                total_tx = total_tx.saturating_add(nums[8]);
-            }
+            };
+            let Some(tx) = cols.nth(7).and_then(|s| s.parse::<u64>().ok()) else {
+                continue;
+            };
+            total_rx = total_rx.saturating_add(rx);
+            total_tx = total_tx.saturating_add(tx);
         }
 
         Some((total_rx, total_tx))

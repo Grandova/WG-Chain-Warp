@@ -56,6 +56,40 @@ impl HealthChecker {
         }
     }
 
+    fn cached_proxy_client(proxy_port: u16) -> Result<reqwest::Client> {
+        static CLIENT_VPN1: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        static CLIENT_WARP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+        let build_for_port = |port: u16| -> Result<reqwest::Client> {
+            let proxy = Proxy::all(format!("http://127.0.0.1:{}", port))
+                .map_err(|e| ChainError::NetworkError(e.to_string()))?;
+            reqwest::Client::builder()
+                .proxy(proxy)
+                .pool_max_idle_per_host(0)
+                .tcp_nodelay(true)
+                .build()
+                .map_err(|e| ChainError::NetworkError(e.to_string()))
+        };
+
+        if proxy_port == TEST_VPN1_PORT {
+            if let Some(c) = CLIENT_VPN1.get() {
+                return Ok(c.clone());
+            }
+            let c = build_for_port(proxy_port)?;
+            let _ = CLIENT_VPN1.set(c.clone());
+            return Ok(c);
+        }
+        if proxy_port == TEST_WARP_PORT {
+            if let Some(c) = CLIENT_WARP.get() {
+                return Ok(c.clone());
+            }
+            let c = build_for_port(proxy_port)?;
+            let _ = CLIENT_WARP.set(c.clone());
+            return Ok(c);
+        }
+        build_for_port(proxy_port)
+    }
+
     /// Single probe via sing-box local mixed test inbound
     async fn single_probe_proxy(
         proxy_port: u16,
@@ -63,18 +97,10 @@ impl HealthChecker {
         test_url: &str,
         timeout: Duration,
     ) -> Result<(String, u64)> {
-        let http_proxy_url = format!("http://127.0.0.1:{}", proxy_port);
-        let proxy = Proxy::all(&http_proxy_url)
-            .map_err(|e| ChainError::NetworkError(e.to_string()))?;
-        let client = reqwest::Client::builder()
-            .proxy(proxy)
-            .timeout(timeout)
-            .pool_max_idle_per_host(0)
-            .build()
-            .map_err(|e| ChainError::NetworkError(e.to_string()))?;
+        let client = Self::cached_proxy_client(proxy_port)?;
 
         let start = Instant::now();
-        if let Ok(resp) = client.get(test_url).send().await {
+        if let Ok(resp) = client.get(test_url).timeout(timeout).send().await {
             let elapsed = start.elapsed().as_millis() as u64;
             if let Ok(text) = resp.text().await {
                 if Self::parse_trace(&text).0.is_some() {

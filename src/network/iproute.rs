@@ -2,13 +2,14 @@ use crate::error::{ChainError, Result};
 use crate::model::config::ChainProxyConfig;
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::net::{IpAddr, ToSocketAddrs};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 #[cfg(target_os = "linux")]
 use tracing::info;
 
-// Only these bits belong to chainproxy; nft preserves all other mark bits.
+// Only these bits belong to Sooya; nft preserves all other mark bits.
 pub const MARK_INBOUND_RETURN: u32 = 0x0088;
 pub const MARK_PHYSICAL_DIRECT: u32 = 0x0400;
 pub const MARK_HOST_PROXY: u32 = 0x0800;
@@ -47,6 +48,48 @@ impl IpRouteManager {
             )));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Execute multiple `ip` subcommands in a single `ip -batch -` invocation
+    fn run_batch(commands: &[Vec<String>], force: bool) -> Result<()> {
+        if commands.is_empty() {
+            return Ok(());
+        }
+        let mut batch_script = String::with_capacity(commands.len() * 48);
+        for cmd in commands {
+            batch_script.push_str(&cmd.join(" "));
+            batch_script.push('\n');
+        }
+
+        let mut ip_cmd = Command::new("ip");
+        if force {
+            ip_cmd.arg("-force");
+        }
+        ip_cmd
+            .args(["-batch", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        if let Ok(mut child) = ip_cmd.spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(batch_script.as_bytes());
+            }
+            if let Ok(out) = child.wait_with_output() {
+                if out.status.success() || force {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Fallback to sequential execution if `ip -batch` is unsupported
+        for args in commands {
+            let res = Self::run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+            if !force {
+                res?;
+            }
+        }
+        Ok(())
     }
 
     pub fn detect_default_uplink() -> Result<UplinkInfo> {
@@ -145,7 +188,6 @@ impl IpRouteManager {
                         "priority {} iif lo fwmark {:#x}/{:#x} lookup {}",
                         HOST_RULE_PRIORITY, MARK_HOST_PROXY, mask, HOST_TABLE
                     ));
-                    // Fail closed if the TUN disappears; selected proxy flows must not leak to main.
                     rules.push(format!(
                         "priority {} iif lo fwmark {:#x}/{:#x} unreachable",
                         HOST_RULE_PRIORITY + 1,
@@ -202,68 +244,59 @@ impl IpRouteManager {
                 }
             }
             let routes: serde_json::Value = serde_json::from_str(&Self::run(&[
-                family, "-N", "-j", "route", "show", "table", "all",
-            ])?)?;
-            for route in routes.as_array().into_iter().flatten() {
-                if route["table"].as_u64() == Some(HOST_TABLE as u64)
-                    || route["table"].as_str() == Some(&HOST_TABLE.to_string())
-                {
-                    return Err(ChainError::NetworkError(
-                        "Routing table 2023 already in use; stop its owner before applying"
-                            .to_string(),
-                    ));
-                }
+                family, "-N", "-j", "route", "show", "table", "2023",
+            ])?)
+            .unwrap_or_else(|_| serde_json::json!([]));
+            if routes
+                .as_array()
+                .map(|arr| !arr.is_empty())
+                .unwrap_or(false)
+            {
+                return Err(ChainError::NetworkError(
+                    "Routing table 2023 already in use; stop its owner before applying".to_string(),
+                ));
             }
         }
         Ok(())
     }
 
     pub fn install_rules(plan: &RoutePlan) -> Result<()> {
-        for args in &plan.rules {
-            Self::run(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
-        }
-        Ok(())
+        Self::run_batch(&plan.rules, false)
     }
 
     pub fn install_routes(plan: &RoutePlan) -> Result<()> {
-        for args in &plan.routes {
-            Self::run(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
-        }
-        Ok(())
+        Self::run_batch(&plan.routes, false)
     }
 
     pub fn remove_plan(plan: &RoutePlan) -> Result<()> {
-        let mut failure = None;
+        let mut del_cmds = Vec::with_capacity(plan.rules.len() + plan.routes.len());
         for args in plan.rules.iter().rev().chain(plan.routes.iter().rev()) {
-            let mut args = args.clone();
-            args[2] = "del".to_string();
-            let output = Command::new("ip").args(&args).output()?;
-            let error = String::from_utf8_lossy(&output.stderr);
-            if !output.status.success()
-                && !error.contains("No such")
-                && !error.contains("Cannot find device")
-                && !error.contains("Cannot find specified")
-            {
-                failure = Some(ChainError::NetworkError(format!(
-                    "ip {}: {}",
-                    args.join(" "),
-                    error
-                )));
+            let mut del_args = args.clone();
+            if del_args.len() > 2 {
+                del_args[2] = "del".to_string();
+            }
+            del_cmds.push(del_args);
+        }
+        Self::run_batch(&del_cmds, true)
+    }
+
+    pub fn interface_exists(name: &str) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            if std::path::Path::new(&format!("/sys/class/net/{}", name)).exists() {
+                return true;
             }
         }
-        match failure {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
+        Self::run(&["link", "show", "dev", name]).is_ok()
     }
 
     pub fn wait_for_interface(name: &str, timeout: std::time::Duration) -> bool {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
-            if Self::run(&["link", "show", "dev", name]).is_ok() {
+            if Self::interface_exists(name) {
                 return true;
             }
-            std::thread::sleep(std::time::Duration::from_millis(40));
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         false
     }
