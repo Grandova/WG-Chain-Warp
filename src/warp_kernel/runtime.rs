@@ -1,5 +1,5 @@
 use crate::error::{ChainError, Result};
-use crate::model::config::{ChainProxyConfig, ParsedNodes, ProxyMode, Socks5Config, Socks5User};
+use crate::model::config::{ChainProxyConfig, ParsedNodes, ProxyMode, Socks5Config, Socks5ServerConfig, Socks5User};
 use crate::warp_kernel::endpoint::{build_warp_candidates, resolve_endpoint_addr};
 use crate::warp_kernel::noise::{DecapOutcome, WgTunnel};
 use crate::warp_kernel::pkt::{unwrap_ipv4_udp, wrap_ipv4_udp, L3NatTable, TcpMicroProbe};
@@ -112,10 +112,106 @@ impl TunnelSpec {
     }
 }
 
+pub struct Socks5Service {
+    running: Arc<AtomicBool>,
+    shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    abort_handle: Option<tokio::task::AbortHandle>,
+    listen_addr: Option<SocketAddr>,
+    current_cfg: Option<Socks5ServerConfig>,
+    tx_bytes: Arc<AtomicU64>,
+    rx_bytes: Arc<AtomicU64>,
+}
+
+impl Default for Socks5Service {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Socks5Service {
+    pub fn new() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            shutdown_tx: None,
+            abort_handle: None,
+            listen_addr: None,
+            current_cfg: None,
+            tx_bytes: Arc::new(AtomicU64::new(0)),
+            rx_bytes: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    pub fn listen_addr(&self) -> Option<String> {
+        if self.is_running() {
+            self.listen_addr.map(|a| a.to_string())
+        } else {
+            None
+        }
+    }
+
+    pub fn stats(&self) -> (u64, u64) {
+        (self.tx_bytes.load(Ordering::Relaxed), self.rx_bytes.load(Ordering::Relaxed))
+    }
+
+    pub fn start(&mut self, srv: &Socks5ServerConfig) -> Result<()> {
+        srv.validate()?;
+        if self.is_running() && self.current_cfg.as_ref() == Some(srv) {
+            return Ok(());
+        }
+        self.stop();
+        self.tx_bytes.store(0, Ordering::Relaxed);
+        self.rx_bytes.store(0, Ordering::Relaxed);
+
+        let listen_addr = SocketAddr::new(srv.listen, srv.port);
+        let std_listener = bind_reusable_tcp_listener(listen_addr)?;
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| ChainError::NetworkError(format!("SOCKS5 set_nonblocking failed: {}", e)))?;
+        let tokio_listener = tokio::net::TcpListener::from_std(std_listener)
+            .map_err(|e| ChainError::NetworkError(format!("SOCKS5 tokio listener failed: {}", e)))?;
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        self.running.store(true, Ordering::SeqCst);
+        let (running, tx, rx) = (self.running.clone(), self.tx_bytes.clone(), self.rx_bytes.clone());
+        let users = srv.users.clone();
+        let h = tokio::spawn(async move {
+            let _ = run_native_socks5_server(tokio_listener, users, running, shutdown_rx, tx, rx).await;
+        });
+        self.shutdown_tx = Some(shutdown_tx);
+        self.abort_handle = Some(h.abort_handle());
+        self.listen_addr = Some(listen_addr);
+        self.current_cfg = Some(srv.clone());
+        info!("Sooya native SOCKS5 server listening on {}", listen_addr);
+        Ok(())
+    }
+
+    pub fn stop(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(true);
+        }
+        if let Some(abort) = self.abort_handle.take() {
+            abort.abort();
+        }
+        self.listen_addr = None;
+        self.current_cfg = None;
+    }
+}
+
+impl Drop for Socks5Service {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 pub struct WarpKernel {
     running: Arc<AtomicBool>,
     workers: Vec<JoinHandle<()>>,
-    tokio_abort_handles: Vec<tokio::task::AbortHandle>,
+    probe_ports: Vec<u16>,
     vpn1_tx: Arc<AtomicU64>,
     vpn1_rx: Arc<AtomicU64>,
     warp_tx: Arc<AtomicU64>,
@@ -136,7 +232,7 @@ impl WarpKernel {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             workers: Vec::new(),
-            tokio_abort_handles: Vec::new(),
+            probe_ports: Vec::new(),
             vpn1_tx: Arc::new(AtomicU64::new(0)),
             vpn1_rx: Arc::new(AtomicU64::new(0)),
             warp_tx: Arc::new(AtomicU64::new(0)),
@@ -166,10 +262,15 @@ impl WarpKernel {
     pub fn stop_official_warp_daemons() {
         #[cfg(target_os = "linux")]
         {
-            for cmd in [["stop", "warp-svc"], ["disable", "warp-svc"]] {
-                let _ = std::process::Command::new("systemctl").args(cmd).output();
-            }
-            let _ = std::process::Command::new("pkill").args(["-9", "-f", "warp-svc"]).output();
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                let _ = std::thread::spawn(|| {
+                    let _ = std::process::Command::new("pkill").args(["-9", "-f", "warp-svc"]).output();
+                    for cmd in [["stop", "warp-svc"], ["disable", "warp-svc"]] {
+                        let _ = std::process::Command::new("systemctl").args(cmd).output();
+                    }
+                });
+            });
         }
     }
 
@@ -189,34 +290,10 @@ impl WarpKernel {
         self.warp_hs_ok.store(false, Ordering::Relaxed);
         *self.active_warp_ep.lock().unwrap() = None;
 
-        if config.mode == ProxyMode::Socks5Server && config.socks5_server.is_none() {
-            return Err(ChainError::ValidationError("Missing SOCKS5 server config".into()));
-        }
-        if let Some(ref srv) = config.socks5_server {
-            if srv.port > 0 {
-                srv.validate()?;
-                let listen_addr = SocketAddr::new(srv.listen, srv.port);
-                let std_listener = TcpListener::bind(listen_addr).map_err(|e| {
-                    ChainError::NetworkError(format!("SOCKS5 服务端绑定 {} 失败 (端口可能已被占用): {}", listen_addr, e))
-                })?;
-                std_listener
-                    .set_nonblocking(true)
-                    .map_err(|e| ChainError::NetworkError(format!("SOCKS5 set_nonblocking failed: {}", e)))?;
-                let tokio_listener = tokio::net::TcpListener::from_std(std_listener)
-                    .map_err(|e| ChainError::NetworkError(format!("SOCKS5 tokio listener failed: {}", e)))?;
-                self.running.store(true, Ordering::SeqCst);
-                let (running, tx, rx) = (self.running.clone(), self.vpn1_tx.clone(), self.vpn1_rx.clone());
-                let users = srv.users.clone();
-                let h = tokio::spawn(async move {
-                    let _ = run_native_socks5_server(tokio_listener, users, running, tx, rx).await;
-                });
-                self.tokio_abort_handles.push(h.abort_handle());
-                info!("Sooya native SOCKS5 server listening on {}", listen_addr);
-                if config.mode == ProxyMode::Socks5Server {
-                    self.vpn1_hs_ok.store(true, Ordering::Relaxed);
-                    return Ok(());
-                }
-            }
+        if config.mode == ProxyMode::Socks5Server {
+            self.running.store(true, Ordering::SeqCst);
+            self.vpn1_hs_ok.store(true, Ordering::Relaxed);
+            return Ok(());
         }
 
         let host_ipv4 = local_ip_str.parse::<Ipv4Addr>().unwrap_or(TUN_IPV4);
@@ -260,11 +337,13 @@ impl WarpKernel {
 
         if config.mode == ProxyMode::WgChainWarp {
             if let Ok(h1) = spawn_probe_http_listener(TEST_VPN1_PORT, ProbeTarget::Vpn1, probe_tx.clone(), self.running.clone()) {
+                self.probe_ports.push(TEST_VPN1_PORT);
                 self.workers.push(h1);
             }
         }
         let main_target = if config.mode == ProxyMode::StandaloneWg { ProbeTarget::Vpn1 } else { ProbeTarget::Warp };
         if let Ok(h2) = spawn_probe_http_listener(TEST_WARP_PORT, main_target, probe_tx, self.running.clone()) {
+            self.probe_ports.push(TEST_WARP_PORT);
             self.workers.push(h2);
         }
 
@@ -295,11 +374,8 @@ impl WarpKernel {
 
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
-        for abort in self.tokio_abort_handles.drain(..) {
-            abort.abort();
-        }
-        for port in [TEST_VPN1_PORT, TEST_WARP_PORT] {
-            let _ = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(10));
+        for port in self.probe_ports.drain(..) {
+            let _ = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(5));
         }
         for handle in self.workers.drain(..) {
             let _ = handle.join();
@@ -319,21 +395,24 @@ fn spawn_probe_http_listener(
     probe_tx: mpsc::SyncSender<ProbeJob>,
     running: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>> {
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .map_err(|e| ChainError::NetworkError(format!("Probe bind 127.0.0.1:{} failed: {}", port, e)))?;
+    let listener = bind_reusable_tcp_listener(SocketAddr::from(([127, 0, 0, 1], port)))?;
     std::thread::Builder::new()
         .name(format!("sooya-probe-{}", port))
         .spawn(move || {
             for stream_res in listener.incoming() {
                 if !running.load(Ordering::Relaxed) { break; }
                 let Ok(mut stream) = stream_res else { continue };
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
-                let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
+                if !running.load(Ordering::Relaxed) { break; }
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(1200)));
+                let _ = stream.set_write_timeout(Some(Duration::from_millis(1200)));
                 let mut req = [0u8; 512];
-                if stream.read(&mut req).unwrap_or(0) == 0 || !running.load(Ordering::Relaxed) { continue; }
+                if stream.read(&mut req).unwrap_or(0) == 0 || !running.load(Ordering::Relaxed) {
+                    if !running.load(Ordering::Relaxed) { break; }
+                    continue;
+                }
                 let (reply_tx, reply_rx) = mpsc::sync_channel(1);
                 if probe_tx.send(ProbeJob { target, reply_tx }).is_err() { break; }
-                let (status, body) = match reply_rx.recv_timeout(Duration::from_millis(5500)) {
+                let (status, body) = match reply_rx.recv_timeout(Duration::from_millis(4000)) {
                     Ok(Ok(b)) => ("200 OK", b),
                     Ok(Err(e)) => ("502 Bad Gateway", e),
                     Err(_) => ("504 Gateway Timeout", "Probe timeout".to_string()),
@@ -591,7 +670,7 @@ fn run_kernel_packet_loop(
 
         let all_ready = vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(true)
             && warp_tunnel.as_ref().map(|w| w.has_session()).unwrap_or(true);
-        poll_fds(tun_fd, &udp_sock, if !all_ready || !active_probes.is_empty() { 25 } else { 250 });
+        poll_fds(tun_fd, &udp_sock, if !all_ready || !active_probes.is_empty() { 10 } else { 20 });
 
         for _ in 0..64 {
             let Ok((udp_len, src_addr)) = udp_sock.recv_from(&mut udp_buf) else { break };
@@ -732,10 +811,55 @@ fn run_kernel_packet_loop(
     close_tun(tun_fd);
 }
 
+fn bind_reusable_tcp_listener(listen_addr: SocketAddr) -> Result<TcpListener> {
+    let mut last_err = None;
+    for attempt in 0..30 {
+        match TcpListener::bind(listen_addr) {
+            Ok(l) => return Ok(l),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < 29 {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+    }
+    Err(ChainError::NetworkError(format!(
+        "SOCKS5 服务端绑定 {} 失败 (端口可能已被其他程序占用): {}",
+        listen_addr,
+        last_err.unwrap()
+    )))
+}
+
+async fn resolve_socks5_target(target: &str) -> Option<Vec<SocketAddr>> {
+    if let Ok(sa) = target.parse::<SocketAddr>() {
+        return Some(vec![sa]);
+    }
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(target).await.ok()?.collect();
+    if addrs.is_empty() {
+        return None;
+    }
+    // Always prioritize IPv4 so outbound connections route through the IPv4 WireGuard/WARP tunnel
+    let mut v4: Vec<SocketAddr> = addrs.iter().copied().filter(|a| a.is_ipv4()).collect();
+    let v6: Vec<SocketAddr> = addrs.into_iter().filter(|a| a.is_ipv6()).collect();
+    v4.extend(v6);
+    Some(v4)
+}
+
+#[cfg(target_os = "linux")]
+fn set_client_direct_mark(fd: i32) {
+    use crate::network::iproute::MARK_PHYSICAL_DIRECT;
+    let mark: u32 = MARK_PHYSICAL_DIRECT;
+    unsafe {
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_MARK, &mark as *const _ as *const _, 4);
+    }
+}
+
 async fn run_native_socks5_server(
     listener: tokio::net::TcpListener,
     users: Vec<Socks5User>,
     running: Arc<AtomicBool>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     tx_counter: Arc<AtomicU64>,
     rx_counter: Arc<AtomicU64>,
 ) -> Result<()> {
@@ -748,11 +872,25 @@ async fn run_native_socks5_server(
         .collect();
     let users = Arc::new(active_users);
 
-    while running.load(Ordering::Relaxed) {
-        let Ok((mut client, _)) = listener.accept().await else { break };
+    loop {
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
+        let accept_res = tokio::select! {
+            biased;
+            _ = shutdown_rx.changed() => break,
+            res = listener.accept() => res,
+        };
+        let Ok((mut client, _)) = accept_res else { break };
         let (users, tx_c, rx_c) = (users.clone(), tx_counter.clone(), rx_counter.clone());
         tokio::spawn(async move {
             let _ = client.set_nodelay(true);
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::io::AsRawFd;
+                set_client_direct_mark(client.as_raw_fd());
+            }
+
             let mut b = [0u8; 512];
             if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x05 { return; }
             let nm = b[1] as usize;
@@ -818,11 +956,101 @@ async fn run_native_socks5_server(
                     return;
                 }
             };
+
+            if cmd == 0x03 {
+                // SOCKS5 UDP Associate
+                let local_ip = client
+                    .local_addr()
+                    .map(|a| match a.ip() {
+                        IpAddr::V4(v4) => v4,
+                        IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
+                    })
+                    .unwrap_or(Ipv4Addr::UNSPECIFIED);
+                let Ok(client_udp) = tokio::net::UdpSocket::bind(SocketAddr::new(IpAddr::V4(local_ip), 0)).await else {
+                    let _ = client.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+                    return;
+                };
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    set_client_direct_mark(client_udp.as_raw_fd());
+                }
+                let Ok(up_udp) = tokio::net::UdpSocket::bind("0.0.0.0:0").await else {
+                    let _ = client.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+                    return;
+                };
+                let bound_port = client_udp.local_addr().map(|a| a.port()).unwrap_or(0);
+                let mut reply = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+                reply[4..8].copy_from_slice(&local_ip.octets());
+                reply[8..10].copy_from_slice(&bound_port.to_be_bytes());
+                if client.write_all(&reply).await.is_err() {
+                    return;
+                }
+
+                let mut c_buf = [0u8; 2048];
+                let mut u_buf = [0u8; 2048];
+                let mut tcp_eof = [0u8; 16];
+                let mut last_c_addr: Option<SocketAddr> = None;
+                loop {
+                    tokio::select! {
+                        res = client.read(&mut tcp_eof) => {
+                            if res.unwrap_or(0) == 0 { break; }
+                        }
+                        Ok((n, c_addr)) = client_udp.recv_from(&mut c_buf) => {
+                            if n <= 10 || c_buf[2] != 0 { continue; }
+                            last_c_addr = Some(c_addr);
+                            let (dst_str, hdr_len) = match c_buf[3] {
+                                0x01 if n > 10 => (
+                                    format!("{}:{}", Ipv4Addr::new(c_buf[4], c_buf[5], c_buf[6], c_buf[7]), u16::from_be_bytes([c_buf[8], c_buf[9]])),
+                                    10usize,
+                                ),
+                                0x03 if n > 5 => {
+                                    let dl = c_buf[4] as usize;
+                                    if n <= 7 + dl { continue; }
+                                    (
+                                        format!("{}:{}", String::from_utf8_lossy(&c_buf[5..5 + dl]), u16::from_be_bytes([c_buf[5 + dl], c_buf[6 + dl]])),
+                                        7 + dl,
+                                    )
+                                }
+                                _ => continue,
+                            };
+                            if let Some(addrs) = resolve_socks5_target(&dst_str).await {
+                                if let Some(sa) = addrs.first() {
+                                    let payload = &c_buf[hdr_len..n];
+                                    if up_udp.send_to(payload, sa).await.is_ok() {
+                                        tx_c.fetch_add(payload.len() as u64, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                        }
+                        Ok((n, r_addr)) = up_udp.recv_from(&mut u_buf) => {
+                            if let (Some(c_addr), IpAddr::V4(rv4)) = (last_c_addr, r_addr.ip()) {
+                                let mut out = Vec::with_capacity(10 + n);
+                                out.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                                out.extend_from_slice(&rv4.octets());
+                                out.extend_from_slice(&r_addr.port().to_be_bytes());
+                                out.extend_from_slice(&u_buf[..n]);
+                                if client_udp.send_to(&out, c_addr).await.is_ok() {
+                                    rx_c.fetch_add(n as u64, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+
             if cmd != 0x01 {
                 let _ = client.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
                 return;
             }
-            match tokio::time::timeout(Duration::from_secs(10), TokioStream::connect(&target)).await {
+
+            let Some(addrs) = resolve_socks5_target(&target).await else {
+                let _ = client.write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+                return;
+            };
+
+            match tokio::time::timeout(Duration::from_secs(10), TokioStream::connect(&addrs[..])).await {
                 Ok(Ok(mut up)) => {
                     let _ = up.set_nodelay(true);
                     if client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.is_ok() {

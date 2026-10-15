@@ -271,26 +271,36 @@ impl IpRouteManager {
 
     /// Clean up any stale Sooya policy rules (proto 186 / table 2023 / prio 70..121) and orphaned chain0 device
     pub fn cleanup_stale() {
+        const OUR_PRIOS: &[&str] = &["70", "80", "85", "90", "100", "101", "120", "121"];
+        let mut batch_cmds: Vec<Vec<String>> = Vec::new();
         for family in ["-4", "-6"] {
-            let _ = Self::run(&[family, "route", "flush", "table", "2023"]);
-            for prio in ["70", "80", "85", "90", "100", "101", "120", "121"] {
-                for _ in 0..32 {
-                    if Self::run(&[family, "rule", "del", "priority", prio]).is_err() {
-                        break;
+            batch_cmds.push(vec![
+                family.into(),
+                "route".into(),
+                "flush".into(),
+                "table".into(),
+                "2023".into(),
+            ]);
+            if let Ok(out) = Self::run(&[family, "rule", "show"]) {
+                for line in out.lines() {
+                    let Some((prio_str, rest)) = line.split_once(':') else { continue };
+                    let p = prio_str.trim();
+                    if OUR_PRIOS.contains(&p)
+                        || rest.contains("lookup 2023")
+                        || rest.contains("proto 186")
+                    {
+                        batch_cmds.push(vec![
+                            family.into(),
+                            "rule".into(),
+                            "del".into(),
+                            "priority".into(),
+                            p.into(),
+                        ]);
                     }
                 }
             }
-            for _ in 0..16 {
-                if Self::run(&[family, "rule", "del", "table", "2023"]).is_err() {
-                    break;
-                }
-            }
-            for _ in 0..16 {
-                if Self::run(&[family, "rule", "del", "protocol", ROUTE_PROTOCOL]).is_err() {
-                    break;
-                }
-            }
         }
+        let _ = Self::run_batch(&batch_cmds, true);
         if Self::interface_exists("chain0") {
             let _ = Self::run(&["link", "del", "dev", "chain0"]);
         }

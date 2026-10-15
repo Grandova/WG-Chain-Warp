@@ -51,6 +51,14 @@ pub struct ChainStatus {
     pub vpn2: VpnHopStatus,
     pub final_hop: FinalHopStatus,
     pub chain_visual: String,
+    #[serde(default)]
+    pub socks5_running: bool,
+    #[serde(default)]
+    pub socks5_listen: Option<String>,
+    #[serde(default)]
+    pub socks5_tx: u64,
+    #[serde(default)]
+    pub socks5_rx: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -66,6 +66,8 @@ fn build_core_routes() -> Router<AppState> {
         .route("/api/v1/config/apply", post(apply_config_handler))
         .route("/api/v1/config/test", post(test_config_handler))
         .route("/api/v1/stop", post(stop_handler))
+        .route("/api/v1/socks5/apply", post(socks5_apply_handler))
+        .route("/api/v1/socks5/stop", post(socks5_stop_handler))
         .route("/api/v1/warp/register", post(warp_register_handler))
         .route("/api/v1/logs", get(logs_handler))
         .route("/api/v1/log_level", post(set_log_level_handler))
@@ -186,6 +188,8 @@ async fn panel_get_config_handler(
         StatusCode::OK,
         Json(ApiResponse::ok(serde_json::json!({
             "status": status.state,
+            "socks5_running": status.socks5_running,
+            "socks5_listen": status.socks5_listen,
             "active_version": status.active_config_version,
             "config": cfg,
         }))),
@@ -479,10 +483,52 @@ async fn test_config_handler(State(state): State<AppState>) -> Json<ApiResponse<
     Json(ApiResponse::ok(report))
 }
 
-async fn stop_handler(State(state): State<AppState>) -> (StatusCode, Json<ApiResponse<String>>) {
+#[derive(Deserialize, Default)]
+struct StopPayload {
+    #[serde(default)]
+    all: bool,
+}
+
+async fn stop_handler(
+    State(state): State<AppState>,
+    payload: Option<Json<StopPayload>>,
+) -> (StatusCode, Json<ApiResponse<String>>) {
+    let stop_all = payload.map(|Json(p)| p.all).unwrap_or(false);
     let mut engine = state.engine.lock().await;
-    match engine.stop() {
+    let res = if stop_all {
+        let r = engine.stop_tunnel();
+        let _ = engine.stop_socks5();
+        r
+    } else {
+        engine.stop()
+    };
+    match res {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::ok("Stopped cleanly".to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(e.to_string()))),
+    }
+}
+
+#[derive(Deserialize)]
+struct Socks5ApplyPayload {
+    socks5_server: crate::model::config::Socks5ServerConfig,
+}
+
+async fn socks5_apply_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<Socks5ApplyPayload>,
+) -> (StatusCode, Json<ApiResponse<String>>) {
+    match state.reader.start_socks5(payload.socks5_server.clone()) {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(format!("{}:{}", payload.socks5_server.listen, payload.socks5_server.port))),
+        ),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(e.to_string()))),
+    }
+}
+
+async fn socks5_stop_handler(State(state): State<AppState>) -> (StatusCode, Json<ApiResponse<String>>) {
+    match state.reader.stop_socks5() {
+        Ok(_) => (StatusCode::OK, Json(ApiResponse::ok("SOCKS5 server stopped".to_string()))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(e.to_string()))),
     }
 }
