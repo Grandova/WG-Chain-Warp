@@ -1,4 +1,4 @@
-# Sooya (`v1.6.2`)
+# Sooya (`v1.6.3`)
 
 > **极致轻量、纯 Rust 原生内核的 Linux 链式 WireGuard + WARP + SOCKS5 出站代理面板**  
 > 一键将自建/商业 WireGuard 或 SOCKS5 节点与 Cloudflare WARP 串联或独立出站；支持**本机 SOCKS5 服务端与任意 WireGuard/WARP 出站节点同时开启**，让其他设备连接本机 SOCKS5 即可直接共享当前 WireGuard/WARP 出站线路！  
@@ -49,9 +49,13 @@ curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/install
 1. **毫秒级节点启停与丝滑交互体验**
    - **秒开零等待**：启用 WireGuard 或 WARP 出站节点时，内核完成 TUN 网卡与批处理策略路由挂载后**立即返回（< 150ms）**，出口 IP 与地理位置归属在后台异步探测并自动回填，告别漫长的“正在握手”阻塞等待。
    - **乐观 UI 即时响应 (`0ms`)**：点击顶部全局模式切换按钮或节点列表开关时，界面开关与模式高亮 `0ms` 即时响应，切换节点模式无需重新销毁表格 DOM，杜绝任何闪烁与卡顿。
-   - **单请求极速首屏 (`/panel/api/bootstrap`)**：首帧 `0ms` 本地缓存水合，单次请求聚合加载全部状态，支持深色/浅色主题一键切换。
+   - **单请求极速首屏 (`/panel/api/bootstrap`)**：单次请求聚合加载服务端权威状态，支持深色/浅色主题一键切换。
 
-2. **全局模式一键切换 & 5 大出站模式 + 并行 SOCKS5 服务端**
+2. **IDC 多租户 LXC / Incus 多实例完全隔离**
+   - **实例级独立 Session Cookie (`sooya_session_<instance_id>`)**：每个实例自动生成并持久化唯一 `instance_id`，彻底解决同一公网 IP 不同 DNAT 端口下多个容器面板登录互踢问题；克隆容器时通过 `host_fingerprint` 自动识别并轮换会话标识。
+   - **服务端唯一权威数据源 (`/var/lib/sooya/outbounds.json`)**：节点列表完全由服务端持久化，前端绝不缓存 WireGuard 私钥或将浏览器旧缓存写回新实例，彻底杜绝跨实例节点污染与已删除节点复活。
+
+3. **全局模式一键切换 & 5 大出站模式 + 并行 SOCKS5 服务端**
    - **`🛡️ 仅 WireGuard 出站` (`standalone_wg`)**：本机主动出站流量与全量 DNS 直接走您配置的 WireGuard 节点出站（解决就近 CDN 解析，杜绝 DNS 泄露与回环绕路）。
    - **`🔗 WG + WARP 链式出站` (`wg_chain_warp`)**：`VPS -> 前置 WireGuard -> Cloudflare WARP -> 目标公网`，在出站列表中可直接下拉一键切换「仅 WG 直出」或「WG + WARP 链式」并立即生效。
    - **`☁️ 仅 WARP 免配置出站` (`standalone_warp`)**：零配置自动向 Cloudflare 注册免费 WARP 密钥并优选低延迟 Anycast 端点。
@@ -60,7 +64,7 @@ curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/install
      - 独立守护运行，开关耗时 **< 2ms**，绝不打断正在运行的 WireGuard / WARP 隧道。
      - **共享出站能力**：当与 `WireGuard` 或 `WARP` 同时开启时，外部设备连接本机 SOCKS5 服务端（支持 TCP `CONNECT` 与 UDP `UDP ASSOCIATE`）的流量与域名解析将**自动走当前启用的 WireGuard / WARP 节点出站**，且回包强制打标 `0x400` 走物理网卡直回客户端，绝不回环！
 
-3. **运行日志与策略路由诊断**
+4. **运行日志与策略路由诊断**
    - 在线查看 `journalctl -u sooya` 实时日志。
    - 一键检查 Linux 策略路由表 (`ip rule` / `table 2023`) 与 `nftables` 防火墙规则。
 

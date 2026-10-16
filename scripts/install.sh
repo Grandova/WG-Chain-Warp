@@ -92,7 +92,7 @@ cleanup_legacy() {
     if [[ -d /var/lib/chainproxy && ! -d /var/lib/sooya ]]; then
         mv /var/lib/chainproxy /var/lib/sooya
     fi
-    mkdir -p /var/lib/sooya/versions
+    mkdir -p /var/lib/sooya
     chmod 700 /var/lib/sooya
 }
 

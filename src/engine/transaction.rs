@@ -766,23 +766,23 @@ impl ChainEngine {
 
     pub fn save_config(&self, mut config: ChainProxyConfig) -> Result<()> {
         if let Some(prev) = self.get_active_config() {
-            if config.vpn1.wireguard_config.trim().is_empty() && !prev.vpn1.wireguard_config.trim().is_empty() {
-                config.vpn1 = prev.vpn1;
-            }
             if config.vpn2.wireguard_config.trim().is_empty() && !prev.vpn2.wireguard_config.trim().is_empty() {
                 config.vpn2 = prev.vpn2;
-            }
-            if config.socks5.is_none() && prev.socks5.is_some() {
-                config.socks5 = prev.socks5;
             }
             if config.socks5_server.is_none() && prev.socks5_server.is_some() {
                 config.socks5_server = prev.socks5_server;
             }
         }
+        self.write_config_file(&config)?;
+        self.backfill_warp_key_in_outbounds(config.vpn2.wireguard_config.trim());
+        Ok(())
+    }
+
+    fn write_config_file(&self, config: &ChainProxyConfig) -> Result<()> {
         std::fs::create_dir_all(&self.base_dir)?;
         let cfg_path = self.base_dir.join("config.json");
         let mut tmp = tempfile::NamedTempFile::new_in(&self.base_dir)?;
-        tmp.write_all(&serde_json::to_vec_pretty(&config)?)?;
+        tmp.write_all(&serde_json::to_vec_pretty(config)?)?;
         tmp.persist(&cfg_path).map_err(|e| e.error)?;
         #[cfg(target_os = "linux")]
         {
@@ -790,112 +790,145 @@ impl ChainEngine {
             let _ = std::fs::set_permissions(&cfg_path, std::fs::Permissions::from_mode(0o600));
         }
         *self.active_config.lock().unwrap() = Some(config.clone());
-        self.sync_config_to_outbounds(&config);
         Ok(())
     }
 
     pub fn get_outbounds(&self) -> serde_json::Value {
         let _guard = self.outbounds_lock.lock().unwrap();
         let path = self.base_dir.join("outbounds.json");
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .filter(|v| v.is_array())
-            .unwrap_or_else(|| serde_json::json!([]))
+
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
+                return serde_json::Value::Array(parsed);
+            }
+        }
+
+        // First-time initialization when outbounds.json does not yet exist:
+        // perform one-time migration if a legacy config.json with a custom node exists.
+        let mut initial = Vec::new();
+        if let Some(cfg) = self.get_active_config() {
+            let wg1 = cfg.vpn1.wireguard_config.trim();
+            if !wg1.is_empty() {
+                let mode_str = if cfg.mode == ProxyMode::WgChainWarp {
+                    "wg_chain_warp"
+                } else {
+                    "standalone_wg"
+                };
+                let remark = if cfg.vpn1.name.trim().is_empty() {
+                    "WireGuard 节点".to_string()
+                } else {
+                    cfg.vpn1.name.clone()
+                };
+                initial.push(serde_json::json!({
+                    "id": "node-migrated-wg",
+                    "remark": remark,
+                    "enabled": false,
+                    "config": {
+                        "mode": mode_str,
+                        "vpn1": cfg.vpn1,
+                        "vpn2": cfg.vpn2,
+                        "routing": cfg.routing,
+                    }
+                }));
+            } else if let Some(ref s5) = cfg.socks5 {
+                if !s5.server.trim().is_empty() {
+                    initial.push(serde_json::json!({
+                        "id": "node-migrated-socks",
+                        "remark": format!("SOCKS5 ({}:{})", s5.server, s5.port),
+                        "enabled": false,
+                        "config": {
+                            "mode": "socks_chain_warp",
+                            "vpn1": cfg.vpn1,
+                            "vpn2": cfg.vpn2,
+                            "socks5": s5,
+                            "routing": cfg.routing,
+                        }
+                    }));
+                }
+            }
+        }
+        let val = serde_json::Value::Array(initial);
+        let _ = self.write_outbounds_locked(&val);
+        val
     }
 
     pub fn save_outbounds(&self, payload: &serde_json::Value) -> Result<()> {
+        let arr = payload
+            .as_array()
+            .ok_or_else(|| ChainError::ValidationError("outbounds payload must be a JSON array".to_string()))?
+            .clone();
         let _guard = self.outbounds_lock.lock().unwrap();
+        let val = serde_json::Value::Array(arr.clone());
+        self.write_outbounds_locked(&val)?;
+
+        // If tunnel is not running and active_config had a WG node that was deleted from outbounds, purge it from config.json
+        if !self.warp_kernel.lock().unwrap().is_running() {
+            if let Some(mut cfg) = self.get_active_config() {
+                let cur_wg = cfg.vpn1.wireguard_config.trim();
+                if !cur_wg.is_empty() {
+                    let still_exists = arr.iter().any(|item| {
+                        item.get("config")
+                            .and_then(|c| c.get("vpn1"))
+                            .and_then(|v| v.get("wireguard_config"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.trim() == cur_wg)
+                            .unwrap_or(false)
+                    });
+                    if !still_exists {
+                        cfg.vpn1 = Default::default();
+                        let _ = self.write_config_file(&cfg);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn write_outbounds_locked(&self, payload: &serde_json::Value) -> Result<()> {
         std::fs::create_dir_all(&self.base_dir)?;
         let path = self.base_dir.join("outbounds.json");
         let mut tmp = tempfile::NamedTempFile::new_in(&self.base_dir)?;
         tmp.write_all(&serde_json::to_vec_pretty(payload)?)?;
         tmp.persist(&path).map_err(|e| e.error)?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 
-    /// Ensure any active WireGuard or WARP credentials applied in `config` are also synced into `outbounds.json`
-    /// without ever deleting or overwriting other saved nodes.
-    fn sync_config_to_outbounds(&self, config: &ChainProxyConfig) {
-        let _guard = self.outbounds_lock.lock().unwrap();
-        let path = self.base_dir.join("outbounds.json");
-        let mut list = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
-            .unwrap_or_default();
-        if list.is_empty() {
+    fn backfill_warp_key_in_outbounds(&self, wg2: &str) {
+        if wg2.is_empty() {
             return;
         }
+        let _guard = self.outbounds_lock.lock().unwrap();
+        let path = self.base_dir.join("outbounds.json");
+        let Ok(raw) = std::fs::read_to_string(&path) else { return };
+        let Ok(mut list) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) else { return };
         let mut changed = false;
-        let wg1 = config.vpn1.wireguard_config.trim();
-        let wg2 = config.vpn2.wireguard_config.trim();
-
         for item in &mut list {
             if let Some(c) = item.get_mut("config").and_then(|v| v.as_object_mut()) {
-                // Backfill auto-registered WARP key into nodes that have empty vpn2
-                if !wg2.is_empty() {
-                    let cur_v2 = c
-                        .get("vpn2")
-                        .and_then(|v| v.get("wireguard_config"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .trim();
-                    if cur_v2.is_empty() {
-                        c.insert(
-                            "vpn2".to_string(),
-                            serde_json::json!({
-                                "name": "Cloudflare WARP",
-                                "wireguard_config": wg2
-                            }),
-                        );
-                        changed = true;
-                    }
-                }
-            }
-        }
-
-        // If config has a WireGuard node not yet present in outbounds.json, append it so it is never lost
-        if !wg1.is_empty() && matches!(config.mode, ProxyMode::StandaloneWg | ProxyMode::WgChainWarp) {
-            let exists = list.iter().any(|item| {
-                item.get("config")
-                    .and_then(|c| c.get("vpn1"))
+                let cur_v2 = c
+                    .get("vpn2")
                     .and_then(|v| v.get("wireguard_config"))
                     .and_then(|v| v.as_str())
-                    .map(|s| s.trim() == wg1)
-                    .unwrap_or(false)
-            });
-            if !exists {
-                let mode_str = if config.mode == ProxyMode::WgChainWarp {
-                    "wg_chain_warp"
-                } else {
-                    "standalone_wg"
-                };
-                let remark = if config.vpn1.name.trim().is_empty() {
-                    "WireGuard 节点".to_string()
-                } else {
-                    config.vpn1.name.clone()
-                };
-                list.push(serde_json::json!({
-                    "id": format!("node-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(1)),
-                    "remark": remark,
-                    "enabled": true,
-                    "config": {
-                        "mode": mode_str,
-                        "vpn1": config.vpn1,
-                        "vpn2": config.vpn2,
-                        "routing": config.routing,
-                    }
-                }));
-                changed = true;
-            }
-        }
-
-        if changed {
-            if let Ok(mut tmp) = tempfile::NamedTempFile::new_in(&self.base_dir) {
-                if tmp.write_all(&serde_json::to_vec_pretty(&list).unwrap_or_default()).is_ok() {
-                    let _ = tmp.persist(&path);
+                    .unwrap_or("")
+                    .trim();
+                if cur_v2.is_empty() {
+                    c.insert(
+                        "vpn2".to_string(),
+                        serde_json::json!({
+                            "name": "Cloudflare WARP",
+                            "wireguard_config": wg2
+                        }),
+                    );
+                    changed = true;
                 }
             }
+        }
+        if changed {
+            let _ = self.write_outbounds_locked(&serde_json::Value::Array(list));
         }
     }
 
@@ -903,3 +936,42 @@ impl ChainEngine {
         &self.base_dir
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_legacy_config_migration_and_deleted_node_never_resurrects() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = ChainEngine::new(dir.path());
+
+        // Simulate a legacy installation that only had config.json with a WG node and no outbounds.json yet
+        let mut legacy_cfg = ChainProxyConfig::default();
+        legacy_cfg.mode = ProxyMode::StandaloneWg;
+        legacy_cfg.vpn1.name = "旧版节点".to_string();
+        legacy_cfg.vpn1.wireguard_config = "[Interface]\nPrivateKey = abc\n[Peer]\nPublicKey = def\nEndpoint = 1.2.3.4:51820".to_string();
+        engine.write_config_file(&legacy_cfg).unwrap();
+
+        // First load migrates legacy node once into outbounds.json
+        let migrated = engine.get_outbounds();
+        let arr = migrated.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["remark"], "旧版节点");
+
+        // User deletes the node -> save_outbounds([])
+        engine.save_outbounds(&serde_json::json!([])).unwrap();
+
+        // Refreshing or restarting engine must NOT resurrect the deleted node from config.json
+        assert_eq!(engine.get_outbounds(), serde_json::json!([]));
+        let restarted_engine = ChainEngine::new(dir.path());
+        assert_eq!(restarted_engine.get_outbounds(), serde_json::json!([]));
+        assert!(restarted_engine
+            .get_active_config()
+            .unwrap()
+            .vpn1
+            .wireguard_config
+            .is_empty());
+    }
+}
+

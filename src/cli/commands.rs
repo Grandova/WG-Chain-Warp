@@ -90,14 +90,20 @@ impl CliHandler {
 
     pub async fn run_client_command(&self, cmd: &Commands, data_dir: &Path) -> Result<()> {
         let client = reqwest::Client::new();
+        let auth_token = PanelSetting::load_or_default(data_dir).session_secret;
 
         match cmd {
             Commands::Setting { port, listen, username, password, base_path, reset, show } => {
-                let mut panel = if *reset {
-                    PanelSetting::default()
-                } else {
-                    PanelSetting::load_or_default(data_dir)
-                };
+                let mut panel = PanelSetting::load_or_default(data_dir);
+                if *reset {
+                    let def = PanelSetting::default();
+                    panel.listen = def.listen;
+                    panel.port = def.port;
+                    panel.base_path = def.base_path;
+                    panel.username = def.username;
+                    panel.password = def.password;
+                    panel.rotate_session_secret();
+                }
 
                 let mut modified = *reset;
                 if let Some(p) = port {
@@ -132,6 +138,7 @@ impl CliHandler {
 
                 if *show || modified {
                     println!("================ Sooya Web 面板当前配置 ================");
+                    println!("实例标识 : {}", panel.instance_id);
                     println!("监听地址 : {}", panel.listen);
                     println!("监听端口 : {}", panel.port);
                     println!("根 路 径 : {}", panel.base_path);
@@ -141,7 +148,7 @@ impl CliHandler {
             }
             Commands::Status => {
                 let url = format!("{}/api/v1/status", self.api_url);
-                match client.get(&url).send().await {
+                match client.get(&url).header("x-sooya-token", &auth_token).send().await {
                     Ok(resp) => {
                         let json: serde_json::Value = resp
                             .json()
@@ -173,7 +180,11 @@ impl CliHandler {
                 println!("✅ Sooya 服务已启动");
             }
             Commands::Stop => {
-                let _ = client.post(format!("{}/api/v1/stop", self.api_url)).send().await;
+                let _ = client
+                    .post(format!("{}/api/v1/stop", self.api_url))
+                    .header("x-sooya-token", &auth_token)
+                    .send()
+                    .await;
                 println!("✅ 代理链路已停止，宿主机网络已恢复");
             }
             Commands::Restart => {
@@ -198,7 +209,11 @@ impl CliHandler {
                     .status();
             }
             Commands::Uninstall => {
-                let _ = client.post(format!("{}/api/v1/stop", self.api_url)).send().await;
+                let _ = client
+                    .post(format!("{}/api/v1/stop", self.api_url))
+                    .header("x-sooya-token", &auth_token)
+                    .send()
+                    .await;
                 let _ = Command::new("systemctl").args(["stop", "sooya"]).status();
                 let _ = Command::new("systemctl").args(["disable", "sooya"]).status();
                 let _ = fs::remove_file("/etc/systemd/system/sooya.service");
@@ -210,7 +225,7 @@ impl CliHandler {
             }
             Commands::Logs => {
                 let url = format!("{}/api/v1/logs", self.api_url);
-                if let Ok(resp) = client.get(&url).send().await {
+                if let Ok(resp) = client.get(&url).header("x-sooya-token", &auth_token).send().await {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                         if let Some(logs) = json.get("data").and_then(|d| d.as_str()) {
                             println!("{}", logs);

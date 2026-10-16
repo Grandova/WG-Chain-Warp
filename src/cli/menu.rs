@@ -122,8 +122,18 @@ impl ConsoleMenu {
         println!(" {}13.{} 取消 Sooya 开机自启", GREEN, RESET);
     }
 
+    fn auth_token(&self) -> String {
+        PanelSetting::load_or_default(&self.data_dir).session_secret
+    }
+
     async fn fetch_status(&self) -> Option<ChainStatus> {
-        let resp = self.client.get(format!("{}/api/v1/status", self.api_url)).send().await.ok()?;
+        let resp = self
+            .client
+            .get(format!("{}/api/v1/status", self.api_url))
+            .header("x-sooya-token", self.auth_token())
+            .send()
+            .await
+            .ok()?;
         let json: serde_json::Value = resp.json().await.ok()?;
         serde_json::from_value(json.get("data")?.clone()).ok()
     }
@@ -145,7 +155,12 @@ impl ConsoleMenu {
     async fn uninstall_sooya(&self) -> Result<()> {
         let confirm = self.prompt("\n确定要卸载面板吗，代理规则也将自动恢复? [y/N]: ")?;
         if confirm.trim().eq_ignore_ascii_case("y") {
-            let _ = self.client.post(format!("{}/api/v1/stop", self.api_url)).send().await;
+            let _ = self
+                .client
+                .post(format!("{}/api/v1/stop", self.api_url))
+                .header("x-sooya-token", self.auth_token())
+                .send()
+                .await;
             let _ = Command::new("systemctl").args(["stop", "sooya"]).status();
             let _ = Command::new("systemctl").args(["disable", "sooya"]).status();
             let _ = std::fs::remove_file("/etc/systemd/system/sooya.service");
@@ -173,7 +188,12 @@ impl ConsoleMenu {
 
     async fn stop_panel_service(&self) -> Result<()> {
         println!("\n正在停止代理链路并恢复宿主机原始网络...");
-        let _ = self.client.post(format!("{}/api/v1/stop", self.api_url)).send().await;
+        let _ = self
+            .client
+            .post(format!("{}/api/v1/stop", self.api_url))
+            .header("x-sooya-token", self.auth_token())
+            .send()
+            .await;
         println!("正在停止 Sooya 守护服务...");
         let _ = Command::new("systemctl").args(["stop", "sooya"]).status();
         println!("{}✅ 停止成功，原始网络已恢复。{}", GREEN, RESET);
@@ -262,6 +282,7 @@ impl ConsoleMenu {
 
     fn show_panel_access_info(&self, panel: &PanelSetting, host_ip: &str) -> Result<()> {
         println!("\n================ Sooya 当前面板设置 ================");
+        println!(" 实例唯一标识 : {}", panel.instance_id);
         println!(" 面板访问地址 : {}http://{}:{}{}{}", GREEN, host_ip, panel.port, panel.base_path, RESET);
         println!(" 面板监听地址 : {}:{}", panel.listen, panel.port);
         println!(" 面板根路径   : {}", panel.base_path);
@@ -274,7 +295,15 @@ impl ConsoleMenu {
     async fn reset_panel_settings(&self) -> Result<()> {
         let confirm = self.prompt("\n确定要将所有面板设置重置为默认值吗（端口 54321，账号密码 admin）？[y/N]: ")?;
         if confirm.trim().eq_ignore_ascii_case("y") {
-            PanelSetting::default().save(&self.data_dir)?;
+            let mut panel = PanelSetting::load_or_default(&self.data_dir);
+            let def = PanelSetting::default();
+            panel.listen = def.listen;
+            panel.port = def.port;
+            panel.base_path = def.base_path;
+            panel.username = def.username;
+            panel.password = def.password;
+            panel.rotate_session_secret();
+            panel.save(&self.data_dir)?;
             let _ = Command::new("systemctl").args(["restart", "sooya"]).status();
             println!("{}✅ 所有面板设置已重置为默认值，请使用默认端口 54321 访问。{}", GREEN, RESET);
         }
@@ -282,7 +311,13 @@ impl ConsoleMenu {
     }
 
     async fn view_logs(&self) -> Result<()> {
-        if let Ok(resp) = self.client.get(format!("{}/api/v1/logs", self.api_url)).send().await {
+        if let Ok(resp) = self
+            .client
+            .get(format!("{}/api/v1/logs", self.api_url))
+            .header("x-sooya-token", self.auth_token())
+            .send()
+            .await
+        {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 if let Some(logs) = json.get("data").and_then(|d| d.as_str()) {
                     println!("\n{}", logs);

@@ -465,7 +465,7 @@ html.light .ring-bg { stroke: #ececf0; }
         <div>
           <div class="brand-title">
             <span>Sooya 面板</span>
-            <span class="brand-ver" id="siderVersion">v1.6.2</span>
+            <span class="brand-ver" id="siderVersion">v1.6.3</span>
           </div>
           <div style="font-size:11.5px;color:var(--muted);">仅接管出站 (0x800) · 入站 100% 原路返回</div>
         </div>
@@ -1121,27 +1121,16 @@ function getEndpointSummary(item) {
 let persistQueue = Promise.resolve();
 let switchSeq = 0;
 
-function getDeletedIds() {
-  try { return new Set(JSON.parse(localStorage.getItem('sooya_deleted_ids') || '[]')); } catch (_) { return new Set(); }
-}
-function markDeletedId(id, wgConf) {
-  const s = getDeletedIds();
-  if (id) s.add(id);
-  if (wgConf) s.add('wg:' + wgConf.trim());
-  try { localStorage.setItem('sooya_deleted_ids', JSON.stringify([...s])); } catch (_) {}
-}
-function unmarkDeletedWg(wgConf) {
-  if (!wgConf) return;
-  const s = getDeletedIds();
-  if (s.delete('wg:' + wgConf.trim())) {
-    try { localStorage.setItem('sooya_deleted_ids', JSON.stringify([...s])); } catch (_) {}
-  }
+function purgeLegacyLocalNodeCache() {
+  try {
+    localStorage.removeItem('sooya_outbounds_v2');
+    localStorage.removeItem('sooya_deleted_ids');
+  } catch (_) {}
 }
 
 function persistOutbounds() {
   outbounds.forEach(o => { if (o.config) o.config.mode = normalizeMode(o.config.mode); });
   const snapshot = JSON.parse(JSON.stringify(outbounds));
-  try { localStorage.setItem('sooya_outbounds_v2', JSON.stringify(snapshot)); } catch (_) {}
   persistQueue = persistQueue
     .then(() => api('./panel/api/outbounds', 'POST', snapshot))
     .catch(() => {});
@@ -1186,43 +1175,21 @@ function ensureBuiltinItems() {
   }
 }
 
-function hydrateFromLocalCache() {
-  try {
-    const cached = JSON.parse(localStorage.getItem('sooya_outbounds_v2') || '[]');
-    if (Array.isArray(cached) && cached.length > 0) {
-      outbounds = cached;
-      outbounds.forEach(o => { if (o.config) o.config.mode = normalizeMode(o.config.mode); });
-    }
-  } catch (_) {}
-  ensureBuiltinItems();
-  renderOutboundTable();
-}
-
 async function bootstrapDashboard() {
   try {
     const boot = await api('./panel/api/bootstrap');
-    const deleted = getDeletedIds();
-    const localList = [...outbounds];
     const serverList = Array.isArray(boot.outbounds) ? boot.outbounds : [];
 
-    // Merge server outbounds + local cache without losing any custom WG/SOCKS5 node
-    const merged = [];
+    // Authoritative server state ONLY: never merge browser localStorage or synthesize stale nodes
     const seenIds = new Set();
-    const seenWg = new Set();
-
-    for (const src of [serverList, localList]) {
-      for (const item of src) {
-        if (!item || !item.id || deleted.has(item.id)) continue;
-        if (item.config) item.config.mode = normalizeMode(item.config.mode);
-        const wg = (item.config?.vpn1?.wireguard_config || '').trim();
-        if (wg && deleted.has('wg:' + wg)) continue;
-        if (seenIds.has(item.id) || (wg && seenWg.has(wg))) continue;
-        seenIds.add(item.id);
-        if (wg) seenWg.add(wg);
-        merged.push(item);
-      }
+    const authoritative = [];
+    for (const item of serverList) {
+      if (!item || !item.id || seenIds.has(item.id)) continue;
+      if (item.config) item.config.mode = normalizeMode(item.config.mode);
+      seenIds.add(item.id);
+      authoritative.push(item);
     }
-    outbounds = merged;
+    outbounds = authoritative;
     ensureBuiltinItems();
 
     const ch = boot.chain || {};
@@ -1232,24 +1199,9 @@ async function bootstrapDashboard() {
     const isSocks5Running = !!ch.socks5_running;
     lastChainStatus = ch;
 
-    // Recover WG or SOCKS5 node from config.json if not yet in outbounds list
     const savedWg = (c.vpn1?.wireguard_config || '').trim();
-    if (savedWg && !deleted.has('wg:' + savedWg) && !outbounds.some(o => (o.config?.vpn1?.wireguard_config || '').trim() === savedWg)) {
-      const wgMode = (c.mode === 'wg_chain_warp') ? 'wg_chain_warp' : 'standalone_wg';
-      outbounds.push({
-        id: 'node-' + Date.now(),
-        remark: c.vpn1?.name || 'WireGuard 节点',
-        enabled: isTunnelRunning && (c.mode === 'standalone_wg' || c.mode === 'wg_chain_warp'),
-        config: {
-          mode: wgMode,
-          vpn1: { name: c.vpn1?.name || 'WireGuard 节点', wireguard_config: savedWg },
-          vpn2: c.vpn2 || { name: 'Cloudflare WARP', wireguard_config: '' },
-          routing: c.routing || { proxy_host_outbound: true, preserve_inbound_connections: true, connection_mark: '0x88', ipv6: false }
-        }
-      });
-    }
 
-    // Sync active enabled states WITHOUT overwriting any node's saved config
+    // Sync active runtime status into UI memory without mutating or POSTing server outbounds
     const targetS5 = findSocks5Item();
     let matchedTunnel = false;
     for (const o of outbounds) {
@@ -1286,7 +1238,6 @@ async function bootstrapDashboard() {
       }
     }
 
-    persistOutbounds();
     applyStatusToDom(boot.system || {}, ch);
 
     const s = boot.setting || {};
@@ -1853,13 +1804,12 @@ async function deleteOutbound(id) {
   const item = outbounds.find(o => o.id === id);
   if (!item) return;
   if (!confirm(`确定删除「${item.remark}」吗？`)) return;
-  markDeletedId(item.id, item.config?.vpn1?.wireguard_config);
   if (item.enabled && lastChainStatus?.state === 'Running') {
     await onToggleOutbound(id, false);
   }
   outbounds = outbounds.filter(o => o.id !== id);
   ensureBuiltinItems();
-  persistOutbounds();
+  await persistOutbounds();
   renderOutboundTable();
 }
 
@@ -1956,7 +1906,6 @@ async function saveOutboundFromModal(applyNow) {
       return;
     }
   }
-  unmarkDeletedWg(cfg.vpn1?.wireguard_config);
   const editId = document.getElementById('editId').value;
   let targetId = editId;
   if (editId) {
@@ -1969,7 +1918,7 @@ async function saveOutboundFromModal(applyNow) {
       item.config = cfg;
     }
   } else {
-    targetId = 'node-' + Date.now();
+    targetId = 'node-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
     outbounds.push({ id: targetId, remark, enabled: false, config: cfg });
   }
   await persistOutbounds();
@@ -2069,7 +2018,8 @@ async function updateUserCreds() {
       new_username: document.getElementById('newUser').value.trim(),
       new_password: document.getElementById('newPass').value
     });
-    showAlert(msg, 'success');
+    showAlert(msg + '，即将跳转重新登录', 'success');
+    setTimeout(() => { window.location.href = './login'; }, 800);
   } catch (e) { showAlert(e.message, 'error'); }
 }
 
@@ -2118,7 +2068,9 @@ async function doLogout() {
 window.addEventListener('DOMContentLoaded', () => {
   const actTab = document.querySelector('.nav-tab.active');
   if (actTab) moveNavIndicator(actTab);
-  hydrateFromLocalCache();
+  purgeLegacyLocalNodeCache();
+  ensureBuiltinItems();
+  renderOutboundTable();
   bootstrapDashboard();
   setInterval(() => refreshStatus(false), 3000);
 });
