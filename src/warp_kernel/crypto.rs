@@ -156,9 +156,13 @@ fn chacha_qr(s: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
     s[c] = s[c].wrapping_add(s[d]); s[b] = (s[b] ^ s[c]).rotate_left(7);
 }
 
-fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
+#[inline(always)]
+fn chacha_init_state(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u32; 16] {
     let mut s = [0u32; 16];
-    s[0..4].copy_from_slice(&[0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574]);
+    s[0] = 0x6170_7865;
+    s[1] = 0x3320_646e;
+    s[2] = 0x7962_2d32;
+    s[3] = 0x6b20_6574;
     for i in 0..8 {
         s[4 + i] = u32::from_le_bytes([key[i * 4], key[i * 4 + 1], key[i * 4 + 2], key[i * 4 + 3]]);
     }
@@ -166,25 +170,56 @@ fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
     s[13] = u32::from_le_bytes([nonce[0], nonce[1], nonce[2], nonce[3]]);
     s[14] = u32::from_le_bytes([nonce[4], nonce[5], nonce[6], nonce[7]]);
     s[15] = u32::from_le_bytes([nonce[8], nonce[9], nonce[10], nonce[11]]);
-    let init = s;
+    s
+}
+
+#[inline(always)]
+fn chacha_rounds(init: &[u32; 16]) -> [u32; 16] {
+    let mut s = *init;
     for _ in 0..10 {
         chacha_qr(&mut s, 0, 4, 8, 12); chacha_qr(&mut s, 1, 5, 9, 13);
         chacha_qr(&mut s, 2, 6, 10, 14); chacha_qr(&mut s, 3, 7, 11, 15);
         chacha_qr(&mut s, 0, 5, 10, 15); chacha_qr(&mut s, 1, 6, 11, 12);
         chacha_qr(&mut s, 2, 7, 8, 13); chacha_qr(&mut s, 3, 4, 9, 14);
     }
-    let mut out = [0u8; 64];
     for i in 0..16 {
-        out[i * 4..i * 4 + 4].copy_from_slice(&s[i].wrapping_add(init[i]).to_le_bytes());
+        s[i] = s[i].wrapping_add(init[i]);
     }
-    out
+    s
 }
 
-fn chacha20_xor(key: &[u8; 32], mut counter: u32, nonce: &[u8; 12], data: &mut [u8]) {
+fn chacha20_otk(key: &[u8; 32], nonce: &[u8; 12]) -> [u8; 32] {
+    let words = chacha_rounds(&chacha_init_state(key, 0, nonce));
+    let mut otk = [0u8; 32];
+    for i in 0..8 {
+        otk[i * 4..i * 4 + 4].copy_from_slice(&words[i].to_le_bytes());
+    }
+    otk
+}
+
+fn chacha20_xor(key: &[u8; 32], counter: u32, nonce: &[u8; 12], data: &mut [u8]) {
+    let mut state = chacha_init_state(key, counter, nonce);
     for chunk in data.chunks_mut(64) {
-        let block = chacha20_block(key, counter, nonce);
-        for (b, k) in chunk.iter_mut().zip(block.iter()) { *b ^= *k; }
-        counter = counter.wrapping_add(1);
+        let ks = chacha_rounds(&state);
+        if chunk.len() == 64 {
+            for i in 0..16 {
+                let k = ks[i].to_le_bytes();
+                let base = i * 4;
+                chunk[base] ^= k[0];
+                chunk[base + 1] ^= k[1];
+                chunk[base + 2] ^= k[2];
+                chunk[base + 3] ^= k[3];
+            }
+        } else {
+            let mut block = [0u8; 64];
+            for i in 0..16 {
+                block[i * 4..i * 4 + 4].copy_from_slice(&ks[i].to_le_bytes());
+            }
+            for (b, k) in chunk.iter_mut().zip(block.iter()) {
+                *b ^= *k;
+            }
+        }
+        state[12] = state[12].wrapping_add(1);
     }
 }
 
@@ -276,18 +311,20 @@ fn poly1305_aead_tag(otk: &[u8; 32], aad: &[u8], ct: &[u8]) -> [u8; 16] {
     tag
 }
 
-pub fn aead_encrypt(key: &[u8; 32], counter: u64, pt: &[u8], aad: &[u8], out: &mut [u8]) -> usize {
+pub fn aead_encrypt_in_place(key: &[u8; 32], counter: u64, aad: &[u8], buf: &mut [u8], pt_len: usize) -> usize {
     let mut nonce = [0u8; 12];
     nonce[4..12].copy_from_slice(&counter.to_le_bytes());
-    let b0 = chacha20_block(key, 0, &nonce);
-    let mut otk = [0u8; 32];
-    otk.copy_from_slice(&b0[0..32]);
+    let otk = chacha20_otk(key, &nonce);
+    chacha20_xor(key, 1, &nonce, &mut buf[..pt_len]);
+    let tag = poly1305_aead_tag(&otk, aad, &buf[..pt_len]);
+    buf[pt_len..pt_len + 16].copy_from_slice(&tag);
+    pt_len + 16
+}
+
+pub fn aead_encrypt(key: &[u8; 32], counter: u64, pt: &[u8], aad: &[u8], out: &mut [u8]) -> usize {
     let n = pt.len();
     out[..n].copy_from_slice(pt);
-    chacha20_xor(key, 1, &nonce, &mut out[..n]);
-    let tag = poly1305_aead_tag(&otk, aad, &out[..n]);
-    out[n..n + 16].copy_from_slice(&tag);
-    n + 16
+    aead_encrypt_in_place(key, counter, aad, out, n)
 }
 
 pub fn aead_decrypt(key: &[u8; 32], counter: u64, ct_tag: &[u8], aad: &[u8], out: &mut [u8]) -> Option<usize> {
@@ -296,9 +333,7 @@ pub fn aead_decrypt(key: &[u8; 32], counter: u64, ct_tag: &[u8], aad: &[u8], out
     if out.len() < n { return None; }
     let mut nonce = [0u8; 12];
     nonce[4..12].copy_from_slice(&counter.to_le_bytes());
-    let b0 = chacha20_block(key, 0, &nonce);
-    let mut otk = [0u8; 32];
-    otk.copy_from_slice(&b0[0..32]);
+    let otk = chacha20_otk(key, &nonce);
     let expected = poly1305_aead_tag(&otk, aad, &ct_tag[..n]);
     let mut diff = 0u8;
     for i in 0..16 { diff |= expected[i] ^ ct_tag[n + i]; }

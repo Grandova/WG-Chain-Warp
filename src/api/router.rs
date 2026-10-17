@@ -611,7 +611,7 @@ async fn network_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::web::SESSION_COOKIE_NAME_PREFIX;
+    use crate::web::SESSION_COOKIE_NAME;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use tower::ServiceExt;
@@ -707,7 +707,7 @@ mod tests {
         }
 
         let (set_cookie, cookie_pair) = login_instance(&app, "admin", "admin", false).await;
-        assert!(set_cookie.starts_with(&format!("{}_", SESSION_COOKIE_NAME_PREFIX)));
+        assert!(set_cookie.starts_with(&format!("{}_", SESSION_COOKIE_NAME)));
         assert!(set_cookie.contains("HttpOnly"));
         assert!(set_cookie.contains("SameSite=Lax"));
         assert!(!set_cookie.contains("; Secure"));

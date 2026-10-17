@@ -194,7 +194,8 @@ impl ChainEngine {
     }
 
     pub fn start_socks5(&self, srv: Socks5ServerConfig) -> Result<()> {
-        self.socks5_service.lock().unwrap().start(&srv)?;
+        let tunnel_flag = self.warp_kernel.lock().unwrap().running_flag();
+        self.socks5_service.lock().unwrap().start(&srv, tunnel_flag)?;
         let mut cfg = self.get_active_config().unwrap_or_default();
         cfg.socks5_server = Some(srv);
         let _ = self.save_config(cfg);
@@ -298,7 +299,8 @@ impl ChainEngine {
 
         if let Some(ref srv) = config.socks5_server {
             if srv.port > 0 {
-                self.socks5_service.lock().unwrap().start(srv)?;
+                let tunnel_flag = self.warp_kernel.lock().unwrap().running_flag();
+                self.socks5_service.lock().unwrap().start(srv, tunnel_flag)?;
             }
         } else if self.socks5_service.lock().unwrap().is_running() {
             // Preserve active socks5_server config if already running independently

@@ -2,21 +2,25 @@ use crate::error::{ChainError, Result};
 use crate::model::config::{ChainProxyConfig, ParsedNodes, ProxyMode, Socks5Config, Socks5ServerConfig, Socks5User};
 use crate::warp_kernel::endpoint::{build_warp_candidates, resolve_endpoint_addr};
 use crate::warp_kernel::noise::{DecapOutcome, WgTunnel};
-use crate::warp_kernel::pkt::{unwrap_ipv4_udp, wrap_ipv4_udp, L3NatTable, TcpMicroProbe};
+use crate::warp_kernel::pkt::{
+    encode_dns_a_query, parse_dns_a_response, unwrap_ipv4_udp, wrap_ipv4_udp, L3NatTable,
+    TcpMicroProbe,
+};
 use crate::warp_kernel::{TEST_VPN1_PORT, TEST_WARP_PORT};
 use crate::wireguard::model::WgConfig;
 use base64::prelude::*;
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tracing::info;
 
 const TUN_IPV4: Ipv4Addr = Ipv4Addr::new(172, 31, 255, 1);
 const INNER_WG_SPORT: u16 = 51821;
-const TCP_MSS_CLAMP: u16 = 1200;
+const TCP_MSS_CLAMP: u16 = 1120;
 
 #[derive(Debug, Clone, Default)]
 pub struct KernelStats {
@@ -157,7 +161,7 @@ impl Socks5Service {
         (self.tx_bytes.load(Ordering::Relaxed), self.rx_bytes.load(Ordering::Relaxed))
     }
 
-    pub fn start(&mut self, srv: &Socks5ServerConfig) -> Result<()> {
+    pub fn start(&mut self, srv: &Socks5ServerConfig, tunnel_running: Arc<AtomicBool>) -> Result<()> {
         srv.validate()?;
         if self.is_running() && self.current_cfg.as_ref() == Some(srv) {
             return Ok(());
@@ -179,7 +183,16 @@ impl Socks5Service {
         let (running, tx, rx) = (self.running.clone(), self.tx_bytes.clone(), self.rx_bytes.clone());
         let users = srv.users.clone();
         let h = tokio::spawn(async move {
-            let _ = run_native_socks5_server(tokio_listener, users, running, shutdown_rx, tx, rx).await;
+            let _ = run_native_socks5_server(
+                tokio_listener,
+                users,
+                running,
+                tunnel_running,
+                shutdown_rx,
+                tx,
+                rx,
+            )
+            .await;
         });
         self.shutdown_tx = Some(shutdown_tx);
         self.abort_handle = Some(h.abort_handle());
@@ -245,6 +258,10 @@ impl WarpKernel {
 
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    pub fn running_flag(&self) -> Arc<AtomicBool> {
+        self.running.clone()
     }
 
     pub fn stats(&self) -> KernelStats {
@@ -330,7 +347,13 @@ impl WarpKernel {
             *self.active_warp_ep.lock().unwrap() = Some(w.endpoint.to_string());
         }
 
-        let tun_fd = create_and_configure_tun("chain0", config.routing.ipv6)?;
+        // Chained modes add 60 bytes of inner WireGuard + IPv4/UDP framing before outer WG encryption;
+        // setting chain0 MTU to 1200 ensures inner WARP packets never exceed a 1280-MTU VPN1 peer.
+        let tun_mtu: u16 = match config.mode {
+            ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp => 1200,
+            _ => 1280,
+        };
+        let tun_fd = create_and_configure_tun("chain0", config.routing.ipv6, tun_mtu)?;
         let udp_sock = create_marked_udp_socket(uplink)?;
         let (probe_tx, probe_rx) = mpsc::sync_channel::<ProbeJob>(16);
         self.running.store(true, Ordering::SeqCst);
@@ -527,15 +550,16 @@ fn run_kernel_packet_loop(
     let mut next_probe_port: u16 = 42100;
     let mut ip_id: u16 = 100;
 
-    let mut tun_buf = [0u8; 2048];
-    let mut udp_buf = [0u8; 2048];
-    let mut wg1_buf = [0u8; 2048];
-    let mut wg2_buf = [0u8; 2048];
-    let mut wrap_buf = [0u8; 2048];
+    let mut tun_buf = [0u8; 4096];
+    let mut udp_buf = [0u8; 4096];
+    let mut wg1_buf = [0u8; 4096];
+    let mut wg2_buf = [0u8; 4096];
+    let mut wrap_buf = [0u8; 4096];
     let mut probe_buf = [0u8; 512];
 
     let mut last_vpn1_hs = Instant::now() - Duration::from_secs(10);
     let mut last_warp_hs = Instant::now() - Duration::from_secs(10);
+    let mut had_work = false;
 
     let send_via_vpn1 = |pkt: &[u8], v1: &mut WgTunnel, vep: SocketAddr, sock: &UdpSocket, buf: &mut [u8], tx: &AtomicU64| {
         if let Some(n) = v1.encapsulate(pkt, buf) {
@@ -587,6 +611,10 @@ fn run_kernel_packet_loop(
 
     while running.load(Ordering::Relaxed) {
         if let Some((ref mut v1, vep)) = vpn1_tunnel {
+            v1.expire_if_dead();
+            if !v1.has_session() {
+                vpn1_hs_ok.store(false, Ordering::Relaxed);
+            }
             let due = (!v1.has_session() && last_vpn1_hs.elapsed() >= Duration::from_millis(500))
                 || (v1.needs_handshake() && last_vpn1_hs.elapsed() >= Duration::from_secs(3));
             if due {
@@ -600,6 +628,10 @@ fn run_kernel_packet_loop(
         }
 
         if let Some(ref mut w) = warp_tunnel {
+            w.expire_if_dead();
+            if !w.has_session() {
+                warp_hs_ok.store(false, Ordering::Relaxed);
+            }
             if vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(true) {
                 let no_sess_due = !w.has_session() && last_warp_hs.elapsed() >= Duration::from_millis(500);
                 let rekey_due = w.needs_handshake() && last_warp_hs.elapsed() >= Duration::from_secs(3);
@@ -670,10 +702,19 @@ fn run_kernel_packet_loop(
 
         let all_ready = vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(true)
             && warp_tunnel.as_ref().map(|w| w.has_session()).unwrap_or(true);
-        poll_fds(tun_fd, &udp_sock, if !all_ready || !active_probes.is_empty() { 10 } else { 20 });
+        let timeout_ms = if had_work {
+            0
+        } else if !all_ready || !active_probes.is_empty() {
+            10
+        } else {
+            20
+        };
+        poll_fds(tun_fd, &udp_sock, timeout_ms);
+        had_work = false;
 
-        for _ in 0..64 {
+        for _ in 0..256 {
             let Ok((udp_len, src_addr)) = udp_sock.recv_from(&mut udp_buf) else { break };
+            had_work = true;
             if udp_len < 4 { continue; }
 
             let mut warp_in_slice: Option<(&[u8], SocketAddr)> = None;
@@ -791,8 +832,9 @@ fn run_kernel_packet_loop(
             }
         }
 
-        for _ in 0..64 {
+        for _ in 0..256 {
             let Some(pkt_len) = read_tun(tun_fd, &mut tun_buf) else { break };
+            had_work = true;
             if pkt_len < 20 { continue; }
             let pkt = &mut tun_buf[..pkt_len];
             if let Some(ref mut w) = warp_tunnel {
@@ -831,15 +873,114 @@ fn bind_reusable_tcp_listener(listen_addr: SocketAddr) -> Result<TcpListener> {
     )))
 }
 
-async fn resolve_socks5_target(target: &str) -> Option<Vec<SocketAddr>> {
+fn is_private_or_local_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_link_local()
+                || o[0] == 10
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+                || (o[0] == 100 && (64..=127).contains(&o[1]))
+        }
+        IpAddr::V6(v6) => {
+            let seg0 = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg0 & 0xfe00) == 0xfc00
+                || (seg0 & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+fn dns_cache() -> &'static Mutex<HashMap<String, (Vec<Ipv4Addr>, Instant)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (Vec<Ipv4Addr>, Instant)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn resolve_ipv4_via_tunnel_dns(host: &str, tunnel_active: bool) -> Option<Vec<Ipv4Addr>> {
+    let key = host.to_ascii_lowercase();
+    if let Ok(guard) = dns_cache().lock() {
+        if let Some((ips, ts)) = guard.get(&key) {
+            if ts.elapsed() < Duration::from_secs(120) && !ips.is_empty() {
+                return Some(ips.clone());
+            }
+        }
+    }
+
+    static TXID_SEQ: AtomicU64 = AtomicU64::new(0x3a71);
+    let txid = (TXID_SEQ.fetch_add(1, Ordering::Relaxed) as u16) | 1;
+    let mut qbuf = [0u8; 512];
+    let qlen = encode_dns_a_query(&key, txid, &mut qbuf)?;
+
+    let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
+    #[cfg(target_os = "linux")]
+    if tunnel_active {
+        use std::os::unix::io::AsRawFd;
+        set_outbound_tunnel_mark(sock.as_raw_fd());
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = tunnel_active;
+
+    let mut rbuf = [0u8; 512];
+    for dns_ip in [Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(1, 1, 1, 1)] {
+        let dns_sa = SocketAddr::V4(SocketAddrV4::new(dns_ip, 53));
+        if sock.send_to(&qbuf[..qlen], dns_sa).await.is_err() {
+            continue;
+        }
+        if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(900), sock.recv_from(&mut rbuf)).await {
+            let ips = parse_dns_a_response(&rbuf[..n], txid);
+            if !ips.is_empty() {
+                if let Ok(mut guard) = dns_cache().lock() {
+                    if guard.len() >= 1024 {
+                        guard.retain(|_, (_, ts)| ts.elapsed() < Duration::from_secs(120));
+                    }
+                    guard.insert(key, (ips.clone(), Instant::now()));
+                }
+                return Some(ips);
+            }
+        }
+    }
+    None
+}
+
+async fn resolve_socks5_target(target: &str, tunnel_active: bool) -> Option<Vec<SocketAddr>> {
     if let Ok(sa) = target.parse::<SocketAddr>() {
         return Some(vec![sa]);
     }
-    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(target).await.ok()?.collect();
+    let (host, port_str) = target.rsplit_once(':')?;
+    let port: u16 = port_str.parse().ok()?;
+    let clean_host = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(v4) = clean_host.parse::<Ipv4Addr>() {
+        return Some(vec![SocketAddr::new(IpAddr::V4(v4), port)]);
+    }
+    if let Ok(v6) = clean_host.parse::<Ipv6Addr>() {
+        return Some(vec![SocketAddr::new(IpAddr::V6(v6), port)]);
+    }
+
+    // Fast path: resolve IPv4 directly through the tunnel (or direct UDP) with in-memory TTL cache
+    if let Some(ips) = resolve_ipv4_via_tunnel_dns(clean_host, tunnel_active).await {
+        return Some(
+            ips.into_iter()
+                .map(|ip| SocketAddr::new(IpAddr::V4(ip), port))
+                .collect(),
+        );
+    }
+
+    // Fallback to OS resolver with bounded timeout
+    let resolved = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host(target))
+        .await
+        .ok()?
+        .ok()?;
+    let addrs: Vec<SocketAddr> = resolved.collect();
     if addrs.is_empty() {
         return None;
     }
-    // Always prioritize IPv4 so outbound connections route through the IPv4 WireGuard/WARP tunnel
     let mut v4: Vec<SocketAddr> = addrs.iter().copied().filter(|a| a.is_ipv4()).collect();
     let v6: Vec<SocketAddr> = addrs.into_iter().filter(|a| a.is_ipv6()).collect();
     v4.extend(v6);
@@ -855,16 +996,81 @@ fn set_client_direct_mark(fd: i32) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn set_outbound_tunnel_mark(fd: i32) {
+    use crate::network::iproute::MARK_HOST_PROXY;
+    let mark: u32 = MARK_HOST_PROXY;
+    unsafe {
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_MARK, &mark as *const _ as *const _, 4);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn set_outbound_proxy_socket_opts(fd: i32, force_tunnel_mark: bool) {
+    if force_tunnel_mark {
+        set_outbound_tunnel_mark(fd);
+    }
+    let maxseg: libc::c_int = TCP_MSS_CLAMP as libc::c_int;
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_MAXSEG,
+            &maxseg as *const _ as *const _,
+            4,
+        );
+    }
+}
+
+async fn connect_upstream_tcp(
+    addrs: &[SocketAddr],
+    tunnel_active: bool,
+) -> std::io::Result<tokio::net::TcpStream> {
+    let mut last_err = std::io::Error::new(std::io::ErrorKind::NotFound, "no addresses");
+    for &addr in addrs {
+        let sock_res = if addr.is_ipv4() {
+            tokio::net::TcpSocket::new_v4()
+        } else {
+            tokio::net::TcpSocket::new_v6()
+        };
+        let sock = match sock_res {
+            Ok(s) => s,
+            Err(e) => {
+                last_err = e;
+                continue;
+            }
+        };
+        let _ = sock.set_nodelay(true);
+        let force_tunnel = tunnel_active && !is_private_or_local_ip(addr.ip());
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::io::AsRawFd;
+            set_outbound_proxy_socket_opts(sock.as_raw_fd(), force_tunnel);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = force_tunnel;
+
+        match tokio::time::timeout(Duration::from_secs(6), sock.connect(addr)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(e)) => last_err = e,
+            Err(_) => {
+                last_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout");
+            }
+        }
+    }
+    Err(last_err)
+}
+
 async fn run_native_socks5_server(
     listener: tokio::net::TcpListener,
     users: Vec<Socks5User>,
     running: Arc<AtomicBool>,
+    tunnel_running: Arc<AtomicBool>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     tx_counter: Arc<AtomicU64>,
     rx_counter: Arc<AtomicU64>,
 ) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream as TokioStream;
 
     let active_users: Vec<Socks5User> = users
         .into_iter()
@@ -882,7 +1088,12 @@ async fn run_native_socks5_server(
             res = listener.accept() => res,
         };
         let Ok((mut client, _)) = accept_res else { break };
-        let (users, tx_c, rx_c) = (users.clone(), tx_counter.clone(), rx_counter.clone());
+        let (users, tunnel_flag, tx_c, rx_c) = (
+            users.clone(),
+            tunnel_running.clone(),
+            tx_counter.clone(),
+            rx_counter.clone(),
+        );
         tokio::spawn(async move {
             let _ = client.set_nodelay(true);
             #[cfg(target_os = "linux")]
@@ -892,70 +1103,125 @@ async fn run_native_socks5_server(
             }
 
             let mut b = [0u8; 512];
-            if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x05 { return; }
-            let nm = b[1] as usize;
-            if nm == 0 || client.read_exact(&mut b[..nm]).await.is_err() { return; }
-            let methods = &b[..nm];
+            let hs_res = tokio::time::timeout(Duration::from_secs(10), async {
+                if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x05 {
+                    return None;
+                }
+                let nm = b[1] as usize;
+                if nm == 0 || client.read_exact(&mut b[..nm]).await.is_err() {
+                    return None;
+                }
+                let methods = &b[..nm];
 
-            if users.is_empty() {
-                if methods.contains(&0x00) {
-                    if client.write_all(&[0x05, 0x00]).await.is_err() { return; }
-                } else if methods.contains(&0x02) {
-                    if client.write_all(&[0x05, 0x02]).await.is_err() { return; }
-                    if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x01 { return; }
-                    let ulen = b[1] as usize;
-                    if client.read_exact(&mut b[..ulen + 1]).await.is_err() { return; }
-                    let plen = b[ulen] as usize;
-                    if client.read_exact(&mut b[..plen]).await.is_err() { return; }
-                    if client.write_all(&[0x01, 0x00]).await.is_err() { return; }
+                if users.is_empty() {
+                    if methods.contains(&0x00) {
+                        if client.write_all(&[0x05, 0x00]).await.is_err() {
+                            return None;
+                        }
+                    } else if methods.contains(&0x02) {
+                        if client.write_all(&[0x05, 0x02]).await.is_err() {
+                            return None;
+                        }
+                        if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x01 {
+                            return None;
+                        }
+                        let ulen = b[1] as usize;
+                        if client.read_exact(&mut b[..ulen + 1]).await.is_err() {
+                            return None;
+                        }
+                        let plen = b[ulen] as usize;
+                        if client.read_exact(&mut b[..plen]).await.is_err() {
+                            return None;
+                        }
+                        if client.write_all(&[0x01, 0x00]).await.is_err() {
+                            return None;
+                        }
+                    } else {
+                        let _ = client.write_all(&[0x05, 0xFF]).await;
+                        return None;
+                    }
                 } else {
-                    let _ = client.write_all(&[0x05, 0xFF]).await;
-                    return;
+                    if !methods.contains(&0x02) {
+                        let _ = client.write_all(&[0x05, 0xFF]).await;
+                        return None;
+                    }
+                    if client.write_all(&[0x05, 0x02]).await.is_err() {
+                        return None;
+                    }
+                    if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x01 {
+                        return None;
+                    }
+                    let ulen = b[1] as usize;
+                    if client.read_exact(&mut b[..ulen + 1]).await.is_err() {
+                        return None;
+                    }
+                    let uname = String::from_utf8_lossy(&b[..ulen]).into_owned();
+                    let plen = b[ulen] as usize;
+                    if client.read_exact(&mut b[..plen]).await.is_err() {
+                        return None;
+                    }
+                    let upass = String::from_utf8_lossy(&b[..plen]).into_owned();
+                    if !users.iter().any(|u| u.username == uname && u.password == upass) {
+                        let _ = client.write_all(&[0x01, 0x01]).await;
+                        return None;
+                    }
+                    if client.write_all(&[0x01, 0x00]).await.is_err() {
+                        return None;
+                    }
                 }
-            } else {
-                if !methods.contains(&0x02) {
-                    let _ = client.write_all(&[0x05, 0xFF]).await;
-                    return;
-                }
-                if client.write_all(&[0x05, 0x02]).await.is_err() { return; }
-                if client.read_exact(&mut b[..2]).await.is_err() || b[0] != 0x01 { return; }
-                let ulen = b[1] as usize;
-                if client.read_exact(&mut b[..ulen + 1]).await.is_err() { return; }
-                let uname = String::from_utf8_lossy(&b[..ulen]).into_owned();
-                let plen = b[ulen] as usize;
-                if client.read_exact(&mut b[..plen]).await.is_err() { return; }
-                let upass = String::from_utf8_lossy(&b[..plen]).into_owned();
-                if !users.iter().any(|u| u.username == uname && u.password == upass) {
-                    let _ = client.write_all(&[0x01, 0x01]).await;
-                    return;
-                }
-                if client.write_all(&[0x01, 0x00]).await.is_err() { return; }
-            }
 
-            if client.read_exact(&mut b[..4]).await.is_err() || b[0] != 0x05 { return; }
-            let cmd = b[1];
-            let atyp = b[3];
-            let target = match atyp {
-                0x01 => {
-                    if client.read_exact(&mut b[..6]).await.is_err() { return; }
-                    format!("{}:{}", Ipv4Addr::new(b[0], b[1], b[2], b[3]), u16::from_be_bytes([b[4], b[5]]))
+                if client.read_exact(&mut b[..4]).await.is_err() || b[0] != 0x05 {
+                    return None;
                 }
-                0x03 => {
-                    if client.read_exact(&mut b[..1]).await.is_err() { return; }
-                    let dl = b[0] as usize;
-                    if client.read_exact(&mut b[..dl + 2]).await.is_err() { return; }
-                    format!("{}:{}", String::from_utf8_lossy(&b[..dl]), u16::from_be_bytes([b[dl], b[dl + 1]]))
-                }
-                0x04 => {
-                    if client.read_exact(&mut b[..18]).await.is_err() { return; }
-                    let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&b[..16]).unwrap());
-                    format!("[{}]:{}", ip, u16::from_be_bytes([b[16], b[17]]))
-                }
-                _ => {
-                    let _ = client.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
-                    return;
-                }
+                let cmd = b[1];
+                let atyp = b[3];
+                let target = match atyp {
+                    0x01 => {
+                        if client.read_exact(&mut b[..6]).await.is_err() {
+                            return None;
+                        }
+                        format!(
+                            "{}:{}",
+                            Ipv4Addr::new(b[0], b[1], b[2], b[3]),
+                            u16::from_be_bytes([b[4], b[5]])
+                        )
+                    }
+                    0x03 => {
+                        if client.read_exact(&mut b[..1]).await.is_err() {
+                            return None;
+                        }
+                        let dl = b[0] as usize;
+                        if client.read_exact(&mut b[..dl + 2]).await.is_err() {
+                            return None;
+                        }
+                        format!(
+                            "{}:{}",
+                            String::from_utf8_lossy(&b[..dl]),
+                            u16::from_be_bytes([b[dl], b[dl + 1]])
+                        )
+                    }
+                    0x04 => {
+                        if client.read_exact(&mut b[..18]).await.is_err() {
+                            return None;
+                        }
+                        let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&b[..16]).unwrap());
+                        format!("[{}]:{}", ip, u16::from_be_bytes([b[16], b[17]]))
+                    }
+                    _ => {
+                        let _ = client
+                            .write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                            .await;
+                        return None;
+                    }
+                };
+                Some((cmd, target))
+            })
+            .await;
+
+            let Ok(Some((cmd, target))) = hs_res else {
+                return;
             };
+            let tunnel_active = tunnel_flag.load(Ordering::Relaxed);
 
             if cmd == 0x03 {
                 // SOCKS5 UDP Associate
@@ -966,8 +1232,12 @@ async fn run_native_socks5_server(
                         IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
                     })
                     .unwrap_or(Ipv4Addr::UNSPECIFIED);
-                let Ok(client_udp) = tokio::net::UdpSocket::bind(SocketAddr::new(IpAddr::V4(local_ip), 0)).await else {
-                    let _ = client.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+                let Ok(client_udp) =
+                    tokio::net::UdpSocket::bind(SocketAddr::new(IpAddr::V4(local_ip), 0)).await
+                else {
+                    let _ = client
+                        .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .await;
                     return;
                 };
                 #[cfg(target_os = "linux")]
@@ -976,9 +1246,16 @@ async fn run_native_socks5_server(
                     set_client_direct_mark(client_udp.as_raw_fd());
                 }
                 let Ok(up_udp) = tokio::net::UdpSocket::bind("0.0.0.0:0").await else {
-                    let _ = client.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+                    let _ = client
+                        .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .await;
                     return;
                 };
+                #[cfg(target_os = "linux")]
+                if tunnel_active {
+                    use std::os::unix::io::AsRawFd;
+                    set_outbound_tunnel_mark(up_udp.as_raw_fd());
+                }
                 let bound_port = client_udp.local_addr().map(|a| a.port()).unwrap_or(0);
                 let mut reply = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
                 reply[4..8].copy_from_slice(&local_ip.octets());
@@ -999,38 +1276,40 @@ async fn run_native_socks5_server(
                         Ok((n, c_addr)) = client_udp.recv_from(&mut c_buf) => {
                             if n <= 10 || c_buf[2] != 0 { continue; }
                             last_c_addr = Some(c_addr);
-                            let (dst_str, hdr_len) = match c_buf[3] {
-                                0x01 if n > 10 => (
-                                    format!("{}:{}", Ipv4Addr::new(c_buf[4], c_buf[5], c_buf[6], c_buf[7]), u16::from_be_bytes([c_buf[8], c_buf[9]])),
-                                    10usize,
-                                ),
+                            let (dst_sa, hdr_len) = match c_buf[3] {
+                                0x01 if n > 10 => {
+                                    let ip = Ipv4Addr::new(c_buf[4], c_buf[5], c_buf[6], c_buf[7]);
+                                    let port = u16::from_be_bytes([c_buf[8], c_buf[9]]);
+                                    (Some(SocketAddr::V4(SocketAddrV4::new(ip, port))), 10usize)
+                                }
                                 0x03 if n > 5 => {
                                     let dl = c_buf[4] as usize;
                                     if n <= 7 + dl { continue; }
-                                    (
-                                        format!("{}:{}", String::from_utf8_lossy(&c_buf[5..5 + dl]), u16::from_be_bytes([c_buf[5 + dl], c_buf[6 + dl]])),
-                                        7 + dl,
-                                    )
+                                    let dst_str = format!(
+                                        "{}:{}",
+                                        String::from_utf8_lossy(&c_buf[5..5 + dl]),
+                                        u16::from_be_bytes([c_buf[5 + dl], c_buf[6 + dl]])
+                                    );
+                                    let sa = resolve_socks5_target(&dst_str, tunnel_active)
+                                        .await
+                                        .and_then(|v| v.into_iter().next());
+                                    (sa, 7 + dl)
                                 }
                                 _ => continue,
                             };
-                            if let Some(addrs) = resolve_socks5_target(&dst_str).await {
-                                if let Some(sa) = addrs.first() {
-                                    let payload = &c_buf[hdr_len..n];
-                                    if up_udp.send_to(payload, sa).await.is_ok() {
-                                        tx_c.fetch_add(payload.len() as u64, Ordering::Relaxed);
-                                    }
+                            if let Some(sa) = dst_sa {
+                                let payload = &c_buf[hdr_len..n];
+                                if up_udp.send_to(payload, sa).await.is_ok() {
+                                    tx_c.fetch_add(payload.len() as u64, Ordering::Relaxed);
                                 }
                             }
                         }
-                        Ok((n, r_addr)) = up_udp.recv_from(&mut u_buf) => {
+                        Ok((n, r_addr)) = up_udp.recv_from(&mut u_buf[10..]) => {
                             if let (Some(c_addr), IpAddr::V4(rv4)) = (last_c_addr, r_addr.ip()) {
-                                let mut out = Vec::with_capacity(10 + n);
-                                out.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-                                out.extend_from_slice(&rv4.octets());
-                                out.extend_from_slice(&r_addr.port().to_be_bytes());
-                                out.extend_from_slice(&u_buf[..n]);
-                                if client_udp.send_to(&out, c_addr).await.is_ok() {
+                                u_buf[0..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                                u_buf[4..8].copy_from_slice(&rv4.octets());
+                                u_buf[8..10].copy_from_slice(&r_addr.port().to_be_bytes());
+                                if client_udp.send_to(&u_buf[..10 + n], c_addr).await.is_ok() {
                                     rx_c.fetch_add(n as u64, Ordering::Relaxed);
                                 }
                             }
@@ -1045,22 +1324,24 @@ async fn run_native_socks5_server(
                 return;
             }
 
-            let Some(addrs) = resolve_socks5_target(&target).await else {
+            let Some(addrs) = resolve_socks5_target(&target, tunnel_active).await else {
                 let _ = client.write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
                 return;
             };
 
-            match tokio::time::timeout(Duration::from_secs(10), TokioStream::connect(&addrs[..])).await {
-                Ok(Ok(mut up)) => {
-                    let _ = up.set_nodelay(true);
+            match connect_upstream_tcp(&addrs, tunnel_active).await {
+                Ok(mut up) => {
                     if client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.is_ok() {
-                        if let Ok((tx, rx)) = tokio::io::copy_bidirectional(&mut client, &mut up).await {
+                        if let Ok((tx, rx)) =
+                            tokio::io::copy_bidirectional_with_sizes(&mut client, &mut up, 32768, 32768)
+                                .await
+                        {
                             tx_c.fetch_add(tx, Ordering::Relaxed);
                             rx_c.fetch_add(rx, Ordering::Relaxed);
                         }
                     }
                 }
-                _ => {
+                Err(_) => {
                     let _ = client.write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
                 }
             }
@@ -1070,7 +1351,7 @@ async fn run_native_socks5_server(
 }
 
 #[cfg(target_os = "linux")]
-fn create_and_configure_tun(name: &str, enable_ipv6: bool) -> Result<i32> {
+fn create_and_configure_tun(name: &str, enable_ipv6: bool, mtu: u16) -> Result<i32> {
     use crate::network::iproute::IpRouteManager;
     use std::ffi::CString;
 
@@ -1094,9 +1375,10 @@ fn create_and_configure_tun(name: &str, enable_ipv6: bool) -> Result<i32> {
         unsafe { libc::close(fd); }
         return Err(ChainError::NetworkError(format!("TUNSETIFF {} failed: {}", name, err)));
     }
+    let mtu_str = mtu.to_string();
     let mut cmds = vec![
         vec!["addr".into(), "add".into(), format!("{}/30", TUN_IPV4), "dev".into(), name.into()],
-        vec!["link".into(), "set".into(), "dev".into(), name.into(), "mtu".into(), "1280".into(), "up".into()],
+        vec!["link".into(), "set".into(), "dev".into(), name.into(), "mtu".into(), mtu_str, "up".into()],
     ];
     if enable_ipv6 {
         cmds.insert(1, vec!["addr".into(), "add".into(), "fdfe:dcba:9876::1/126".into(), "dev".into(), name.into()]);
@@ -1111,7 +1393,7 @@ fn create_and_configure_tun(name: &str, enable_ipv6: bool) -> Result<i32> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn create_and_configure_tun(_name: &str, _enable_ipv6: bool) -> Result<i32> { Ok(-1) }
+fn create_and_configure_tun(_name: &str, _enable_ipv6: bool, _mtu: u16) -> Result<i32> { Ok(-1) }
 
 #[cfg(target_os = "linux")]
 fn set_socket_mark_and_device(fd: i32, uplink: &str) {
@@ -1159,7 +1441,9 @@ fn poll_fds(tun_fd: i32, udp_sock: &UdpSocket, timeout_ms: i32) {
 
 #[cfg(not(target_os = "linux"))]
 fn poll_fds(_tun_fd: i32, _udp_sock: &UdpSocket, timeout_ms: i32) {
-    std::thread::sleep(Duration::from_millis(timeout_ms.max(1) as u64));
+    if timeout_ms > 0 {
+        std::thread::sleep(Duration::from_millis(timeout_ms as u64));
+    }
 }
 
 #[cfg(target_os = "linux")]

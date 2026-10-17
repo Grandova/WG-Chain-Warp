@@ -24,10 +24,16 @@ impl NftablesManager {
             "        iifname \"chain0\" fib daddr type != local drop comment \"prevent-tun-loop\"\n",
         );
         script.push_str(&format!(
+            "        iifname \"chain0\" ct mark set (ct mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"chain-conntrack\"\n"
+        ));
+        script.push_str(&format!(
             "        iifname != \"chain0\" iifname != \"lo\" ct direction original ct mark & {mask:#x} == 0 ct mark set ct mark | {inbound:#x} comment \"inbound-return\"\n"
         ));
         script.push_str("    }\n    chain output {\n        type route hook output priority mangle; policy accept;\n");
         script.push_str(&format!("        meta mark & {MARK_PHYSICAL_DIRECT:#x} != 0 return\n"));
+        script.push_str(&format!(
+            "        ct mark & {MARK_HOST_PROXY:#x} != 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} return comment \"chain-reply-proxy\"\n"
+        ));
         script.push_str(&format!(
             "        ct direction reply meta mark set (meta mark & {keep:#x}) | {inbound:#x} return comment \"inbound-reply-direct\"\n"
         ));
@@ -59,7 +65,7 @@ impl NftablesManager {
                 "        {family}ct direction original meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"host-proxy\"\n"
             ));
         }
-        script.push_str("    }\n    chain postrouting {\n        type filter hook postrouting priority mangle; policy accept;\n        oifname \"chain0\" tcp flags syn / syn,rst tcp option maxseg size set 1200 comment \"mss-clamp\"\n    }\n}\n");
+        script.push_str("    }\n    chain postrouting {\n        type filter hook postrouting priority mangle; policy accept;\n        oifname \"chain0\" tcp flags syn / syn,rst tcp option maxseg size set 1120 comment \"mss-clamp-out\"\n        iifname \"chain0\" tcp flags syn / syn,rst tcp option maxseg size set 1120 comment \"mss-clamp-in\"\n    }\n}\n");
         Ok(script)
     }
 
@@ -160,9 +166,13 @@ mod tests {
         let mut cfg = ChainProxyConfig::default();
         cfg.routing.preserve_inbound_connections = false;
         let ruleset = NftablesManager::generate_ruleset(&cfg).unwrap();
+        assert!(ruleset.contains("comment \"chain-conntrack\""));
+        assert!(ruleset.contains("comment \"chain-reply-proxy\""));
         assert!(ruleset.contains("ct direction reply meta mark set"));
         assert!(ruleset.contains("ct mark & 0x88 == 0x88 meta mark set"));
         assert!(ruleset.contains("ct direction original meta mark & 0xc88 == 0 meta mark set"));
+        assert!(ruleset.contains("maxseg size set 1120 comment \"mss-clamp-out\""));
+        assert!(ruleset.contains("maxseg size set 1120 comment \"mss-clamp-in\""));
     }
 }
 

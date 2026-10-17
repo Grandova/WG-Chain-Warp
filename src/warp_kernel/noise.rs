@@ -1,6 +1,6 @@
 use crate::warp_kernel::crypto::{
-    aead_decrypt, aead_encrypt, blake2s_hash, blake2s_hash2, blake2s_mac, kdf1, kdf2, kdf3,
-    tai64n_now,
+    aead_decrypt, aead_encrypt, aead_encrypt_in_place, blake2s_hash, blake2s_hash2, blake2s_mac,
+    kdf1, kdf2, kdf3, tai64n_now,
 };
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -86,20 +86,30 @@ impl WgTunnel {
         self.current.is_some()
     }
 
+    pub fn expire_if_dead(&mut self) -> bool {
+        if let Some(ref sess) = self.current {
+            if sess.last_received.elapsed() >= Duration::from_secs(38) {
+                self.previous = self.current.take();
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn needs_handshake(&self) -> bool {
         match &self.current {
             None => self
                 .pending
                 .as_ref()
-                .map(|p| p.started_at.elapsed() >= Duration::from_millis(1200))
+                .map(|p| p.started_at.elapsed() >= Duration::from_millis(900))
                 .unwrap_or(true),
             Some(sess) => {
                 sess.established_at.elapsed() >= Duration::from_secs(120)
-                    || (sess.last_received.elapsed() >= Duration::from_secs(45)
+                    || (sess.last_received.elapsed() >= Duration::from_secs(25)
                         && self
                             .pending
                             .as_ref()
-                            .map(|p| p.started_at.elapsed() >= Duration::from_secs(3))
+                            .map(|p| p.started_at.elapsed() >= Duration::from_secs(2))
                             .unwrap_or(true))
             }
         }
@@ -108,7 +118,11 @@ impl WgTunnel {
     pub fn needs_keepalive(&self) -> bool {
         self.current
             .as_ref()
-            .map(|s| s.last_sent.elapsed() >= Duration::from_secs(20))
+            .map(|s| {
+                s.last_sent.elapsed() >= Duration::from_secs(15)
+                    || (s.last_received.elapsed() >= Duration::from_secs(15)
+                        && s.last_sent.elapsed() >= Duration::from_secs(5))
+            })
             .unwrap_or(false)
     }
 
@@ -216,8 +230,9 @@ impl WgTunnel {
 
     pub fn encapsulate(&mut self, ip_packet: &[u8], out_buf: &mut [u8]) -> Option<usize> {
         let sess = self.current.as_mut()?;
-        let padded_len = if ip_packet.is_empty() { 0 } else { (ip_packet.len() + 15) & !15 };
-        if out_buf.len() < TRANSPORT_HEADER_LEN + padded_len + 16 || padded_len > 2048 {
+        let pt_len = ip_packet.len();
+        let padded_len = if pt_len == 0 { 0 } else { (pt_len + 15) & !15 };
+        if out_buf.len() < TRANSPORT_HEADER_LEN + padded_len + 16 {
             return None;
         }
         let nonce = sess.send_nonce;
@@ -229,9 +244,12 @@ impl WgTunnel {
         out_buf[4..8].copy_from_slice(&sess.peer_index.to_le_bytes());
         out_buf[8..16].copy_from_slice(&nonce.to_le_bytes());
 
-        let mut padded = [0u8; 2048];
-        padded[..ip_packet.len()].copy_from_slice(ip_packet);
-        let enc_len = aead_encrypt(&sess.send_key, nonce, &padded[..padded_len], &[], &mut out_buf[TRANSPORT_HEADER_LEN..]);
+        let payload_buf = &mut out_buf[TRANSPORT_HEADER_LEN..];
+        payload_buf[..pt_len].copy_from_slice(ip_packet);
+        if padded_len > pt_len {
+            payload_buf[pt_len..padded_len].fill(0);
+        }
+        let enc_len = aead_encrypt_in_place(&sess.send_key, nonce, &[], payload_buf, padded_len);
         Some(TRANSPORT_HEADER_LEN + enc_len)
     }
 

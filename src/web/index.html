@@ -465,7 +465,7 @@ html.light .ring-bg { stroke: #ececf0; }
         <div>
           <div class="brand-title">
             <span>Sooya 面板</span>
-            <span class="brand-ver" id="siderVersion">v1.6.3</span>
+            <span class="brand-ver" id="siderVersion">v1.6.4</span>
           </div>
           <div style="font-size:11.5px;color:var(--muted);">仅接管出站 (0x800) · 入站 100% 原路返回</div>
         </div>
@@ -1938,7 +1938,7 @@ async function registerWarpInModal() {
   try {
     const res = await api('./panel/api/warp/register', 'POST', {});
     document.getElementById('mWarpRaw').value = res.wireguard_config;
-    showAlert(`WARP 密钥生成成功 (${res.ipv4})`, 'success');
+    showAlert(`WARP 密钥生成成功 (${res.address_v4 || res.ipv4 || '172.16.0.2'})`, 'success');
   } catch (e) {
     showAlert('注册 WARP 失败: ' + e.message, 'error');
   } finally {
@@ -1967,7 +1967,7 @@ async function quickRekeyWarp() {
     if (active && ['standalone_warp', 'wg_chain_warp', 'socks_chain_warp'].includes(normalizeMode(active.config?.mode))) {
       await onToggleOutbound(active.id, true);
     } else {
-      showAlert(`已生成全新 Cloudflare WARP 账号 (${res.ipv4})，开启出站开关即可生效`, 'success');
+      showAlert(`已生成全新 Cloudflare WARP 账号 (${res.address_v4 || res.ipv4 || '172.16.0.2'})，开启出站开关即可生效`, 'success');
     }
   } catch (e) {
     showAlert('更换 WARP 账号失败: ' + e.message, 'error');

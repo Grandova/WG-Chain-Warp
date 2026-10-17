@@ -132,7 +132,7 @@ pub fn wrap_ipv4_udp(
     out[0] = 0x45;
     out[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
     out[4..6].copy_from_slice(&ip_id.to_be_bytes());
-    out[6..8].copy_from_slice(&0x4000u16.to_be_bytes());
+    // Leave flags/fragment offset at 0x0000 (clear DF) so outer WG peer never drops inner WARP frames
     out[8] = 64;
     out[9] = 17;
     out[12..16].copy_from_slice(&src_ip.octets());
@@ -163,18 +163,41 @@ struct NatEntry {
 
 pub struct L3NatTable {
     entries: HashMap<(u8, u16, Ipv4Addr, u16), NatEntry>,
+    port_owner: HashMap<(u8, u16), Ipv4Addr>,
     default_local_v4: Ipv4Addr,
     default_local_v6: Option<Ipv6Addr>,
     dns_override_v4: Option<Ipv4Addr>,
+    last_prune: Instant,
 }
 
 impl L3NatTable {
     pub fn new(host_local_v4: Ipv4Addr, dns_override_v4: Option<Ipv4Addr>) -> Self {
         Self {
-            entries: HashMap::with_capacity(512),
+            entries: HashMap::with_capacity(1024),
+            port_owner: HashMap::with_capacity(1024),
             default_local_v4: host_local_v4,
             default_local_v6: None,
             dns_override_v4,
+            last_prune: Instant::now(),
+        }
+    }
+
+    fn maybe_prune(&mut self, now: Instant) {
+        if self.entries.len() < 4096 || now.duration_since(self.last_prune) < Duration::from_secs(10) {
+            return;
+        }
+        self.last_prune = now;
+        let tcp_cut = now.checked_sub(Duration::from_secs(300)).unwrap_or(now);
+        let udp_cut = now.checked_sub(Duration::from_secs(90)).unwrap_or(now);
+        self.entries.retain(|&(proto, _, _, _), v| {
+            v.last_seen > if proto == 6 { tcp_cut } else { udp_cut }
+        });
+        if self.entries.len() >= 8192 {
+            let aggressive_cut = now.checked_sub(Duration::from_secs(30)).unwrap_or(now);
+            self.entries.retain(|_, v| v.last_seen > aggressive_cut);
+        }
+        if self.port_owner.len() >= 8192 {
+            self.port_owner.clear();
         }
     }
 
@@ -196,13 +219,10 @@ impl L3NatTable {
                 {
                     return false;
                 }
-                if orig_src.octets()[0..3] != [172, 31, 255]
-                    && !orig_src.is_loopback()
-                    && !orig_src.is_unspecified()
-                    && orig_src != tun_v4
-                {
+                if !orig_src.is_loopback() && !orig_src.is_unspecified() && orig_src != tun_v4 {
                     self.default_local_v4 = orig_src;
                 }
+                let now = Instant::now();
                 let mut actual_dst = orig_dst;
                 if (proto == 6 || proto == 17) && pkt.len() >= ihl + 4 {
                     let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
@@ -222,23 +242,19 @@ impl L3NatTable {
                             }
                         }
                     }
-                    if self.entries.len() >= 4096 {
-                        let cut = Instant::now() - Duration::from_secs(60);
-                        self.entries.retain(|_, v| v.last_seen > cut);
-                    }
+                    self.maybe_prune(now);
+                    self.port_owner.insert((proto, sport), orig_src);
                     self.entries.insert(
                         (proto, sport, actual_dst, dport),
-                        NatEntry { orig_local_ip: orig_src, orig_remote_ip: orig_dst, last_seen: Instant::now() },
+                        NatEntry { orig_local_ip: orig_src, orig_remote_ip: orig_dst, last_seen: now },
                     );
                 } else if proto == 1 && pkt.len() >= ihl + 8 {
                     let icmp_id = u16::from_be_bytes([pkt[ihl + 4], pkt[ihl + 5]]);
-                    if self.entries.len() >= 4096 {
-                        let cut = Instant::now() - Duration::from_secs(60);
-                        self.entries.retain(|_, v| v.last_seen > cut);
-                    }
+                    self.maybe_prune(now);
+                    self.port_owner.insert((1, icmp_id), orig_src);
                     self.entries.insert(
                         (1, icmp_id, actual_dst, 0),
-                        NatEntry { orig_local_ip: orig_src, orig_remote_ip: orig_dst, last_seen: Instant::now() },
+                        NatEntry { orig_local_ip: orig_src, orig_remote_ip: orig_dst, last_seen: now },
                     );
                 }
                 pkt[12..16].copy_from_slice(&tun_v4.octets());
@@ -277,7 +293,8 @@ impl L3NatTable {
                         e.last_seen = Instant::now();
                         (e.orig_local_ip, e.orig_remote_ip)
                     } else {
-                        (self.default_local_v4, remote_ip)
+                        let local_ip = self.port_owner.get(&(proto, lport)).copied().unwrap_or(self.default_local_v4);
+                        (local_ip, remote_ip)
                     }
                 } else if proto == 1 && pkt.len() >= ihl + 8 {
                     let icmp_id = u16::from_be_bytes([pkt[ihl + 4], pkt[ihl + 5]]);
@@ -285,7 +302,8 @@ impl L3NatTable {
                         e.last_seen = Instant::now();
                         (e.orig_local_ip, e.orig_remote_ip)
                     } else {
-                        (self.default_local_v4, remote_ip)
+                        let local_ip = self.port_owner.get(&(1, icmp_id)).copied().unwrap_or(self.default_local_v4);
+                        (local_ip, remote_ip)
                     }
                 } else {
                     (self.default_local_v4, remote_ip)
@@ -304,6 +322,100 @@ impl L3NatTable {
             _ => false,
         }
     }
+}
+
+pub fn encode_dns_a_query(domain: &str, tx_id: u16, out: &mut [u8]) -> Option<usize> {
+    let clean = domain.trim().trim_end_matches('.');
+    if clean.is_empty() || clean.len() > 253 || out.len() < 300 {
+        return None;
+    }
+    out[0..12].fill(0);
+    out[0..2].copy_from_slice(&tx_id.to_be_bytes());
+    out[2] = 0x01; // RD = 1
+    out[5] = 0x01; // QDCOUNT = 1
+    let mut pos = 12;
+    for label in clean.split('.') {
+        let lb = label.as_bytes();
+        if lb.is_empty() || lb.len() > 63 || pos + 1 + lb.len() + 5 > out.len() {
+            return None;
+        }
+        out[pos] = lb.len() as u8;
+        out[pos + 1..pos + 1 + lb.len()].copy_from_slice(lb);
+        pos += 1 + lb.len();
+    }
+    out[pos] = 0;
+    out[pos + 1..pos + 5].copy_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE=A, QCLASS=IN
+    Some(pos + 5)
+}
+
+fn skip_dns_name(pkt: &[u8], mut pos: usize) -> Option<usize> {
+    let mut jumps = 0;
+    loop {
+        if pos >= pkt.len() || jumps > 16 {
+            return None;
+        }
+        let b = pkt[pos];
+        if b == 0 {
+            return Some(pos + 1);
+        }
+        if (b & 0xC0) == 0xC0 {
+            return (pos + 2 <= pkt.len()).then_some(pos + 2);
+        }
+        if (b & 0xC0) != 0 {
+            return None;
+        }
+        pos += 1 + (b as usize);
+        jumps += 1;
+    }
+}
+
+pub fn parse_dns_a_response(pkt: &[u8], expected_tx_id: u16) -> Vec<Ipv4Addr> {
+    let mut addrs = Vec::new();
+    if pkt.len() < 12 {
+        return addrs;
+    }
+    if u16::from_be_bytes([pkt[0], pkt[1]]) != expected_tx_id
+        || (pkt[2] & 0x80) == 0
+        || (pkt[3] & 0x0f) != 0
+    {
+        return addrs;
+    }
+    let qdcount = u16::from_be_bytes([pkt[4], pkt[5]]) as usize;
+    let ancount = u16::from_be_bytes([pkt[6], pkt[7]]) as usize;
+    let mut pos = 12;
+    for _ in 0..qdcount {
+        let Some(next) = skip_dns_name(pkt, pos) else { return addrs };
+        if next + 4 > pkt.len() {
+            return addrs;
+        }
+        pos = next + 4;
+    }
+    for _ in 0..ancount {
+        let Some(next) = skip_dns_name(pkt, pos) else { break };
+        if next + 10 > pkt.len() {
+            break;
+        }
+        let rtype = u16::from_be_bytes([pkt[next], pkt[next + 1]]);
+        let rclass = u16::from_be_bytes([pkt[next + 2], pkt[next + 3]]);
+        let rdlen = u16::from_be_bytes([pkt[next + 8], pkt[next + 9]]) as usize;
+        let rdata_start = next + 10;
+        if rdata_start + rdlen > pkt.len() {
+            break;
+        }
+        if rtype == 1 && rclass == 1 && rdlen == 4 {
+            let ip = Ipv4Addr::new(
+                pkt[rdata_start],
+                pkt[rdata_start + 1],
+                pkt[rdata_start + 2],
+                pkt[rdata_start + 3],
+            );
+            if !ip.is_unspecified() && !ip.is_loopback() && !addrs.contains(&ip) {
+                addrs.push(ip);
+            }
+        }
+        pos = rdata_start + rdlen;
+    }
+    addrs
 }
 
 pub struct TcpMicroProbe {
@@ -360,7 +472,7 @@ impl TcpMicroProbe {
     }
 
     pub fn build_syn(&self, out: &mut [u8]) -> usize {
-        self.write_tcp_pkt(0x02, &[2, 4, 0x04, 0xb0], &[], out)
+        self.write_tcp_pkt(0x02, &[2, 4, 0x04, 0x60], &[], out)
     }
 
     pub fn retransmit_request(&self, out: &mut [u8]) -> usize {
@@ -418,5 +530,58 @@ impl TcpMicroProbe {
             return (ack_len, None);
         }
         (0, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dns_a_codec_and_l3_nat_port_owner_preservation() {
+        let mut qbuf = [0u8; 512];
+        let qlen = encode_dns_a_query("www.google.com", 0x1234, &mut qbuf).unwrap();
+        assert!(qlen > 16);
+
+        // Build synthetic DNS response with pointer compression
+        let mut resp = Vec::from(&qbuf[..qlen]);
+        resp[2] = 0x81;
+        resp[3] = 0x80;
+        resp[7] = 0x01; // ANCOUNT = 1
+        resp.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04, 142, 250, 190, 36]);
+        let ips = parse_dns_a_response(&resp, 0x1234);
+        assert_eq!(ips, vec![Ipv4Addr::new(142, 250, 190, 36)]);
+
+        // Test L3NatTable preserves TUN_IPV4 (172.31.255.1) and host_ipv4 (10.12.144.106) per-port
+        let mut nat = L3NatTable::new(Ipv4Addr::new(10, 12, 144, 106), Some(Ipv4Addr::new(8, 8, 8, 8)));
+        let mut pkt = [0u8; 64];
+        let len = wrap_ipv4_udp(
+            b"ping",
+            Ipv4Addr::new(172, 31, 255, 1),
+            55000,
+            Ipv4Addr::new(93, 184, 216, 34),
+            443,
+            1,
+            &mut pkt,
+        );
+        // Verify inner wrap_ipv4_udp cleared DF bit
+        assert_eq!(&pkt[6..8], &[0, 0]);
+        assert!(nat.translate_outbound(&mut pkt[..len], Ipv4Addr::new(172, 16, 0, 2), None, 1120));
+        assert_eq!(&pkt[12..16], &[172, 16, 0, 2]);
+
+        // Simulate inbound response even if 4-tuple entry was evicted (port_owner fallback)
+        nat.entries.clear();
+        let mut reply = [0u8; 64];
+        let rlen = wrap_ipv4_udp(
+            b"pong",
+            Ipv4Addr::new(93, 184, 216, 34),
+            443,
+            Ipv4Addr::new(172, 16, 0, 2),
+            55000,
+            2,
+            &mut reply,
+        );
+        assert!(nat.translate_inbound(&mut reply[..rlen], 1120));
+        assert_eq!(&reply[16..20], &[172, 31, 255, 1]);
     }
 }
