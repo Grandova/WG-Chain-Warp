@@ -82,8 +82,10 @@ pub fn clamp_tcp_mss(pkt: &mut [u8], max_mss: u16) {
 pub fn recompute_ipv4_checksums(pkt: &mut [u8]) {
     if pkt.len() < 20 || (pkt[0] >> 4) != 4 { return; }
     let ihl = ((pkt[0] & 0x0f) as usize) * 4;
-    if pkt.len() < ihl { return; }
-    let ip_len = (u16::from_be_bytes([pkt[2], pkt[3]]) as usize).min(pkt.len());
+    let ip_len = u16::from_be_bytes([pkt[2], pkt[3]]) as usize;
+    if ihl < 20 || ip_len < ihl || ip_len > pkt.len() {
+        return;
+    }
     let proto = pkt[9];
     let src: [u8; 4] = pkt[12..16].try_into().unwrap();
     let dst: [u8; 4] = pkt[16..20].try_into().unwrap();
@@ -183,7 +185,7 @@ impl L3NatTable {
     }
 
     fn maybe_prune(&mut self, now: Instant) {
-        if self.entries.len() < 1024 || now.duration_since(self.last_prune) < Duration::from_secs(10) {
+        if now.duration_since(self.last_prune) < Duration::from_secs(10) {
             return;
         }
         self.last_prune = now;
@@ -192,15 +194,15 @@ impl L3NatTable {
         self.entries.retain(|&(proto, _, _, _), v| {
             v.last_seen > if proto == 6 { tcp_cut } else { udp_cut }
         });
-        if self.entries.len() >= 2048 {
-            let aggressive_cut = now.checked_sub(Duration::from_secs(20)).unwrap_or(now);
-            self.entries.retain(|_, v| v.last_seen > aggressive_cut);
-        }
+        // Table pressure must not invalidate live TCP mappings or DNS destination translations.
         if self.entries.capacity() > 2048 && self.entries.len() <= 1024 {
             self.entries.shrink_to(1024);
         }
-        if self.port_owner.len() >= 2048 {
-            self.port_owner.clear();
+        self.port_owner.clear();
+        for (&(proto, port, _, _), entry) in &self.entries {
+            self.port_owner.insert((proto, port), entry.orig_local_ip);
+        }
+        if self.port_owner.capacity() > 2048 && self.port_owner.len() <= 1024 {
             self.port_owner.shrink_to(1024);
         }
     }
@@ -211,7 +213,13 @@ impl L3NatTable {
         match pkt[0] >> 4 {
             4 => {
                 let ihl = ((pkt[0] & 0x0f) as usize) * 4;
-                if pkt.len() < ihl.max(20) || pkt[8] <= 1 { return false; }
+                if ihl < 20 || pkt.len() < ihl || pkt[8] <= 1 {
+                    return false;
+                }
+                let ip_len = u16::from_be_bytes([pkt[2], pkt[3]]) as usize;
+                if ip_len < ihl || ip_len > pkt.len() {
+                    return false;
+                }
                 let proto = pkt[9];
                 let orig_src = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
                 let orig_dst = Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
@@ -291,7 +299,13 @@ impl L3NatTable {
         match pkt[0] >> 4 {
             4 => {
                 let ihl = ((pkt[0] & 0x0f) as usize) * 4;
-                if pkt.len() < ihl.max(20) { return false; }
+                if ihl < 20 || pkt.len() < ihl {
+                    return false;
+                }
+                let ip_len = u16::from_be_bytes([pkt[2], pkt[3]]) as usize;
+                if ip_len < ihl || ip_len > pkt.len() {
+                    return false;
+                }
                 let proto = pkt[9];
                 let remote_ip = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
                 let (t_local, t_remote) = if (proto == 6 || proto == 17) && pkt.len() >= ihl + 4 {
@@ -619,6 +633,58 @@ impl TcpMicroProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pruning_preserves_idle_tcp_mappings_under_load() {
+        let mut nat = L3NatTable::new(Ipv4Addr::LOCALHOST, None);
+        let now = Instant::now();
+        let local = Ipv4Addr::new(172, 31, 255, 1);
+        let remote = Ipv4Addr::new(93, 184, 216, 34);
+        for port in 10000..13000 {
+            nat.entries.insert(
+                (6, port, remote, 443),
+                NatEntry {
+                    orig_local_ip: local,
+                    orig_remote_ip: remote,
+                    last_seen: now - Duration::from_secs(30),
+                },
+            );
+            nat.port_owner.insert((6, port), local);
+        }
+        nat.last_prune = now - Duration::from_secs(11);
+        nat.maybe_prune(now);
+        assert_eq!(nat.entries.len(), 3000);
+        assert_eq!(nat.port_owner.len(), 3000);
+        nat.maybe_prune(now + Duration::from_secs(241));
+        assert!(nat.entries.is_empty());
+        assert!(nat.port_owner.is_empty());
+    }
+
+    #[test]
+    fn pruning_cleans_small_tables_and_malformed_ipv4_is_rejected() {
+        let mut nat = L3NatTable::new(Ipv4Addr::LOCALHOST, None);
+        let mut pkt = [0u8; 64];
+        let len = wrap_ipv4_udp(
+            b"test",
+            Ipv4Addr::LOCALHOST,
+            1234,
+            Ipv4Addr::new(1, 1, 1, 1),
+            53,
+            1,
+            &mut pkt,
+        );
+        assert!(nat.translate_outbound(&mut pkt[..len], Ipv4Addr::new(10, 0, 0, 2), None, 1120));
+        nat.maybe_prune(Instant::now() + Duration::from_secs(61));
+        assert!(nat.entries.is_empty());
+        assert!(nat.port_owner.is_empty());
+        for (ihl, ip_len) in [(4, 32), (15, 20), (5, 65)] {
+            pkt[0] = 0x40 | ihl;
+            pkt[2..4].copy_from_slice(&u16::to_be_bytes(ip_len));
+            recompute_ipv4_checksums(&mut pkt);
+            assert!(!nat.translate_outbound(&mut pkt, Ipv4Addr::new(10, 0, 0, 2), None, 1120));
+            assert!(!nat.translate_inbound(&mut pkt, 1120));
+        }
+    }
 
     #[test]
     fn test_dns_a_codec_and_l3_nat_port_owner_preservation() {

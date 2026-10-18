@@ -344,22 +344,37 @@ pub fn aead_decrypt(key: &[u8; 32], counter: u64, ct_tag: &[u8], aad: &[u8], out
 }
 
 pub fn tai64n_now() -> [u8; 12] {
-    static LAST_TS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static LAST_TS: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
     let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = 0x4000_0000_0000_000au64.wrapping_add(dur.as_secs());
-    let nanos = (dur.subsec_nanos() & 0xffff_ff00) as u64;
-    let packed = (secs << 20) | (nanos >> 12);
-    let prev = LAST_TS.fetch_max(packed, std::sync::atomic::Ordering::SeqCst);
-    let final_secs = if packed <= prev { secs.wrapping_add(1) } else { secs };
+    let now = dur.as_nanos() as u64;
+    // Peers reject non-increasing timestamps, including after a wall-clock adjustment.
+    let mut stamp = LAST_TS.lock().unwrap();
+    *stamp = now.max(*stamp + 1);
+    let secs = 0x4000_0000_0000_000au64 + *stamp / 1_000_000_000;
+    let nanos = (*stamp % 1_000_000_000) as u32;
     let mut out = [0u8; 12];
-    out[0..8].copy_from_slice(&final_secs.to_be_bytes());
-    out[8..12].copy_from_slice(&(nanos as u32).to_be_bytes());
+    out[0..8].copy_from_slice(&secs.to_be_bytes());
+    out[8..12].copy_from_slice(&nanos.to_be_bytes());
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handshake_timestamps_are_strictly_increasing() {
+        let mut prev = tai64n_now();
+        for _ in 0..10000 {
+            let next = tai64n_now();
+            assert!(
+                next > prev,
+                "handshake timestamp moved backwards or repeated"
+            );
+            assert!(u32::from_be_bytes(next[8..12].try_into().unwrap()) < 1_000_000_000);
+            prev = next;
+        }
+    }
 
     #[test]
     fn test_blake2s_and_chacha20poly1305() {

@@ -578,8 +578,6 @@ fn run_kernel_packet_loop(
     let mut wrap_buf = [0u8; 4096];
     let mut probe_buf = [0u8; 768];
 
-    let mut last_vpn1_hs = Instant::now() - Duration::from_secs(10);
-    let mut last_warp_hs = Instant::now() - Duration::from_secs(10);
     let mut had_work = false;
 
     let send_via_vpn1 = |pkt: &[u8], v1: &mut WgTunnel, vep: SocketAddr, sock: &UdpSocket, buf: &mut [u8], tx: &AtomicU64| {
@@ -623,11 +621,9 @@ fn run_kernel_packet_loop(
         let init = v1.format_handshake_initiation();
         let _ = udp_sock.send_to(&init, vep);
         vpn1_tx.fetch_add(148, Ordering::Relaxed);
-        last_vpn1_hs = Instant::now();
     } else if let Some(ref mut w) = warp_tunnel {
         let init = w.format_handshake_initiation();
         send_warp_frame(&init, active_warp_ep, &mut vpn1_tunnel, socks_relay, &udp_sock, &mut ip_id, &mut wrap_buf, &mut wg1_buf, &vpn1_tx, &warp_tx);
-        last_warp_hs = Instant::now();
     }
 
     while running.load(Ordering::Relaxed) {
@@ -636,13 +632,10 @@ fn run_kernel_packet_loop(
             if !v1.has_session() {
                 vpn1_hs_ok.store(false, Ordering::Relaxed);
             }
-            let due = (!v1.has_session() && last_vpn1_hs.elapsed() >= Duration::from_millis(500))
-                || (v1.needs_handshake() && last_vpn1_hs.elapsed() >= Duration::from_secs(3));
-            if due {
+            if v1.needs_handshake() {
                 let init = v1.format_handshake_initiation();
                 let _ = udp_sock.send_to(&init, vep);
                 vpn1_tx.fetch_add(148, Ordering::Relaxed);
-                last_vpn1_hs = Instant::now();
             } else if v1.needs_keepalive() {
                 send_via_vpn1(&[], v1, vep, &udp_sock, &mut wg1_buf, &vpn1_tx);
             }
@@ -654,16 +647,13 @@ fn run_kernel_packet_loop(
                 warp_hs_ok.store(false, Ordering::Relaxed);
             }
             if vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(true) {
-                let no_sess_due = !w.has_session() && last_warp_hs.elapsed() >= Duration::from_millis(500);
-                let rekey_due = w.needs_handshake() && last_warp_hs.elapsed() >= Duration::from_secs(3);
-                if no_sess_due || rekey_due {
-                    if no_sess_due && !warp_candidates.is_empty() {
+                if w.needs_handshake() {
+                    if !w.has_session() && !warp_candidates.is_empty() {
                         active_warp_ep = warp_candidates[warp_cand_idx % warp_candidates.len()];
                         warp_cand_idx = warp_cand_idx.wrapping_add(1);
                     }
                     let init = w.format_handshake_initiation();
                     send_warp_frame(&init, active_warp_ep, &mut vpn1_tunnel, socks_relay, &udp_sock, &mut ip_id, &mut wrap_buf, &mut wg1_buf, &vpn1_tx, &warp_tx);
-                    last_warp_hs = Instant::now();
                 } else if w.needs_keepalive() {
                     if let Some(n) = w.encapsulate_keepalive(&mut wg2_buf) {
                         send_warp_frame(&wg2_buf[..n], active_warp_ep, &mut vpn1_tunnel, socks_relay, &udp_sock, &mut ip_id, &mut wrap_buf, &mut wg1_buf, &vpn1_tx, &warp_tx);
@@ -838,10 +828,9 @@ fn run_kernel_packet_loop(
                             vpn1_tx.fetch_add(ka as u64, Ordering::Relaxed);
                         }
                         if let Some(ref mut w) = warp_tunnel {
-                            if !w.has_session() {
+                            if !w.has_session() && w.needs_handshake() {
                                 let init = w.format_handshake_initiation();
                                 send_warp_frame(&init, active_warp_ep, &mut vpn1_tunnel, socks_relay, &udp_sock, &mut ip_id, &mut wrap_buf, &mut tun_buf, &vpn1_tx, &warp_tx);
-                                last_warp_hs = Instant::now();
                             }
                         }
                     }
@@ -1206,6 +1195,57 @@ fn set_outbound_proxy_socket_opts(fd: i32, force_tunnel_mark: bool) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn set_tcp_keepalive(fd: i32) -> std::io::Result<()> {
+    // Detect vanished clients and stalled tunnel peers without expiring healthy idle TCP sessions.
+    for (level, opt, value) in [
+        (libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1 as libc::c_int),
+        (libc::IPPROTO_TCP, libc::TCP_KEEPIDLE, 60),
+        (libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, 10),
+        (libc::IPPROTO_TCP, libc::TCP_KEEPCNT, 3),
+        (libc::IPPROTO_TCP, libc::TCP_USER_TIMEOUT, 90_000),
+    ] {
+        if unsafe {
+            libc::setsockopt(
+                fd,
+                level,
+                opt,
+                &value as *const _ as *const _,
+                std::mem::size_of_val(&value) as _,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+async fn copy_tcp(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    mut writer: impl tokio::io::AsyncWrite + Unpin,
+    counter: &AtomicU64,
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            return writer.shutdown().await;
+        }
+        let mut written = 0;
+        while written < n {
+            let n = tokio::time::timeout(Duration::from_secs(90), writer.write(&buf[written..n]))
+                .await??;
+            if n == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            written += n;
+            counter.fetch_add(n as u64, Ordering::Relaxed);
+        }
+    }
+}
+
 async fn connect_upstream_tcp(
     addrs: &[SocketAddr],
     tunnel_active: bool,
@@ -1237,6 +1277,7 @@ async fn connect_upstream_tcp(
         {
             use std::os::unix::io::AsRawFd;
             set_outbound_proxy_socket_opts(sock.as_raw_fd(), force_tunnel);
+            set_tcp_keepalive(sock.as_raw_fd())?;
         }
         #[cfg(not(target_os = "linux"))]
         let _ = force_tunnel;
@@ -1270,7 +1311,7 @@ async fn run_native_socks5_server(
         .filter(|u| !u.username.trim().is_empty())
         .collect();
     let users = Arc::new(active_users);
-    let conn_sem = Arc::new(tokio::sync::Semaphore::new(256));
+    let mut connections = tokio::task::JoinSet::new();
 
     loop {
         if !running.load(Ordering::Relaxed) {
@@ -1279,12 +1320,10 @@ async fn run_native_socks5_server(
         let accept_res = tokio::select! {
             biased;
             _ = shutdown_rx.changed() => break,
+            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
             res = listener.accept() => res,
         };
         let Ok((mut client, _)) = accept_res else { break };
-        let Ok(permit) = conn_sem.clone().try_acquire_owned() else {
-            continue;
-        };
         let (users, tunnel_flag, dns_s, tx_c, rx_c) = (
             users.clone(),
             tunnel_running.clone(),
@@ -1292,13 +1331,16 @@ async fn run_native_socks5_server(
             tx_counter.clone(),
             rx_counter.clone(),
         );
-        tokio::spawn(async move {
-            let _permit = permit;
+        connections.spawn(async move {
             let _ = client.set_nodelay(true);
             #[cfg(target_os = "linux")]
             {
                 use std::os::unix::io::AsRawFd;
                 set_client_direct_mark(client.as_raw_fd());
+                if let Err(err) = set_tcp_keepalive(client.as_raw_fd()) {
+                    tracing::warn!("SOCKS5 TCP keepalive setup failed: {}", err);
+                    return;
+                }
             }
 
             let mut b = [0u8; 512];
@@ -1369,7 +1411,7 @@ async fn run_native_socks5_server(
                     }
                 }
 
-                if client.read_exact(&mut b[..4]).await.is_err() || b[0] != 0x05 {
+                if client.read_exact(&mut b[..4]).await.is_err() || b[0] != 0x05 || b[2] != 0 {
                     return None;
                 }
                 let cmd = b[1];
@@ -1573,7 +1615,7 @@ async fn run_native_socks5_server(
                     if !(12..=512).contains(&qlen) {
                         break;
                     }
-                    if tokio::time::timeout(Duration::from_secs(5), client.read_exact(&mut q_buf[..qlen])).await.is_err() {
+                    if !matches!(tokio::time::timeout(Duration::from_secs(5), client.read_exact(&mut q_buf[..qlen])).await, Ok(Ok(_))) {
                         break;
                     }
                     tx_c.fetch_add((2 + qlen) as u64, Ordering::Relaxed);
@@ -1592,13 +1634,13 @@ async fn run_native_socks5_server(
             match connect_upstream_tcp(&addrs, tunnel_active).await {
                 Ok(mut up) => {
                     if client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.is_ok() {
-                        if let Ok((tx, rx)) =
-                            tokio::io::copy_bidirectional_with_sizes(&mut client, &mut up, 8192, 8192)
-                                .await
-                        {
-                            tx_c.fetch_add(tx, Ordering::Relaxed);
-                            rx_c.fetch_add(rx, Ordering::Relaxed);
-                        }
+                        let (client_read, client_write) = client.split();
+                        let (up_read, up_write) = up.split();
+                        // EOF shuts down only the opposite write half; the response can still arrive.
+                        let _ = tokio::try_join!(
+                            copy_tcp(client_read, up_write, &tx_c),
+                            copy_tcp(up_read, client_write, &rx_c),
+                        );
                     }
                 }
                 Err(_) => {
@@ -1607,6 +1649,7 @@ async fn run_native_socks5_server(
             }
         });
     }
+    connections.shutdown().await;
     Ok(())
 }
 
@@ -1735,3 +1778,283 @@ fn close_tun(tun_fd: i32) {
 
 #[cfg(not(target_os = "linux"))]
 fn close_tun(_tun_fd: i32) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn start_socks5() -> (Socks5Service, SocketAddr) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut service = Socks5Service::new();
+        service
+            .start(
+                &Socks5ServerConfig {
+                    listen: addr.ip(),
+                    port: addr.port(),
+                    users: Vec::new(),
+                },
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(Mutex::new(None)),
+            )
+            .unwrap();
+        (service, addr)
+    }
+
+    async fn socks_connect(addr: SocketAddr, target: SocketAddr) -> tokio::net::TcpStream {
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(&[5, 1, 0]).await.unwrap();
+        let mut reply = [0u8; 10];
+        client.read_exact(&mut reply[..2]).await.unwrap();
+        assert_eq!(&reply[..2], &[5, 0]);
+        let mut req = vec![5, 1, 0, 1, 127, 0, 0, 1];
+        req.extend_from_slice(&target.port().to_be_bytes());
+        client.write_all(&req).await.unwrap();
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply[..2], &[5, 0]);
+        client
+    }
+
+    #[tokio::test]
+    async fn socks5_accepts_more_than_256_active_connections() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (mut service, addr) = start_socks5();
+            let mut clients = Vec::new();
+            let mut upstreams = Vec::new();
+            for _ in 0..300 {
+                clients.push(socks_connect(addr, target.local_addr().unwrap()).await);
+                upstreams.push(target.accept().await.unwrap().0);
+            }
+            for (client, upstream) in clients.iter_mut().zip(&mut upstreams) {
+                client.write_all(b"ping").await.unwrap();
+                let mut buf = [0u8; 4];
+                upstream.read_exact(&mut buf).await.unwrap();
+                assert_eq!(&buf, b"ping");
+                upstream.write_all(b"pong").await.unwrap();
+                client.read_exact(&mut buf).await.unwrap();
+                assert_eq!(&buf, b"pong");
+            }
+            service.stop();
+            for stream in clients.iter_mut().chain(&mut upstreams) {
+                assert!(matches!(stream.read(&mut [0]).await, Ok(0) | Err(_)));
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn socks5_preserves_half_close_and_accounts_live_traffic() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (service, addr) = start_socks5();
+            let mut client = socks_connect(addr, target.local_addr().unwrap()).await;
+            let (mut upstream, _) = target.accept().await.unwrap();
+            client.write_all(b"request").await.unwrap();
+            let mut request = [0u8; 7];
+            upstream.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"request");
+            assert_eq!(service.stats(), (7, 0));
+            client.shutdown().await.unwrap();
+            assert_eq!(upstream.read(&mut [0]).await.unwrap(), 0);
+            upstream.write_all(b"response after FIN").await.unwrap();
+            let mut response = [0u8; 18];
+            client.read_exact(&mut response).await.unwrap();
+            assert_eq!(&response, b"response after FIN");
+            assert_eq!(service.stats(), (7, 18));
+            upstream.shutdown().await.unwrap();
+            assert_eq!(client.read(&mut [0]).await.unwrap(), 0);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stopping_socks5_closes_established_and_handshaking_connections() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (mut service, addr) = start_socks5();
+            let mut client = socks_connect(addr, target.local_addr().unwrap()).await;
+            let (mut upstream, _) = target.accept().await.unwrap();
+            let mut handshaking = tokio::net::TcpStream::connect(addr).await.unwrap();
+            handshaking.write_all(&[5, 1, 0]).await.unwrap();
+            handshaking.read_exact(&mut [0; 2]).await.unwrap();
+            service.stop();
+            assert!(!service.is_running());
+            for stream in [&mut client, &mut upstream, &mut handshaking] {
+                assert!(matches!(stream.read(&mut [0]).await, Ok(0) | Err(_)));
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tcp_stalled_write_expires_and_keeps_partial_accounting() {
+        let (mut source, reader) = tokio::io::duplex(16);
+        let (writer, _sink) = tokio::io::duplex(1);
+        source.write_all(b"blocked").await.unwrap();
+        let counter = AtomicU64::new(0);
+        let err = copy_tcp(reader, writer, &counter).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tcp_idle_time_is_not_a_connection_lifetime_limit() {
+        let (mut source, reader) = tokio::io::duplex(16);
+        let (writer, mut sink) = tokio::io::duplex(16);
+        let counter = Arc::new(AtomicU64::new(0));
+        let tx = counter.clone();
+        let task = tokio::spawn(async move { copy_tcp(reader, writer, &tx).await });
+        tokio::time::advance(Duration::from_secs(600)).await;
+        source.write_all(b"alive").await.unwrap();
+        source.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        sink.read_to_end(&mut response).await.unwrap();
+        task.await.unwrap().unwrap();
+        assert_eq!(response, b"alive");
+        assert_eq!(counter.load(Ordering::Relaxed), 5);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_tcp_sockets_enable_dead_peer_detection() {
+        use std::os::fd::AsRawFd;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = connect_upstream_tcp(&[listener.local_addr().unwrap()], false)
+            .await
+            .unwrap();
+        for (level, opt, expected) in [
+            (libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1),
+            (libc::IPPROTO_TCP, libc::TCP_KEEPIDLE, 60),
+            (libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, 10),
+            (libc::IPPROTO_TCP, libc::TCP_KEEPCNT, 3),
+            (libc::IPPROTO_TCP, libc::TCP_USER_TIMEOUT, 90_000),
+        ] {
+            let mut value: libc::c_int = 0;
+            let mut len = std::mem::size_of_val(&value) as libc::socklen_t;
+            assert_eq!(
+                unsafe {
+                    libc::getsockopt(
+                        stream.as_raw_fd(),
+                        level,
+                        opt,
+                        &mut value as *mut _ as *mut _,
+                        &mut len,
+                    )
+                },
+                0
+            );
+            assert_eq!(value, expected);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the independent curl SOCKS5 client on PATH"]
+    async fn socks5_interoperates_with_curl() {
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (mut service, addr) = start_socks5();
+        let url = format!("http://{}/", target.local_addr().unwrap());
+        let curl = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("curl")
+                .args([
+                    "--silent",
+                    "--show-error",
+                    "--fail",
+                    "--max-time",
+                    "5",
+                    "--noproxy",
+                    "",
+                    "--socks5-hostname",
+                    &addr.to_string(),
+                    &url,
+                ])
+                .output()
+                .unwrap()
+        });
+        tokio::time::timeout(Duration::from_secs(6), async {
+            let (mut upstream, _) = target.accept().await.unwrap();
+            let mut req = Vec::new();
+            while !req.ends_with(b"\r\n\r\n") {
+                req.push(upstream.read_u8().await.unwrap());
+            }
+            upstream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+            upstream.shutdown().await.unwrap();
+            let output = curl.await.unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, b"ok");
+        })
+        .await
+        .unwrap();
+        service.stop();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires root, nft, and a fresh network namespace; takes about 90 seconds"]
+    async fn vanished_client_closes_upstream_connection() {
+        assert_eq!(std::env::var("SOOYA_NETNS_TEST").as_deref(), Ok("1"));
+        assert_ne!(
+            std::fs::read_link("/proc/self/ns/net").unwrap(),
+            std::fs::read_link("/proc/1/ns/net").unwrap()
+        );
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (mut service, addr) = start_socks5();
+        let client = socks_connect(addr, target.local_addr().unwrap()).await;
+        let (mut upstream, _) = target.accept().await.unwrap();
+        let client_port = client.local_addr().unwrap().port().to_string();
+        let proxy_port = addr.port().to_string();
+        for args in [
+            vec!["add", "table", "inet", "sooya_test"],
+            vec![
+                "add",
+                "chain",
+                "inet",
+                "sooya_test",
+                "output",
+                "{ type filter hook output priority 0; policy accept; }",
+            ],
+            vec![
+                "add",
+                "rule",
+                "inet",
+                "sooya_test",
+                "output",
+                "tcp",
+                "sport",
+                &client_port,
+                "tcp",
+                "dport",
+                &proxy_port,
+                "drop",
+            ],
+        ] {
+            let output = std::process::Command::new("nft")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let result = tokio::time::timeout(Duration::from_secs(110), upstream.read(&mut [0])).await;
+        assert!(
+            matches!(result, Ok(Ok(0)) | Ok(Err(_))),
+            "dead client retained the upstream TCP connection"
+        );
+        service.stop();
+    }
+}

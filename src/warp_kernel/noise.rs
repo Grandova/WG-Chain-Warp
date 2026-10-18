@@ -15,6 +15,8 @@ pub const HANDSHAKE_INIT_LEN: usize = 148;
 pub const HANDSHAKE_RESP_LEN: usize = 92;
 pub const TRANSPORT_HEADER_LEN: usize = 16;
 pub const TRANSPORT_OVERHEAD: usize = 32;
+const REJECT_AFTER_TIME: Duration = Duration::from_secs(180);
+const REJECT_AFTER_MESSAGES: u64 = u64::MAX - (1 << 13);
 
 struct PendingHandshake {
     local_index: u32,
@@ -22,6 +24,7 @@ struct PendingHandshake {
     chaining_key: [u8; 32],
     hash: [u8; 32],
     started_at: Instant,
+    retry_after: Duration,
 }
 
 pub struct WgSession {
@@ -30,6 +33,8 @@ pub struct WgSession {
     send_key: [u8; 32],
     recv_key: [u8; 32],
     send_nonce: u64,
+    recv_nonce: u64,
+    recv_window: [u64; 128],
     pub established_at: Instant,
     pub last_received: Instant,
     pub last_sent: Instant,
@@ -83,13 +88,26 @@ impl WgTunnel {
     }
 
     pub fn has_session(&self) -> bool {
-        self.current.is_some()
+        self.current
+            .as_ref()
+            .map(|s| {
+                s.established_at.elapsed() < REJECT_AFTER_TIME
+                    && s.send_nonce < REJECT_AFTER_MESSAGES
+            })
+            .unwrap_or(false)
     }
 
     pub fn expire_if_dead(&mut self) -> bool {
+        if self
+            .previous
+            .as_ref()
+            .is_some_and(|s| s.established_at.elapsed() >= REJECT_AFTER_TIME)
+        {
+            self.previous = None;
+        }
         if let Some(ref sess) = self.current {
-            if sess.last_received.elapsed() >= Duration::from_secs(38) {
-                self.previous = self.current.take();
+            if sess.established_at.elapsed() >= REJECT_AFTER_TIME {
+                self.current = None;
                 return true;
             }
         }
@@ -97,20 +115,19 @@ impl WgTunnel {
     }
 
     pub fn needs_handshake(&self) -> bool {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.started_at.elapsed() < p.retry_after)
+        {
+            return false;
+        }
         match &self.current {
-            None => self
-                .pending
-                .as_ref()
-                .map(|p| p.started_at.elapsed() >= Duration::from_millis(900))
-                .unwrap_or(true),
+            None => true,
             Some(sess) => {
                 sess.established_at.elapsed() >= Duration::from_secs(120)
-                    || (sess.last_received.elapsed() >= Duration::from_secs(25)
-                        && self
-                            .pending
-                            .as_ref()
-                            .map(|p| p.started_at.elapsed() >= Duration::from_secs(2))
-                            .unwrap_or(true))
+                    || sess.send_nonce >= (1 << 60)
+                    || sess.last_received.elapsed() >= Duration::from_secs(25)
             }
         }
     }
@@ -171,12 +188,13 @@ impl WgTunnel {
             chaining_key: c,
             hash: h,
             started_at: Instant::now(),
+            retry_after: Duration::from_millis(5000 + u64::from(OsRng.next_u32() % 334)),
         });
         msg
     }
 
     pub fn consume_handshake_response(&mut self, msg: &[u8]) -> Option<u64> {
-        if msg.len() < HANDSHAKE_RESP_LEN || msg[0] != 2 {
+        if msg.len() != HANDSHAKE_RESP_LEN || msg[0] != 2 {
             return None;
         }
         let peer_index = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]);
@@ -221,6 +239,8 @@ impl WgTunnel {
             send_key,
             recv_key,
             send_nonce: 0,
+            recv_nonce: 0,
+            recv_window: [0; 128],
             established_at: now,
             last_received: now,
             last_sent: now,
@@ -230,13 +250,18 @@ impl WgTunnel {
 
     pub fn encapsulate(&mut self, ip_packet: &[u8], out_buf: &mut [u8]) -> Option<usize> {
         let sess = self.current.as_mut()?;
+        if sess.established_at.elapsed() >= REJECT_AFTER_TIME
+            || sess.send_nonce >= REJECT_AFTER_MESSAGES
+        {
+            return None;
+        }
         let pt_len = ip_packet.len();
         let padded_len = if pt_len == 0 { 0 } else { (pt_len + 15) & !15 };
         if out_buf.len() < TRANSPORT_HEADER_LEN + padded_len + 16 {
             return None;
         }
         let nonce = sess.send_nonce;
-        sess.send_nonce = sess.send_nonce.wrapping_add(1);
+        sess.send_nonce += 1;
         sess.last_sent = Instant::now();
 
         out_buf[0] = 4;
@@ -271,30 +296,48 @@ impl WgTunnel {
                 let counter = u64::from_le_bytes(packet[8..16].try_into().unwrap());
                 let ct = &packet[TRANSPORT_HEADER_LEN..];
 
-                let dec_len = self
+                let sess = self
                     .current
                     .as_mut()
                     .filter(|s| s.local_index == rx_idx)
-                    .and_then(|s| {
-                        let len = aead_decrypt(&s.recv_key, counter, ct, &[], out_buf)?;
-                        s.last_received = Instant::now();
-                        Some(len)
-                    })
-                    .or_else(|| {
-                        let p = self.previous.as_mut().filter(|s| s.local_index == rx_idx)?;
-                        let len = aead_decrypt(&p.recv_key, counter, ct, &[], out_buf)?;
-                        p.last_received = Instant::now();
-                        Some(len)
-                    });
-
-                let Some(dec_len) = dec_len else { return DecapOutcome::None };
+                    .or_else(|| self.previous.as_mut().filter(|s| s.local_index == rx_idx));
+                let Some(sess) = sess else {
+                    return DecapOutcome::None;
+                };
+                if sess.established_at.elapsed() >= REJECT_AFTER_TIME
+                    || counter >= REJECT_AFTER_MESSAGES
+                {
+                    return DecapOutcome::None;
+                }
+                let Some(dec_len) = aead_decrypt(&sess.recv_key, counter, ct, &[], out_buf) else {
+                    return DecapOutcome::None;
+                };
+                // Advance the replay window only after authenticating the counter and payload.
+                let block = counter / 64;
+                if counter > sess.recv_nonce {
+                    let old_block = sess.recv_nonce / 64;
+                    for i in 1..=(block - old_block).min(128) {
+                        sess.recv_window[((old_block + i) % 128) as usize] = 0;
+                    }
+                    sess.recv_nonce = counter;
+                } else if sess.recv_nonce - counter > 127 * 64 {
+                    return DecapOutcome::None;
+                }
+                let slot = &mut sess.recv_window[(block % 128) as usize];
+                let bit = 1u64 << (counter % 64);
+                if *slot & bit != 0 {
+                    return DecapOutcome::None;
+                }
+                *slot |= bit;
+                sess.last_received = Instant::now();
                 if dec_len == 0 {
                     return DecapOutcome::Keepalive;
                 }
                 let ver = out_buf[0] >> 4;
                 if ver == 4 && dec_len >= 20 {
                     let ip_len = u16::from_be_bytes([out_buf[2], out_buf[3]]) as usize;
-                    if (20..=dec_len).contains(&ip_len) {
+                    let ihl = usize::from(out_buf[0] & 0x0f) * 4;
+                    if ihl >= 20 && (ihl..=dec_len).contains(&ip_len) {
                         return DecapOutcome::IpPacket(&out_buf[..ip_len]);
                     }
                 } else if ver == 6 && dec_len >= 40 {
@@ -306,6 +349,178 @@ impl WgTunnel {
                 DecapOutcome::None
             }
             _ => DecapOutcome::None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use boringtun::noise::{Tunn, TunnResult};
+
+    fn peer_pair() -> (WgTunnel, Tunn) {
+        let local_key = StaticSecret::from([7; 32]);
+        let peer_key = StaticSecret::from([9; 32]);
+        let local = WgTunnel::new(
+            local_key.to_bytes(),
+            PublicKey::from(&peer_key).to_bytes(),
+            [3; 32],
+            [0; 3],
+        );
+        let peer = Tunn::new(
+            peer_key,
+            PublicKey::from(&local_key),
+            Some([3; 32]),
+            None,
+            123,
+            None,
+        );
+        (local, peer)
+    }
+
+    fn handshake(local: &mut WgTunnel, peer: &mut Tunn) {
+        let init = local.format_handshake_initiation();
+        let mut buf = [0u8; 2048];
+        let TunnResult::WriteToNetwork(response) = peer.decapsulate(None, &init, &mut buf) else {
+            panic!("BoringTun rejected the initiation");
+        };
+        assert!(local.consume_handshake_response(response).is_some());
+        let mut confirm = [0u8; 64];
+        let n = local.encapsulate_keepalive(&mut confirm).unwrap();
+        assert!(matches!(
+            peer.decapsulate(None, &confirm[..n], &mut buf),
+            TunnResult::Done
+        ));
+    }
+
+    fn packet() -> Vec<u8> {
+        let mut buf = [0u8; 64];
+        let n = crate::warp_kernel::pkt::wrap_ipv4_udp(
+            b"round trip",
+            "10.0.0.1".parse().unwrap(),
+            1234,
+            "10.0.0.2".parse().unwrap(),
+            4321,
+            1,
+            &mut buf,
+        );
+        buf[..n].to_vec()
+    }
+
+    #[test]
+    fn boringtun_rekey_preserves_traffic_and_delayed_response() {
+        let (mut local, mut peer) = peer_pair();
+        handshake(&mut local, &mut peer);
+        let packet = packet();
+        let mut wire = [0u8; 2048];
+        let mut plain = [0u8; 2048];
+        for _ in 0..3 {
+            local.current.as_mut().unwrap().established_at -= Duration::from_secs(121);
+            local.current.as_mut().unwrap().last_received -= Duration::from_secs(39);
+            assert!(!local.expire_if_dead());
+            assert!(local.has_session());
+            assert!(local.needs_handshake());
+            let init = local.format_handshake_initiation();
+            local.pending.as_mut().unwrap().started_at -= Duration::from_secs(4);
+            assert!(!local.needs_handshake());
+            let n = local.encapsulate(&packet, &mut wire).unwrap();
+            let TunnResult::WriteToTunnelV4(data, _) =
+                peer.decapsulate(None, &wire[..n], &mut plain)
+            else {
+                panic!("traffic stopped during rekey");
+            };
+            assert_eq!(data, packet);
+            let response = match peer.decapsulate(None, &init, &mut wire) {
+                TunnResult::WriteToNetwork(response) => response,
+                result => panic!("rekey failed: {:?}", result),
+            };
+            assert!(local.consume_handshake_response(response).is_some());
+            let n = local.encapsulate_keepalive(&mut wire).unwrap();
+            assert!(matches!(
+                peer.decapsulate(None, &wire[..n], &mut plain),
+                TunnResult::Done
+            ));
+            let TunnResult::WriteToNetwork(response) = peer.encapsulate(&packet, &mut wire) else {
+                panic!("peer has no session");
+            };
+            let DecapOutcome::IpPacket(data) = local.decapsulate(response, &mut plain) else {
+                panic!("return traffic failed after rekey");
+            };
+            assert_eq!(data, packet);
+        }
+    }
+
+    #[test]
+    fn boringtun_reordered_packets_replay_and_expired_keys() {
+        let (mut local, mut peer) = peer_pair();
+        handshake(&mut local, &mut peer);
+        let mut buf = [0u8; 2048];
+        let mut frames = Vec::new();
+        for _ in 0..3 {
+            let TunnResult::WriteToNetwork(frame) = peer.encapsulate(&packet(), &mut buf) else {
+                panic!("peer has no session");
+            };
+            frames.push(frame.to_vec());
+        }
+        let mut forged = frames[2].clone();
+        forged[8..16].copy_from_slice(&1_000_000u64.to_le_bytes());
+        assert!(matches!(
+            local.decapsulate(&forged, &mut buf),
+            DecapOutcome::None
+        ));
+        for i in [1, 0] {
+            assert!(matches!(
+                local.decapsulate(&frames[i], &mut buf),
+                DecapOutcome::IpPacket(_)
+            ));
+            assert!(matches!(
+                local.decapsulate(&frames[i], &mut buf),
+                DecapOutcome::None
+            ));
+        }
+        handshake(&mut local, &mut peer);
+        assert!(matches!(
+            local.decapsulate(&frames[2], &mut buf),
+            DecapOutcome::IpPacket(_)
+        ));
+        local.previous.as_mut().unwrap().established_at -= REJECT_AFTER_TIME;
+        assert!(matches!(
+            local.decapsulate(&frames[2], &mut buf),
+            DecapOutcome::None
+        ));
+        local.current.as_mut().unwrap().send_nonce = REJECT_AFTER_MESSAGES;
+        assert!(local.encapsulate_keepalive(&mut buf).is_none());
+        assert!(local.needs_handshake());
+        local.current.as_mut().unwrap().established_at -= REJECT_AFTER_TIME;
+        assert!(local.expire_if_dead());
+        assert!(local.previous.is_none());
+        assert!(!local.has_session());
+    }
+
+    #[test]
+    fn handshake_retries_are_rate_limited_and_truncated_packets_rejected() {
+        let (mut local, mut peer) = peer_pair();
+        assert!(local.needs_handshake());
+        let init = local.format_handshake_initiation();
+        local.pending.as_mut().unwrap().started_at -= Duration::from_secs(4);
+        assert!(!local.needs_handshake());
+        local.pending.as_mut().unwrap().started_at -= Duration::from_secs(2);
+        assert!(local.needs_handshake());
+        let mut buf = [0u8; 2048];
+        let TunnResult::WriteToNetwork(response) = peer.decapsulate(None, &init, &mut buf) else {
+            panic!("peer rejected initiation");
+        };
+        for n in 0..response.len() {
+            assert!(local.consume_handshake_response(&response[..n]).is_none());
+        }
+        assert!(local.consume_handshake_response(response).is_some());
+        let mut plain = [0u8; 2048];
+        for n in 0..32 {
+            buf[0] = 4;
+            assert!(matches!(
+                local.decapsulate(&buf[..n], &mut plain),
+                DecapOutcome::None
+            ));
         }
     }
 }
