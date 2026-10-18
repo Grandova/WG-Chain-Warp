@@ -4,8 +4,8 @@ use crate::warp_kernel::endpoint::{build_warp_candidates, resolve_endpoint_addr}
 use crate::warp_kernel::noise::{DecapOutcome, WgTunnel};
 use crate::warp_kernel::pkt::{
     build_cached_a_dns_response, build_empty_noerror_dns_response, encode_dns_a_query,
-    inspect_dns_question, parse_dns_a_response, unwrap_ipv4_udp, wrap_ipv4_udp, L3NatTable,
-    TcpMicroProbe,
+    inspect_dns_question, parse_dns_a_response, unwrap_ipv4_udp, wrap_ipv4_udp, Ipv4Fragments,
+    L3NatTable, TcpMicroProbe,
 };
 use crate::wireguard::model::WgConfig;
 use base64::prelude::*;
@@ -568,6 +568,8 @@ fn run_kernel_packet_loop(
     let primary_dns = warp_spec.as_ref().or(vpn1_spec.as_ref()).map(|s| s.dns_v4).unwrap_or(Ipv4Addr::new(1, 1, 1, 1));
 
     let mut nat_table = L3NatTable::new(host_ipv4, Some(primary_dns));
+    let mut warp_fragments = Ipv4Fragments::default();
+    let mut vpn1_unhandled = 0u64;
     let mut active_probes: Vec<ActiveProbe> = Vec::with_capacity(4);
     let mut active_dns: Vec<ActiveDns> = Vec::with_capacity(16);
     let mut next_probe_port: u16 = 42100;
@@ -577,7 +579,7 @@ fn run_kernel_packet_loop(
     let mut tun_buf = [0u8; 4096];
     let mut udp_buf = [0u8; 4096];
     let mut wg1_buf = [0u8; 4096];
-    let mut wg2_buf = [0u8; 4096];
+    let mut wg2_buf = [0u8; 65536];
     let mut wrap_buf = [0u8; 4096];
     let mut probe_buf = [0u8; 768];
 
@@ -755,6 +757,7 @@ fn run_kernel_packet_loop(
         let all_ready = vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(true)
             && warp_tunnel.as_ref().map(|w| w.has_session()).unwrap_or(true);
         if last_stats.elapsed() >= Duration::from_secs(15) {
+            warp_fragments.expire();
             debug!(
                 all_ready,
                 vpn1_tx = vpn1_tx.load(Ordering::Relaxed),
@@ -763,6 +766,10 @@ fn run_kernel_packet_loop(
                 warp_rx = warp_rx.load(Ordering::Relaxed),
                 vpn1_rejected,
                 warp_rejected,
+                warp_fragments = warp_fragments.received,
+                warp_reassembled = warp_fragments.completed,
+                warp_fragment_drops = warp_fragments.discarded,
+                vpn1_unhandled,
                 pending_dns = active_dns.len(),
                 "Tunnel traffic snapshot"
             );
@@ -856,6 +863,7 @@ fn run_kernel_packet_loop(
             if udp_len < 4 { continue; }
 
             let mut warp_in_slice: Option<(&[u8], SocketAddr)> = None;
+            let reassembled;
 
             if let Some((ref mut v1, vep)) = vpn1_tunnel {
                 vpn1_rx.fetch_add(udp_len as u64, Ordering::Relaxed);
@@ -902,13 +910,29 @@ fn run_kernel_packet_loop(
                         if hit { continue; }
 
                         if warp_tunnel.is_some() {
-                            let ihl = ((wg1_buf[0] & 0x0f) as usize) * 4;
-                            if plen >= ihl + 8 && (wg1_buf[0] >> 4) == 4 && wg1_buf[9] == 17 {
-                                let sip = Ipv4Addr::new(wg1_buf[12], wg1_buf[13], wg1_buf[14], wg1_buf[15]);
-                                let sport = u16::from_be_bytes([wg1_buf[ihl], wg1_buf[ihl + 1]]);
-                                if let Some(inner_udp) = unwrap_ipv4_udp(&wg1_buf[..plen], INNER_WG_SPORT) {
+                            let packet = &wg1_buf[..plen];
+                            if packet.len() >= 20 && packet[0] >> 4 == 4 && packet[9] == 17 {
+                                let packet =
+                                    if u16::from_be_bytes([packet[6], packet[7]]) & 0x3fff != 0 {
+                                        let Some(complete) = warp_fragments.push(packet) else {
+                                            continue;
+                                        };
+                                        reassembled = complete;
+                                        &reassembled[..]
+                                    } else {
+                                        packet
+                                    };
+                                if let Some(inner_udp) = unwrap_ipv4_udp(packet, INNER_WG_SPORT) {
+                                    let ihl = usize::from(packet[0] & 15) * 4;
+                                    let sip = Ipv4Addr::new(
+                                        packet[12], packet[13], packet[14], packet[15],
+                                    );
+                                    let sport = u16::from_be_bytes([packet[ihl], packet[ihl + 1]]);
                                     warp_in_slice = Some((inner_udp, SocketAddr::V4(SocketAddrV4::new(sip, sport))));
                                 }
+                            }
+                            if warp_in_slice.is_none() {
+                                vpn1_unhandled += 1;
                             }
                         } else if !try_match_active_dns(&wg1_buf[..plen], &mut active_dns)
                             && nat_table.translate_inbound(&mut wg1_buf[..plen], TCP_MSS_CLAMP)
@@ -1908,6 +1932,118 @@ fn close_tun(_tun_fd: i32) {}
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires root and an isolated Linux network namespace"]
+    fn linux_fragmented_warp_datagram() {
+        use boringtun::noise::{Tunn, TunnResult};
+        use boringtun::x25519::{PublicKey, StaticSecret};
+        use std::os::fd::AsRawFd;
+
+        assert_ne!(
+            std::fs::read_link("/proc/self/ns/net").unwrap(),
+            std::fs::read_link("/proc/1/ns/net").unwrap()
+        );
+        let fd = create_and_configure_tun("frag-test", false, 576).unwrap();
+        assert!(std::process::Command::new("ip")
+            .args(["route", "add", "203.0.113.7/32", "dev", "frag-test"])
+            .status()
+            .unwrap()
+            .success());
+        let local_key = StaticSecret::from([7; 32]);
+        let peer_key = StaticSecret::from([9; 32]);
+        let mut local = WgTunnel::new(
+            local_key.to_bytes(),
+            PublicKey::from(&peer_key).to_bytes(),
+            [3; 32],
+            [0; 3],
+        );
+        let mut peer = Tunn::new(
+            peer_key,
+            PublicKey::from(&local_key),
+            Some([3; 32]),
+            None,
+            123,
+            None,
+        );
+        let mut wire = [0; 4096];
+        let init = local.format_handshake_initiation();
+        let TunnResult::WriteToNetwork(response) = peer.decapsulate(None, &init, &mut wire) else {
+            panic!("handshake failed");
+        };
+        assert!(local.consume_handshake_response(response).is_some());
+        let mut plain = [0; 4096];
+        let n = local.encapsulate_keepalive(&mut wire).unwrap();
+        assert!(matches!(
+            peer.decapsulate(None, &wire[..n], &mut plain),
+            TunnResult::Done
+        ));
+        let n = wrap_ipv4_udp(
+            &vec![0x5a; 1400],
+            Ipv4Addr::new(10, 0, 0, 1),
+            443,
+            Ipv4Addr::new(10, 0, 0, 2),
+            40000,
+            1,
+            &mut plain,
+        );
+        let TunnResult::WriteToNetwork(datagram) = peer.encapsulate(&plain[..n], &mut wire) else {
+            panic!("encapsulation failed");
+        };
+        let expected = datagram.to_vec();
+        let sock = UdpSocket::bind((TUN_IPV4, 0)).unwrap();
+        let dont: libc::c_int = libc::IP_PMTUDISC_DONT;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    sock.as_raw_fd(),
+                    libc::IPPROTO_IP,
+                    libc::IP_MTU_DISCOVER,
+                    &dont as *const _ as *const _,
+                    4,
+                )
+            },
+            0
+        );
+        sock.send_to(&expected, (Ipv4Addr::new(203, 0, 113, 7), INNER_WG_SPORT))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut fragments = Vec::new();
+        let mut buf = [0; 4096];
+        while Instant::now() < deadline {
+            if let Some(len) = read_tun(fd, &mut buf) {
+                if buf[0] >> 4 == 4 && buf[9] == 17 {
+                    fragments.push(buf[..len].to_vec());
+                    if u16::from_be_bytes([buf[6], buf[7]]) & 0x2000 == 0 {
+                        break;
+                    }
+                }
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        close_tun(fd);
+        assert!(fragments.len() >= 3);
+        let mut recovered = None;
+        let mut reassembly = Ipv4Fragments::default();
+        for packet in fragments.iter().rev() {
+            if let Some(complete) = reassembly.push(packet) {
+                recovered = unwrap_ipv4_udp(&complete, INNER_WG_SPORT).map(|data| data.to_vec());
+            }
+        }
+        assert!(
+            recovered.as_deref() == Some(expected.as_slice()),
+            "valid fragmented WARP datagram lost"
+        );
+        assert_eq!(reassembly.completed, 1);
+        let DecapOutcome::IpPacket(packet) =
+            local.decapsulate(recovered.as_ref().unwrap(), &mut wire)
+        else {
+            panic!("reassembled BoringTun frame rejected");
+        };
+        assert_eq!(packet, &plain[..n]);
+    }
 
     fn start_socks5() -> (Socks5Service, SocketAddr) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

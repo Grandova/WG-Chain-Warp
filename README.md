@@ -1,4 +1,4 @@
-# Sooya (`v1.6.9`)
+# Sooya (`v1.6.10`)
 
 > **极致轻量、纯 Rust 原生内核的 Linux 链式 WireGuard + WARP + SOCKS5 出站代理面板**  
 > 一键将自建/商业 WireGuard 或 SOCKS5 节点与 Cloudflare WARP 串联或独立出站；支持**本机 SOCKS5 服务端与任意 WireGuard/WARP 出站节点同时开启**，让其他设备连接本机 SOCKS5 即可直接共享当前 WireGuard/WARP 出站线路！  
@@ -65,7 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/install
      - **共享出站能力**：当与 `WireGuard` 或 `WARP` 同时开启时，外部设备连接本机 SOCKS5 服务端（支持 TCP `CONNECT` 与 UDP `UDP ASSOCIATE`）的流量与域名解析将**自动走当前启用的 WireGuard / WARP 节点出站**，且回包强制打标 `0x400` 走物理网卡直回客户端，绝不回环！
 
 4. **运行日志与策略路由诊断**
-   - 在线查看 `journalctl -u sooya` 最近 500 条日志；在「运行日志」页切换 INFO / DEBUG 即时生效，无需重启代理。DEBUG 记录 SOCKS5 连接、断开原因和隧道状态，重启服务后恢复 INFO。
+   - 在线查看 `journalctl -u sooya` 最近 500 条日志；在「运行日志」页切换 INFO / DEBUG 即时生效，无需重启代理。DEBUG 记录 SOCKS5 连接、断开原因和隧道状态，以及 WARP 分片接收、重组和丢弃计数，重启服务后恢复 INFO。
    - 一键检查 Linux 策略路由表 (`ip rule` / `table 2023`) 与 `nftables` 防火墙规则。
 
 ---

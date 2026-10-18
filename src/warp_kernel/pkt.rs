@@ -150,10 +150,146 @@ pub fn wrap_ipv4_udp(
 pub fn unwrap_ipv4_udp(ip_pkt: &[u8], expected_dst_port: u16) -> Option<&[u8]> {
     if ip_pkt.len() < 28 || (ip_pkt[0] >> 4) != 4 || ip_pkt[9] != 17 { return None; }
     let ihl = ((ip_pkt[0] & 0x0f) as usize) * 4;
-    if ip_pkt.len() < ihl + 8 { return None; }
-    if u16::from_be_bytes([ip_pkt[ihl + 2], ip_pkt[ihl + 3]]) != expected_dst_port { return None; }
+    let ip_len = u16::from_be_bytes([ip_pkt[2], ip_pkt[3]]) as usize;
+    if ihl < 20
+        || ip_len < ihl + 8
+        || ip_len > ip_pkt.len()
+        || u16::from_be_bytes([ip_pkt[6], ip_pkt[7]]) & 0x3fff != 0
+    {
+        return None;
+    }
+    if u16::from_be_bytes([ip_pkt[ihl + 2], ip_pkt[ihl + 3]]) != expected_dst_port {
+        return None;
+    }
     let ulen = u16::from_be_bytes([ip_pkt[ihl + 4], ip_pkt[ihl + 5]]) as usize;
-    (ulen >= 8 && ip_pkt.len() >= ihl + ulen).then(|| &ip_pkt[ihl + 8..ihl + ulen])
+    (ulen >= 8 && ip_len >= ihl + ulen).then(|| &ip_pkt[ihl + 8..ihl + ulen])
+}
+
+struct Ipv4Datagram {
+    started: Instant,
+    header: Vec<u8>,
+    parts: Vec<(usize, Vec<u8>, bool)>,
+    total: Option<usize>,
+}
+
+#[derive(Default)]
+pub struct Ipv4Fragments {
+    entries: HashMap<([u8; 4], [u8; 4], u16), Ipv4Datagram>,
+    pub received: u64,
+    pub completed: u64,
+    pub discarded: u64,
+}
+
+impl Ipv4Fragments {
+    pub fn expire(&mut self) {
+        let before = self.entries.len();
+        self.entries
+            .retain(|_, entry| entry.started.elapsed() < Duration::from_secs(30));
+        self.discarded += (before - self.entries.len()) as u64;
+    }
+
+    pub fn push(&mut self, pkt: &[u8]) -> Option<Vec<u8>> {
+        self.received += 1;
+        if pkt.len() < 20 || pkt[0] >> 4 != 4 || pkt[9] != 17 {
+            return None;
+        }
+        let key = (
+            pkt[12..16].try_into().unwrap(),
+            pkt[16..20].try_into().unwrap(),
+            u16::from_be_bytes([pkt[4], pkt[5]]),
+        );
+        let ihl = usize::from(pkt[0] & 15) * 4;
+        let len = u16::from_be_bytes([pkt[2], pkt[3]]) as usize;
+        let flags = u16::from_be_bytes([pkt[6], pkt[7]]);
+        let offset = usize::from(flags & 0x1fff) * 8;
+        let more = flags & 0x2000 != 0;
+        if ihl < 20
+            || len <= ihl
+            || len > pkt.len()
+            || flags & 0xc000 != 0
+            || (!more && offset == 0)
+            || (more && !(len - ihl).is_multiple_of(8))
+            || offset + len - ihl > 65515
+            || ipv4_header_checksum(&pkt[..ihl]) != u16::from_be_bytes([pkt[10], pkt[11]])
+        {
+            self.entries.remove(&key);
+            self.discarded += 1;
+            return None;
+        }
+        self.expire();
+        // Bound incomplete datagrams, independently of the number of proxy connections.
+        if self.entries.len() >= 64 && !self.entries.contains_key(&key) {
+            self.discarded += 1;
+            return None;
+        }
+        let entry = self.entries.entry(key).or_insert_with(|| Ipv4Datagram {
+            started: Instant::now(),
+            header: Vec::new(),
+            parts: Vec::new(),
+            total: None,
+        });
+        let payload = &pkt[ihl..len];
+        let end = offset + payload.len();
+        let invalid = entry
+            .total
+            .is_some_and(|total| end > total || (more && end >= total) || (!more && end != total))
+            || (!more
+                && entry.parts.iter().any(|(start, data, mf)| {
+                    start + data.len() > end || (*mf && start + data.len() == end)
+                }))
+            || entry.parts.iter().any(|(start, data, mf)| {
+                offset < start + data.len()
+                    && *start < end
+                    && !(*start == offset && data == payload && *mf == more)
+            });
+        if invalid {
+            self.entries.remove(&key);
+            self.discarded += 1;
+            return None;
+        }
+        if offset == 0 {
+            entry.header = pkt[..ihl].to_vec();
+        }
+        if !more {
+            entry.total = Some(end);
+        }
+        if !entry.parts.iter().any(|(start, _, _)| *start == offset) {
+            entry.parts.push((offset, payload.to_vec(), more));
+            entry.parts.sort_unstable_by_key(|(start, _, _)| *start);
+        }
+        let total = entry.total?;
+        if entry.header.is_empty() {
+            return None;
+        }
+        if entry.header.len() + total > u16::MAX as usize {
+            self.entries.remove(&key);
+            self.discarded += 1;
+            return None;
+        }
+        let mut next = 0;
+        for (start, data, _) in &entry.parts {
+            if *start != next {
+                return None;
+            }
+            next += data.len();
+        }
+        if next != total {
+            return None;
+        }
+        let entry = self.entries.remove(&key).unwrap();
+        let mut packet = entry.header;
+        for (_, data, _) in entry.parts {
+            packet.extend_from_slice(&data);
+        }
+        let len = packet.len() as u16;
+        packet[2..4].copy_from_slice(&len.to_be_bytes());
+        packet[6..8].fill(0);
+        let ihl = usize::from(packet[0] & 15) * 4;
+        let checksum = ipv4_header_checksum(&packet[..ihl]);
+        packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+        self.completed += 1;
+        Some(packet)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -633,6 +769,92 @@ impl TcpMicroProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fragment(packet: &[u8], start: usize, end: usize, more: bool) -> Vec<u8> {
+        let mut part = packet[..20].to_vec();
+        part.extend_from_slice(&packet[20 + start..20 + end]);
+        let len = part.len() as u16;
+        part[2..4].copy_from_slice(&len.to_be_bytes());
+        part[6..8]
+            .copy_from_slice(&((start as u16 / 8) | if more { 0x2000 } else { 0 }).to_be_bytes());
+        let checksum = ipv4_header_checksum(&part[..20]);
+        part[10..12].copy_from_slice(&checksum.to_be_bytes());
+        part
+    }
+
+    #[test]
+    fn ipv4_fragments_reorder_duplicate_and_validate() {
+        let mut packet = [0; 80];
+        let len = wrap_ipv4_udp(
+            &[0x5a; 40],
+            Ipv4Addr::new(10, 0, 0, 1),
+            2408,
+            Ipv4Addr::new(10, 0, 0, 2),
+            51821,
+            42,
+            &mut packet,
+        );
+        let first = fragment(&packet[..len], 0, 16, true);
+        let middle = fragment(&packet[..len], 16, 32, true);
+        let last = fragment(&packet[..len], 32, 48, false);
+        let mut table = Ipv4Fragments::default();
+        assert!(table.push(&last).is_none());
+        assert!(table.push(&first).is_none());
+        assert!(table.push(&first).is_none());
+        assert_eq!(table.push(&middle).unwrap(), packet[..len]);
+        assert_eq!(table.completed, 1);
+        assert!(table.entries.is_empty());
+        for part in [&first, &middle, &last] {
+            assert!(unwrap_ipv4_udp(part, 51821).is_none());
+        }
+        assert!(table.push(&first).is_none());
+        let overlap = fragment(&packet[..len], 8, 24, true);
+        assert!(table.push(&overlap).is_none());
+        assert!(table.entries.is_empty());
+        assert_eq!(table.discarded, 1);
+        for bad in [
+            fragment(&packet[..len], 0, 15, true),
+            fragment(&packet[..len], 0, 16, false),
+            first[..25].to_vec(),
+        ] {
+            assert!(table.push(&bad).is_none());
+        }
+        for n in 0..first.len() {
+            assert!(table.push(&first[..n]).is_none());
+        }
+        let mut bad = first.clone();
+        bad[6..8].copy_from_slice(&0x3fffu16.to_be_bytes());
+        assert!(table.push(&bad).is_none());
+        assert!(table.entries.is_empty());
+    }
+
+    #[test]
+    fn ipv4_fragments_expire_and_bound_incomplete_datagrams() {
+        let mut packet = [0; 80];
+        let len = wrap_ipv4_udp(
+            &[0x5a; 40],
+            Ipv4Addr::new(10, 0, 0, 1),
+            2408,
+            Ipv4Addr::new(10, 0, 0, 2),
+            51821,
+            1,
+            &mut packet,
+        );
+        let mut table = Ipv4Fragments::default();
+        for id in 0..65u16 {
+            packet[4..6].copy_from_slice(&id.to_be_bytes());
+            let first = fragment(&packet[..len], 0, 16, true);
+            assert!(table.push(&first).is_none());
+        }
+        assert_eq!(table.entries.len(), 64);
+        assert_eq!(table.discarded, 1);
+        for entry in table.entries.values_mut() {
+            entry.started = Instant::now() - Duration::from_secs(31);
+        }
+        table.expire();
+        assert!(table.entries.is_empty());
+        assert_eq!(table.discarded, 65);
+    }
 
     #[test]
     fn pruning_preserves_idle_tcp_mappings_under_load() {
