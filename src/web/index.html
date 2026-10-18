@@ -757,6 +757,11 @@ html.light .ring-bg { stroke: #ececf0; }
         <div class="bento-header">
           <span class="bento-title">📜 运行日志与策略路由诊断</span>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <label for="logLevel">日志级别</label>
+            <select id="logLevel" class="select" style="width:auto;height:32px;" onchange="changeLogLevel()" disabled>
+              <option value="info">INFO</option>
+              <option value="debug">DEBUG</option>
+            </select>
             <button class="btn btn-sm" onclick="loadLogs()">🔄 刷新日志</button>
             <button class="btn btn-sm" onclick="loadNetworkDiag()">🩺 路由表与防火墙检查</button>
             <button class="btn btn-sm" onclick="copyLogs()">📋 复制内容</button>
@@ -2034,12 +2039,31 @@ async function restartPanel() {
 
 async function loadLogs() {
   const v = document.getElementById('logViewer');
+  const select = document.getElementById('logLevel');
   v.textContent = '正在加载日志...';
   try {
-    const d = await api('./api/v1/logs');
+    const [d, level] = await Promise.all([api('./api/v1/logs'), api('./api/v1/logs/level')]);
+    select.value = level;
+    select.dataset.current = level;
+    select.disabled = false;
     v.textContent = (typeof d === 'string' ? d : d.logs) || '暂无日志';
     v.scrollTop = v.scrollHeight;
   } catch (e) { v.textContent = '加载失败: ' + e.message; }
+}
+
+async function changeLogLevel() {
+  const select = document.getElementById('logLevel');
+  select.disabled = true;
+  try {
+    const level = await api('./api/v1/logs/level', 'POST', { level: select.value });
+    select.value = level;
+    select.dataset.current = level;
+    showAlert('日志级别已切换为 ' + level.toUpperCase() + '，立即生效，重启服务后恢复 INFO', 'success');
+    await loadLogs();
+  } catch (e) {
+    select.value = select.dataset.current;
+    showAlert(e.message, 'error');
+  } finally { select.disabled = false; }
 }
 
 async function loadNetworkDiag() {

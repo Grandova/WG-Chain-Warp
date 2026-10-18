@@ -2,11 +2,7 @@ use clap::Parser;
 use sooya::cli::{Cli, CliHandler, Commands};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_target(false)
-        .compact()
-        .init();
+    sooya::init_logging();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

@@ -144,6 +144,19 @@ impl WgTunnel {
     }
 
     pub fn format_handshake_initiation(&mut self) -> [u8; HANDSHAKE_INIT_LEN] {
+        tracing::debug!(
+            rekey = self.current.is_some(),
+            retry = self.pending.is_some(),
+            key_age_secs = self
+                .current
+                .as_ref()
+                .map(|s| s.established_at.elapsed().as_secs()),
+            last_receive_secs = self
+                .current
+                .as_ref()
+                .map(|s| s.last_received.elapsed().as_secs()),
+            "Preparing WireGuard handshake"
+        );
         let mut c = blake2s_hash(CONSTRUCTION);
         let mut h = blake2s_hash2(&c, IDENTIFIER);
         h = blake2s_hash2(&h, &self.peer_static_bytes);

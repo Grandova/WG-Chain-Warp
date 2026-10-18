@@ -67,6 +67,10 @@ fn build_core_routes() -> Router<AppState> {
         .route("/api/v1/socks5/stop", post(socks5_stop_handler))
         .route("/api/v1/warp/register", post(warp_register_handler))
         .route("/api/v1/logs", get(logs_handler))
+        .route(
+            "/api/v1/logs/level",
+            get(log_level_handler).post(set_log_level_handler),
+        )
         .route("/api/v1/network", get(network_handler))
 }
 
@@ -589,9 +593,12 @@ async fn logs_handler(
         return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
     }
     let mut logs = String::new();
-    if let Ok(out) = std::process::Command::new("journalctl")
-        .args(["-u", "sooya", "-n", "50", "--no-pager"])
-        .output()
+    if let Ok(Ok(out)) = tokio::task::spawn_blocking(|| {
+        std::process::Command::new("journalctl")
+            .args(["-u", "sooya", "-n", "500", "--no-pager"])
+            .output()
+    })
+    .await
     {
         logs.push_str(&String::from_utf8_lossy(&out.stdout));
     }
@@ -599,6 +606,86 @@ async fn logs_handler(
         logs = "暂无系统日志，可通过终端执行: journalctl -u sooya -f 查看实时日志".to_string();
     }
     (StatusCode::OK, Json(ApiResponse::ok(logs)))
+}
+
+async fn log_level_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> (StatusCode, Json<ApiResponse<String>>) {
+    if !is_authenticated(&headers, &state).await {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiResponse::err("Unauthorized")),
+        );
+    }
+    let Some(handle) = crate::LOG_FILTER.get() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::err("日志系统尚未初始化")),
+        );
+    };
+    match handle.with_current(|filter| {
+        if filter.iter().any(|(target, level)| {
+            target == "sooya" && level == tracing::level_filters::LevelFilter::DEBUG
+        }) {
+            "debug".to_string()
+        } else {
+            "info".to_string()
+        }
+    }) {
+        Ok(level) => (StatusCode::OK, Json(ApiResponse::ok(level))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::err(e.to_string())),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct LogLevelPayload {
+    level: String,
+}
+
+async fn set_log_level_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<LogLevelPayload>,
+) -> (StatusCode, Json<ApiResponse<String>>) {
+    if !is_authenticated(&headers, &state).await {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiResponse::err("Unauthorized")),
+        );
+    }
+    let level = match payload.level.as_str() {
+        "info" => tracing::Level::INFO,
+        "debug" => tracing::Level::DEBUG,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::err("日志级别仅支持 info 或 debug")),
+            )
+        }
+    };
+    let Some(handle) = crate::LOG_FILTER.get() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::err("日志系统尚未初始化")),
+        );
+    };
+    let filter = tracing_subscriber::filter::Targets::new()
+        .with_default(tracing::Level::INFO)
+        .with_target("sooya", level);
+    match handle.reload(filter) {
+        Ok(()) => {
+            tracing::info!(level = %payload.level, "Runtime log level changed");
+            (StatusCode::OK, Json(ApiResponse::ok(payload.level)))
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::err(e.to_string())),
+        ),
+    }
 }
 
 async fn network_handler(
@@ -662,6 +749,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn log_level_changes_require_auth_and_apply_without_restart() {
+        crate::init_logging();
+        let dir = tempfile::tempdir().unwrap();
+        let app = create_router(Arc::new(Mutex::new(ChainEngine::new(dir.path()))));
+        let (_, cookie) = login_instance(&app, "admin", "admin", false).await;
+        for (auth, level, expected, current) in [
+            (false, "debug", StatusCode::UNAUTHORIZED, "info"),
+            (true, "debug", StatusCode::OK, "debug"),
+            (true, "trace", StatusCode::BAD_REQUEST, "debug"),
+            (true, "info", StatusCode::OK, "info"),
+            (true, "debug", StatusCode::OK, "debug"),
+            (true, "info", StatusCode::OK, "info"),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/logs/level")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::COOKIE, if auth { cookie.as_str() } else { "" })
+                        .body(Body::from(serde_json::json!({"level": level}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), expected);
+            let (status, body) = get_json(&app, "/api/v1/logs/level", &cookie).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["data"], current);
+            assert_eq!(
+                tracing::enabled!(target: "sooya::warp_kernel::runtime", tracing::Level::DEBUG),
+                current == "debug"
+            );
+            assert!(!tracing::enabled!(target: "reqwest", tracing::Level::DEBUG));
+        }
+    }
+
+    #[tokio::test]
     async fn test_web_panel_login_and_authenticated_routes() {
         let dir = tempfile::tempdir().unwrap();
         let engine = Arc::new(Mutex::new(ChainEngine::new(dir.path())));
@@ -683,6 +809,7 @@ mod tests {
             "/api/v1/status",
             "/api/v1/config",
             "/api/v1/logs",
+            "/api/v1/logs/level",
             "/api/v1/network",
         ] {
             let r = app

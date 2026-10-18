@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use tracing::info;
+use tracing::{debug, info, Instrument};
 
 const TUN_IPV4: Ipv4Addr = Ipv4Addr::new(172, 31, 255, 1);
 const INNER_WG_SPORT: u16 = 51821;
@@ -224,6 +224,9 @@ impl Socks5Service {
     }
 
     pub fn stop(&mut self) {
+        if self.is_running() {
+            debug!(listen_addr = ?self.listen_addr, "Stopping SOCKS5 server and closing active connections");
+        }
         self.running.store(false, Ordering::SeqCst);
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(true);
@@ -579,11 +582,19 @@ fn run_kernel_packet_loop(
     let mut probe_buf = [0u8; 768];
 
     let mut had_work = false;
+    let mut last_stats = Instant::now();
+    let mut vpn1_rejected = 0u64;
+    let mut warp_rejected = 0u64;
 
     let send_via_vpn1 = |pkt: &[u8], v1: &mut WgTunnel, vep: SocketAddr, sock: &UdpSocket, buf: &mut [u8], tx: &AtomicU64| {
         if let Some(n) = v1.encapsulate(pkt, buf) {
-            if sock.send_to(&buf[..n], vep).is_ok() {
-                tx.fetch_add(n as u64, Ordering::Relaxed);
+            match sock.send_to(&buf[..n], vep) {
+                Ok(_) => {
+                    tx.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    debug!(endpoint = %vep, bytes = n, error = %e, "WireGuard UDP send failed")
+                }
             }
         }
     };
@@ -613,7 +624,9 @@ fn run_kernel_packet_loop(
                 v1_tx.fetch_add((10 + wg2_frame.len()) as u64, Ordering::Relaxed);
             }
         } else {
-            let _ = sock.send_to(wg2_frame, w_ep);
+            if let Err(e) = sock.send_to(wg2_frame, w_ep) {
+                debug!(endpoint = %w_ep, bytes = wg2_frame.len(), error = %e, "WARP UDP send failed");
+            }
         }
     };
 
@@ -628,13 +641,18 @@ fn run_kernel_packet_loop(
 
     while running.load(Ordering::Relaxed) {
         if let Some((ref mut v1, vep)) = vpn1_tunnel {
-            v1.expire_if_dead();
+            if v1.expire_if_dead() {
+                tracing::warn!(endpoint = %vep, "WireGuard session expired before rekey completed");
+            }
             if !v1.has_session() {
                 vpn1_hs_ok.store(false, Ordering::Relaxed);
             }
             if v1.needs_handshake() {
+                debug!(endpoint = %vep, "Sending WireGuard handshake");
                 let init = v1.format_handshake_initiation();
-                let _ = udp_sock.send_to(&init, vep);
+                if let Err(e) = udp_sock.send_to(&init, vep) {
+                    debug!(endpoint = %vep, error = %e, "WireGuard handshake send failed");
+                }
                 vpn1_tx.fetch_add(148, Ordering::Relaxed);
             } else if v1.needs_keepalive() {
                 send_via_vpn1(&[], v1, vep, &udp_sock, &mut wg1_buf, &vpn1_tx);
@@ -642,7 +660,9 @@ fn run_kernel_packet_loop(
         }
 
         if let Some(ref mut w) = warp_tunnel {
-            w.expire_if_dead();
+            if w.expire_if_dead() {
+                tracing::warn!(endpoint = %active_warp_ep, "WARP session expired before rekey completed");
+            }
             if !w.has_session() {
                 warp_hs_ok.store(false, Ordering::Relaxed);
             }
@@ -652,6 +672,7 @@ fn run_kernel_packet_loop(
                         active_warp_ep = warp_candidates[warp_cand_idx % warp_candidates.len()];
                         warp_cand_idx = warp_cand_idx.wrapping_add(1);
                     }
+                    debug!(endpoint = %active_warp_ep, "Sending WARP handshake");
                     let init = w.format_handshake_initiation();
                     send_warp_frame(&init, active_warp_ep, &mut vpn1_tunnel, socks_relay, &udp_sock, &mut ip_id, &mut wrap_buf, &mut wg1_buf, &vpn1_tx, &warp_tx);
                 } else if w.needs_keepalive() {
@@ -733,10 +754,30 @@ fn run_kernel_packet_loop(
 
         let all_ready = vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(true)
             && warp_tunnel.as_ref().map(|w| w.has_session()).unwrap_or(true);
+        if last_stats.elapsed() >= Duration::from_secs(15) {
+            debug!(
+                all_ready,
+                vpn1_tx = vpn1_tx.load(Ordering::Relaxed),
+                vpn1_rx = vpn1_rx.load(Ordering::Relaxed),
+                warp_tx = warp_tx.load(Ordering::Relaxed),
+                warp_rx = warp_rx.load(Ordering::Relaxed),
+                vpn1_rejected,
+                warp_rejected,
+                pending_dns = active_dns.len(),
+                "Tunnel traffic snapshot"
+            );
+            last_stats = Instant::now();
+        }
 
         let mut di = 0;
         while di < active_dns.len() {
             if active_dns[di].started_at.elapsed() > Duration::from_millis(2400) {
+                debug!(
+                    port = active_dns[di].local_port,
+                    retries = active_dns[di].retries,
+                    all_ready,
+                    "Tunnel DNS query timed out"
+                );
                 active_dns.swap_remove(di);
                 continue;
             }
@@ -819,7 +860,8 @@ fn run_kernel_packet_loop(
             if let Some((ref mut v1, vep)) = vpn1_tunnel {
                 vpn1_rx.fetch_add(udp_len as u64, Ordering::Relaxed);
                 match v1.decapsulate(&udp_buf[..udp_len], &mut wg1_buf) {
-                    DecapOutcome::None | DecapOutcome::Keepalive => {}
+                    DecapOutcome::None => vpn1_rejected += 1,
+                    DecapOutcome::Keepalive => {}
                     DecapOutcome::HandshakeCompleted { rtt_ms } => {
                         vpn1_hs_ok.store(true, Ordering::Relaxed);
                         info!("WireGuard handshake completed with {} (RTT: {} ms)", vep, rtt_ms);
@@ -889,7 +931,8 @@ fn run_kernel_packet_loop(
             if let (Some(ref mut w), Some((w_pkt, w_src))) = (&mut warp_tunnel, warp_in_slice) {
                 warp_rx.fetch_add(w_pkt.len() as u64, Ordering::Relaxed);
                 match w.decapsulate(w_pkt, &mut wg2_buf) {
-                    DecapOutcome::None | DecapOutcome::Keepalive => {}
+                    DecapOutcome::None => warp_rejected += 1,
+                    DecapOutcome::Keepalive => {}
                     DecapOutcome::HandshakeCompleted { rtt_ms } => {
                         active_warp_ep = w_src;
                         *active_warp_ep_shared.lock().unwrap() = Some(active_warp_ep.to_string());
@@ -1225,23 +1268,48 @@ async fn copy_tcp(
     mut reader: impl tokio::io::AsyncRead + Unpin,
     mut writer: impl tokio::io::AsyncWrite + Unpin,
     counter: &AtomicU64,
-) -> std::io::Result<()> {
+    direction: &str,
+) -> std::io::Result<u64> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut buf = [0u8; 8192];
+    let mut bytes = 0u64;
     loop {
-        let n = reader.read(&mut buf).await?;
+        let n = match reader.read(&mut buf).await {
+            Ok(n) => n,
+            Err(e) => {
+                debug!(direction, bytes, error = %e, kind = ?e.kind(), "TCP read failed");
+                return Err(e);
+            }
+        };
         if n == 0 {
-            return writer.shutdown().await;
+            let result = writer.shutdown().await;
+            debug!(direction, bytes, error = ?result.as_ref().err(), "TCP EOF; shutting down opposite write half");
+            result?;
+            return Ok(bytes);
         }
         let mut written = 0;
         while written < n {
-            let n = tokio::time::timeout(Duration::from_secs(90), writer.write(&buf[written..n]))
-                .await??;
+            let n =
+                match tokio::time::timeout(Duration::from_secs(90), writer.write(&buf[written..n]))
+                    .await
+                {
+                    Ok(Ok(n)) => n,
+                    Ok(Err(e)) => {
+                        debug!(direction, bytes, error = %e, kind = ?e.kind(), "TCP write failed");
+                        return Err(e);
+                    }
+                    Err(_) => {
+                        debug!(direction, bytes, "TCP write stalled for 90 seconds");
+                        return Err(std::io::ErrorKind::TimedOut.into());
+                    }
+                };
             if n == 0 {
+                debug!(direction, bytes, "TCP write returned zero");
                 return Err(std::io::ErrorKind::WriteZero.into());
             }
             written += n;
             counter.fetch_add(n as u64, Ordering::Relaxed);
+            bytes += n as u64;
         }
     }
 }
@@ -1273,6 +1341,7 @@ async fn connect_upstream_tcp(
         };
         let _ = sock.set_nodelay(true);
         let force_tunnel = tunnel_active && !is_private_or_local_ip(addr.ip());
+        debug!(destination = %addr, force_tunnel, "Connecting SOCKS5 upstream");
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::io::AsRawFd;
@@ -1283,9 +1352,16 @@ async fn connect_upstream_tcp(
         let _ = force_tunnel;
 
         match tokio::time::timeout(Duration::from_secs(6), sock.connect(addr)).await {
-            Ok(Ok(stream)) => return Ok(stream),
-            Ok(Err(e)) => last_err = e,
+            Ok(Ok(stream)) => {
+                debug!(destination = %addr, local = ?stream.local_addr().ok(), "SOCKS5 upstream connected");
+                return Ok(stream);
+            }
+            Ok(Err(e)) => {
+                debug!(destination = %addr, error = %e, kind = ?e.kind(), "SOCKS5 upstream connect failed");
+                last_err = e;
+            }
             Err(_) => {
+                debug!(destination = %addr, "SOCKS5 upstream connect timed out after 6 seconds");
                 last_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout");
             }
         }
@@ -1312,6 +1388,7 @@ async fn run_native_socks5_server(
         .collect();
     let users = Arc::new(active_users);
     let mut connections = tokio::task::JoinSet::new();
+    static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
     loop {
         if !running.load(Ordering::Relaxed) {
@@ -1320,10 +1397,23 @@ async fn run_native_socks5_server(
         let accept_res = tokio::select! {
             biased;
             _ = shutdown_rx.changed() => break,
-            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
+            Some(result) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(e) = result {
+                    tracing::warn!(error = %e, "SOCKS5 connection task failed");
+                }
+                continue;
+            },
             res = listener.accept() => res,
         };
-        let Ok((mut client, _)) = accept_res else { break };
+        let (mut client, peer) = match accept_res {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::warn!(error = %e, "SOCKS5 listener accept failed");
+                break;
+            }
+        };
+        let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
+        debug!(conn_id, client = %peer, active = connections.len() + 1, "SOCKS5 connection accepted");
         let (users, tunnel_flag, dns_s, tx_c, rx_c) = (
             users.clone(),
             tunnel_running.clone(),
@@ -1332,6 +1422,7 @@ async fn run_native_socks5_server(
             rx_counter.clone(),
         );
         connections.spawn(async move {
+            let started = Instant::now();
             let _ = client.set_nodelay(true);
             #[cfg(target_os = "linux")]
             {
@@ -1403,6 +1494,7 @@ async fn run_native_socks5_server(
                     }
                     let upass = String::from_utf8_lossy(&b[..plen]).into_owned();
                     if !users.iter().any(|u| u.username == uname && u.password == upass) {
+                        debug!("SOCKS5 authentication rejected");
                         let _ = client.write_all(&[0x01, 0x01]).await;
                         return None;
                     }
@@ -1459,10 +1551,19 @@ async fn run_native_socks5_server(
             })
             .await;
 
-            let Ok(Some((cmd, target))) = hs_res else {
-                return;
+            let (cmd, target) = match hs_res {
+                Ok(Some(request)) => request,
+                Ok(None) => {
+                    debug!("SOCKS5 handshake rejected or client disconnected");
+                    return;
+                }
+                Err(_) => {
+                    debug!("SOCKS5 handshake timed out after 10 seconds");
+                    return;
+                }
             };
             let tunnel_active = tunnel_flag.load(Ordering::Relaxed);
+            debug!(cmd, target = %target, tunnel_active, "SOCKS5 request received");
 
             if cmd == 0x03 {
                 // SOCKS5 UDP Associate
@@ -1523,11 +1624,19 @@ async fn run_native_socks5_server(
                 let mut u_buf = [0u8; 2048];
                 let mut tcp_eof = [0u8; 16];
                 let mut last_c_addr: Option<SocketAddr> = None;
+                debug!(relay_port = bound_port, "SOCKS5 UDP association started");
                 loop {
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(60)) => break,
+                        _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                            debug!("SOCKS5 UDP association idle for 60 seconds");
+                            break;
+                        },
                         res = client.read(&mut tcp_eof) => {
-                            if res.unwrap_or(0) == 0 { break; }
+                            match res {
+                                Ok(0) => { debug!("SOCKS5 UDP control connection closed"); break; }
+                                Err(e) => { debug!(error = %e, "SOCKS5 UDP control connection failed"); break; }
+                                Ok(_) => {}
+                            }
                         }
                         Ok((n, c_addr)) = client_udp.recv_from(&mut c_buf) => {
                             if n <= 10 || c_buf[2] != 0 { continue; }
@@ -1590,6 +1699,7 @@ async fn run_native_socks5_server(
                         }
                     }
                 }
+                debug!(elapsed_ms = started.elapsed().as_millis() as u64, "SOCKS5 UDP association finished");
                 return;
             }
 
@@ -1599,6 +1709,7 @@ async fn run_native_socks5_server(
             }
 
             let Some(addrs) = resolve_socks5_target(&target, tunnel_active, &dns_s).await else {
+                debug!(target = %target, tunnel_active, "SOCKS5 target resolution failed");
                 let _ = client.write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
                 return;
             };
@@ -1637,18 +1748,29 @@ async fn run_native_socks5_server(
                         let (client_read, client_write) = client.split();
                         let (up_read, up_write) = up.split();
                         // EOF shuts down only the opposite write half; the response can still arrive.
-                        let _ = tokio::try_join!(
-                            copy_tcp(client_read, up_write, &tx_c),
-                            copy_tcp(up_read, client_write, &rx_c),
+                        let result = tokio::try_join!(
+                            copy_tcp(client_read, up_write, &tx_c, "client_to_upstream"),
+                            copy_tcp(up_read, client_write, &rx_c, "upstream_to_client"),
                         );
+                        match result {
+                            Ok((tx, rx)) => debug!(target = %target, tx, rx, elapsed_ms = started.elapsed().as_millis() as u64, "SOCKS5 TCP relay closed normally"),
+                            Err(e) => debug!(target = %target, error = %e, kind = ?e.kind(), elapsed_ms = started.elapsed().as_millis() as u64, "SOCKS5 TCP relay closed after error"),
+                        }
+                    } else {
+                        debug!(target = %target, "SOCKS5 client disconnected before CONNECT reply");
                     }
                 }
-                Err(_) => {
+                Err(e) => {
+                    debug!(target = %target, error = %e, kind = ?e.kind(), "SOCKS5 CONNECT failed");
                     let _ = client.write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
                 }
             }
-        });
+        }.instrument(tracing::info_span!("socks5", conn_id, client = %peer)));
     }
+    debug!(
+        active = connections.len(),
+        "Closing SOCKS5 connection tasks"
+    );
     connections.shutdown().await;
     Ok(())
 }
@@ -1764,7 +1886,10 @@ fn read_tun(_tun_fd: i32, _buf: &mut [u8]) -> Option<usize> { None }
 #[cfg(target_os = "linux")]
 fn write_tun(tun_fd: i32, buf: &[u8]) {
     if tun_fd >= 0 && !buf.is_empty() {
-        unsafe { let _ = libc::write(tun_fd, buf.as_ptr() as *const _, buf.len()); }
+        let n = unsafe { libc::write(tun_fd, buf.as_ptr() as *const _, buf.len()) };
+        if n < 0 {
+            debug!(error = %std::io::Error::last_os_error(), bytes = buf.len(), "TUN write failed");
+        }
     }
 }
 
@@ -1898,7 +2023,9 @@ mod tests {
         let (writer, _sink) = tokio::io::duplex(1);
         source.write_all(b"blocked").await.unwrap();
         let counter = AtomicU64::new(0);
-        let err = copy_tcp(reader, writer, &counter).await.unwrap_err();
+        let err = copy_tcp(reader, writer, &counter, "test")
+            .await
+            .unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
@@ -1909,7 +2036,7 @@ mod tests {
         let (writer, mut sink) = tokio::io::duplex(16);
         let counter = Arc::new(AtomicU64::new(0));
         let tx = counter.clone();
-        let task = tokio::spawn(async move { copy_tcp(reader, writer, &tx).await });
+        let task = tokio::spawn(async move { copy_tcp(reader, writer, &tx, "test").await });
         tokio::time::advance(Duration::from_secs(600)).await;
         source.write_all(b"alive").await.unwrap();
         source.shutdown().await.unwrap();
