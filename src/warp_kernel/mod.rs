@@ -4,7 +4,4 @@ pub mod noise;
 pub mod pkt;
 pub mod runtime;
 
-pub const TEST_VPN1_PORT: u16 = 25431;
-pub const TEST_WARP_PORT: u16 = 25432;
-
-pub use runtime::{KernelStats, Socks5Service, WarpKernel};
+pub use runtime::{KernelStats, ProbeJob, ProbeTarget, Socks5Service, WarpKernel};

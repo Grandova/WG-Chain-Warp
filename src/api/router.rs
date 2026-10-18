@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -96,7 +95,7 @@ pub fn create_router(engine: Arc<Mutex<ChainEngine>>) -> Router {
         router = router.nest(trimmed_bp, build_core_routes());
     }
 
-    router.layer(CorsLayer::permissive()).with_state(state)
+    router.with_state(state)
 }
 
 fn is_https_request(headers: &HeaderMap) -> bool {
@@ -499,7 +498,8 @@ async fn test_config_handler(
         );
     }
 
-    let report = HealthChecker::run_full_test(&config, Some(&uplink), &v1_name, &v1_ep, &v2_name, &v2_ep).await;
+    let probe_sender = state.reader.probe_sender();
+    let report = HealthChecker::run_full_test(&config, Some(&uplink), &v1_name, &v1_ep, &v2_name, &v2_ep, &probe_sender).await;
     state.reader.update_last_report(report.clone());
     (StatusCode::OK, Json(ApiResponse::ok(report)))
 }

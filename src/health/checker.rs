@@ -2,9 +2,10 @@ use crate::error::{ChainError, Result};
 use crate::model::config::{ChainProxyConfig, ProxyMode};
 use crate::model::state::{FinalHopStatus, PhysicalHopStatus, TestReport, VpnHopStatus};
 use crate::network::iproute::IpRouteManager;
-use crate::warp_kernel::{TEST_VPN1_PORT, TEST_WARP_PORT};
-use reqwest::Proxy;
+use crate::warp_kernel::{ProbeJob, ProbeTarget};
+use std::sync::{mpsc::SyncSender, Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::info;
 
 fn map_country_code(code: &str) -> &'static str {
@@ -47,75 +48,87 @@ impl HealthChecker {
         }
     }
 
-    fn cached_proxy_client(proxy_port: u16) -> Result<reqwest::Client> {
-        static CLIENT_VPN1: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-        static CLIENT_WARP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-        let build = |port: u16| -> Result<reqwest::Client> {
-            let proxy = Proxy::all(format!("http://127.0.0.1:{}", port))
-                .map_err(|e| ChainError::NetworkError(e.to_string()))?;
-            reqwest::Client::builder()
-                .proxy(proxy)
-                .pool_max_idle_per_host(0)
-                .tcp_nodelay(true)
-                .build()
-                .map_err(|e| ChainError::NetworkError(e.to_string()))
-        };
-        if proxy_port == TEST_VPN1_PORT {
-            if let Some(c) = CLIENT_VPN1.get() { return Ok(c.clone()); }
-            let c = build(proxy_port)?;
-            let _ = CLIENT_VPN1.set(c.clone());
-            return Ok(c);
-        }
-        if proxy_port == TEST_WARP_PORT {
-            if let Some(c) = CLIENT_WARP.get() { return Ok(c.clone()); }
-            let c = build(proxy_port)?;
-            let _ = CLIENT_WARP.set(c.clone());
-            return Ok(c);
-        }
-        build(proxy_port)
-    }
-
-    async fn single_probe_proxy(port: u16, hop_name: &str, url: &str, timeout: Duration) -> Result<(String, u64)> {
-        let client = Self::cached_proxy_client(port)?;
+    async fn single_probe_kernel(
+        probe_sender: &Arc<Mutex<Option<SyncSender<ProbeJob>>>>,
+        target: ProbeTarget,
+        hop_name: &str,
+        timeout: Duration,
+    ) -> Result<(String, u64)> {
+        let sender = probe_sender
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| ChainError::NetworkError(format!("{} 隧道尚未就绪", hop_name)))?;
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        sender
+            .try_send(ProbeJob { target, reply_tx })
+            .map_err(|_| ChainError::NetworkError(format!("{} 探测队列繁忙", hop_name)))?;
         let start = Instant::now();
-        if let Ok(resp) = client.get(url).timeout(timeout).send().await {
-            let elapsed = start.elapsed().as_millis() as u64;
-            if let Ok(text) = resp.text().await {
+        match tokio::time::timeout(timeout, reply_rx).await {
+            Ok(Ok(Ok(text))) => {
+                let elapsed = start.elapsed().as_millis() as u64;
                 if Self::parse_trace(&text).0.is_some() {
                     return Ok((text.trim().to_string(), elapsed));
                 }
+                Err(ChainError::NetworkError(format!("{} 探测返回无效响应", hop_name)))
             }
+            Ok(Ok(Err(e))) => Err(ChainError::NetworkError(format!("{} 探测失败: {}", hop_name, e))),
+            _ => Err(ChainError::NetworkError(format!("{} 探测超时", hop_name))),
         }
-        Err(ChainError::NetworkError(format!("Connection test to {} failed via {} on 127.0.0.1:{}", url, hop_name, port)))
     }
 
-    pub async fn test_hop_via_proxy(port: u16, hop_name: &str, url: &str, timeout: Duration) -> Result<(String, u64)> {
+    async fn test_hop_via_kernel(
+        probe_sender: &Arc<Mutex<Option<SyncSender<ProbeJob>>>>,
+        target: ProbeTarget,
+        hop_name: &str,
+        timeout: Duration,
+    ) -> Result<(String, u64)> {
         let mut last_err = None;
         for attempt in 1..=2 {
-            match Self::single_probe_proxy(port, hop_name, url, timeout).await {
+            match Self::single_probe_kernel(probe_sender, target, hop_name, timeout).await {
                 Ok(res) => return Ok(res),
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt < 2 { tokio::time::sleep(Duration::from_millis(250)).await; }
-                }
-            }
-        }
-        if port == TEST_WARP_PORT {
-            if let Ok(direct) = reqwest::Client::builder().timeout(Duration::from_secs(3)).tcp_nodelay(true).build() {
-                for fallback_url in ["https://1.1.1.1/cdn-cgi/trace", "http://1.1.1.1/cdn-cgi/trace"] {
-                    let start = Instant::now();
-                    if let Ok(resp) = direct.get(fallback_url).send().await {
-                        let elapsed = start.elapsed().as_millis() as u64;
-                        if let Ok(text) = resp.text().await {
-                            if Self::parse_trace(&text).0.is_some() {
-                                return Ok((text.trim().to_string(), elapsed));
-                            }
-                        }
+                    if attempt < 2 {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
                     }
                 }
             }
         }
+        if matches!(target, ProbeTarget::Warp) {
+            if let Ok(res) = Self::direct_http_trace().await {
+                return Ok(res);
+            }
+        }
         Err(last_err.unwrap())
+    }
+
+    async fn direct_http_trace() -> Result<(String, u64)> {
+        let start = Instant::now();
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(3),
+            tokio::net::TcpStream::connect("1.1.1.1:80"),
+        )
+        .await
+        .map_err(|_| ChainError::NetworkError("直连探测连接超时".into()))?
+        .map_err(|e| ChainError::NetworkError(e.to_string()))?;
+        let _ = stream.set_nodelay(true);
+        stream
+            .write_all(b"GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nUser-Agent: curl/8.5.0\r\nConnection: close\r\n\r\n")
+            .await
+            .map_err(|e| ChainError::NetworkError(e.to_string()))?;
+        let mut buf = Vec::with_capacity(512);
+        tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut buf))
+            .await
+            .map_err(|_| ChainError::NetworkError("直连探测读取超时".into()))?
+            .map_err(|e| ChainError::NetworkError(e.to_string()))?;
+        let raw = String::from_utf8_lossy(&buf);
+        let body = raw.split("\r\n\r\n").nth(1).unwrap_or(&raw).trim().to_string();
+        if Self::parse_trace(&body).0.is_some() {
+            Ok((body, start.elapsed().as_millis() as u64))
+        } else {
+            Err(ChainError::NetworkError("无效的 trace 响应".into()))
+        }
     }
 
     fn parse_trace(trace: &str) -> (Option<String>, Option<String>, Option<String>, bool) {
@@ -220,25 +233,71 @@ impl HealthChecker {
             server.listen
         };
         let addr = std::net::SocketAddr::new(ip, server.port);
-        let net_err = |e: reqwest::Error| ChainError::NetworkError(e.to_string());
-        let mut proxy = Proxy::all(format!("socks5h://{}", addr)).map_err(net_err)?;
-        if let Some(user) = server.users.iter().find(|u| !u.username.trim().is_empty()) {
-            proxy = proxy.basic_auth(&user.username, &user.password);
-        }
-        if let Ok(client) = reqwest::Client::builder().proxy(proxy).timeout(Duration::from_secs(3)).build() {
-            let start = Instant::now();
-            if let Ok(resp) = client.get("http://1.1.1.1/cdn-cgi/trace").send().await {
-                if let Ok(trace) = resp.text().await {
-                    if Self::parse_trace(&trace).0.is_some() {
-                        return Ok((trace, start.elapsed().as_millis() as u64));
-                    }
+        let start = Instant::now();
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(3),
+            tokio::net::TcpStream::connect(addr),
+        )
+        .await
+        .map_err(|_| ChainError::NetworkError(format!("SOCKS5 监听端口 {} 连接超时", addr)))?
+        .map_err(|e| ChainError::NetworkError(format!("SOCKS5 监听端口 {} 无法连接: {}", addr, e)))?;
+        let _ = stream.set_nodelay(true);
+
+        let probe_via_socks = async {
+            let user_opt = server.users.iter().find(|u| !u.username.trim().is_empty());
+            if user_opt.is_some() {
+                stream.write_all(&[0x05, 0x02, 0x00, 0x02]).await?;
+            } else {
+                stream.write_all(&[0x05, 0x01, 0x00]).await?;
+            }
+            let mut method_resp = [0u8; 2];
+            stream.read_exact(&mut method_resp).await?;
+            if method_resp[0] != 0x05 {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not socks5"));
+            }
+            if method_resp[1] == 0x02 {
+                let u = user_opt.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::PermissionDenied, "auth required"))?;
+                let ub = u.username.as_bytes();
+                let pb = u.password.as_bytes();
+                let mut auth_pkt = Vec::with_capacity(3 + ub.len() + pb.len());
+                auth_pkt.push(0x01);
+                auth_pkt.push(ub.len() as u8);
+                auth_pkt.extend_from_slice(ub);
+                auth_pkt.push(pb.len() as u8);
+                auth_pkt.extend_from_slice(pb);
+                stream.write_all(&auth_pkt).await?;
+                let mut auth_resp = [0u8; 2];
+                stream.read_exact(&mut auth_resp).await?;
+                if auth_resp[1] != 0x00 {
+                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "auth failed"));
                 }
+            } else if method_resp[1] != 0x00 {
+                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "unsupported method"));
+            }
+
+            // CONNECT 1.1.1.1:80
+            stream.write_all(&[0x05, 0x01, 0x00, 0x01, 1, 1, 1, 1, 0x00, 0x50]).await?;
+            let mut conn_reply = [0u8; 10];
+            stream.read_exact(&mut conn_reply).await?;
+            if conn_reply[1] != 0x00 {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "connect failed"));
+            }
+            stream
+                .write_all(b"GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nUser-Agent: curl/8.5.0\r\nConnection: close\r\n\r\n")
+                .await?;
+            let mut buf = Vec::with_capacity(512);
+            stream.read_to_end(&mut buf).await?;
+            let raw = String::from_utf8_lossy(&buf);
+            let body = raw.split("\r\n\r\n").nth(1).unwrap_or(&raw).trim().to_string();
+            Ok::<String, std::io::Error>(body)
+        };
+
+        if let Ok(Ok(trace)) = tokio::time::timeout(Duration::from_secs(3), probe_via_socks).await {
+            if Self::parse_trace(&trace).0.is_some() {
+                return Ok((trace, start.elapsed().as_millis() as u64));
             }
         }
-        let start = Instant::now();
-        tokio::net::TcpStream::connect(addr)
-            .await
-            .map_err(|e| ChainError::NetworkError(format!("SOCKS5 监听端口 {} 无法连接: {}", addr, e)))?;
+
         Ok((format!("ip={}\nloc=SOCKS5\n", addr), start.elapsed().as_millis() as u64))
     }
 
@@ -249,6 +308,7 @@ impl HealthChecker {
         vpn1_ep: &str,
         vpn2_name: &str,
         vpn2_ep: &str,
+        probe_sender: &Arc<Mutex<Option<SyncSender<ProbeJob>>>>,
     ) -> TestReport {
         let mode = config.mode;
         info!("Running per-hop health probe for mode {:?}", mode);
@@ -281,7 +341,7 @@ impl HealthChecker {
                 let probe = if mode == ProxyMode::Socks5Server {
                     Self::test_socks_server(config).await
                 } else {
-                    Self::test_hop_via_proxy(TEST_WARP_PORT, vpn1_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(6)).await
+                    Self::test_hop_via_kernel(probe_sender, ProbeTarget::Warp, vpn1_name, Duration::from_secs(6)).await
                 };
                 let isp = if mode == ProxyMode::Socks5Server { "本机直连" } else { "WireGuard" };
                 let (hop1, final_exit, ok1) = Self::build_hop_and_exit(vpn1_name, vpn1_ep, probe, isp, false);
@@ -295,7 +355,7 @@ impl HealthChecker {
                 }
             }
             ProxyMode::StandaloneWarp => {
-                let probe = Self::test_hop_via_proxy(TEST_WARP_PORT, vpn2_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(6)).await;
+                let probe = Self::test_hop_via_kernel(probe_sender, ProbeTarget::Warp, vpn2_name, Duration::from_secs(6)).await;
                 let (hop2, final_exit, ok2) = Self::build_hop_and_exit(vpn2_name, vpn2_ep, probe, "Cloudflare WARP", true);
                 let hop1 = bypass_hop("Entry Relay", "BYPASS (直连 WARP)", "直连 WARP 模式，无需前置中继");
                 TestReport {
@@ -307,8 +367,8 @@ impl HealthChecker {
                 }
             }
             ProxyMode::WgChainWarp | ProxyMode::SocksChainWarp => {
-                let hop1_fut = Self::single_probe_proxy(TEST_VPN1_PORT, vpn1_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(4));
-                let hop2_fut = Self::test_hop_via_proxy(TEST_WARP_PORT, vpn2_name, "http://1.1.1.1/cdn-cgi/trace", Duration::from_secs(6));
+                let hop1_fut = Self::single_probe_kernel(probe_sender, ProbeTarget::Vpn1, vpn1_name, Duration::from_secs(4));
+                let hop2_fut = Self::test_hop_via_kernel(probe_sender, ProbeTarget::Warp, vpn2_name, Duration::from_secs(6));
                 let (hop1_res, hop2_res) = tokio::join!(hop1_fut, hop2_fut);
 
                 let (mut vpn1_hop, _, mut vpn1_ok) = Self::build_hop_and_exit(vpn1_name, vpn1_ep, hop1_res, "WireGuard", false);
@@ -332,3 +392,4 @@ impl HealthChecker {
         }
     }
 }
+

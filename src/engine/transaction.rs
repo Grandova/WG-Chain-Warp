@@ -253,6 +253,10 @@ impl ChainEngine {
         *self.last_report.lock().unwrap() = Some(report);
     }
 
+    pub fn probe_sender(&self) -> Arc<Mutex<Option<std::sync::mpsc::SyncSender<crate::warp_kernel::ProbeJob>>>> {
+        self.warp_kernel.lock().unwrap().probe_sender()
+    }
+
     pub fn start_socks5(&self, srv: Socks5ServerConfig) -> Result<()> {
         let (tunnel_flag, dns_sender) = {
             let wk = self.warp_kernel.lock().unwrap();
@@ -583,10 +587,14 @@ impl ChainEngine {
                     }
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-                if !bg_wk.lock().unwrap().is_running() {
-                    return;
-                }
-                let full = HealthChecker::run_full_test(&bg_cfg, Some(&bg_up), &bg_v1n, &bg_v1e, &bg_v2n, &bg_v2e).await;
+                let probe_sender = {
+                    let g = bg_wk.lock().unwrap();
+                    if !g.is_running() {
+                        return;
+                    }
+                    g.probe_sender()
+                };
+                let full = HealthChecker::run_full_test(&bg_cfg, Some(&bg_up), &bg_v1n, &bg_v1e, &bg_v2n, &bg_v2e, &probe_sender).await;
                 if bg_wk.lock().unwrap().is_running() && full.final_exit.exit_ip.is_some() {
                     *bg_rep.lock().unwrap() = Some(full);
                 }

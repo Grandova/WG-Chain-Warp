@@ -5,7 +5,6 @@ pub enum ServiceState {
     Stopped,
     Starting,
     Running,
-    Degraded,
     RollingBack,
     Failed,
 }

@@ -110,8 +110,6 @@ pub struct RoutingConfig {
 
 fn default_true() -> bool { true }
 fn default_connection_mark() -> String { "0x88".to_string() }
-fn default_dns_mode() -> String { "chain".to_string() }
-pub fn default_log_level() -> String { "info".to_string() }
 
 impl RoutingConfig {
     pub fn inbound_mark(&self) -> Result<u32> {
@@ -142,24 +140,8 @@ impl Default for RoutingConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DnsConfig {
-    #[serde(default = "default_dns_mode")]
-    pub mode: String,
-    #[serde(default)]
-    pub custom_servers: Vec<String>,
-}
-
-impl Default for DnsConfig {
-    fn default() -> Self {
-        Self { mode: default_dns_mode(), custom_servers: vec![] }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChainProxyConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
     #[serde(default)]
     pub mode: ProxyMode,
     #[serde(default)]
@@ -174,27 +156,6 @@ pub struct ChainProxyConfig {
     pub socks5_server: Option<Socks5ServerConfig>,
     #[serde(default)]
     pub routing: RoutingConfig,
-    #[serde(default)]
-    pub dns: DnsConfig,
-    #[serde(default = "default_log_level")]
-    pub log_level: String,
-}
-
-impl Default for ChainProxyConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            mode: ProxyMode::default(),
-            uplink_interface: None,
-            vpn1: VpnNodeConfig::default(),
-            vpn2: VpnNodeConfig::default(),
-            socks5: None,
-            socks5_server: None,
-            routing: RoutingConfig::default(),
-            dns: DnsConfig::default(),
-            log_level: default_log_level(),
-        }
-    }
 }
 
 impl ChainProxyConfig {

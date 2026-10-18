@@ -465,7 +465,7 @@ html.light .ring-bg { stroke: #ececf0; }
         <div>
           <div class="brand-title">
             <span>Sooya 面板</span>
-            <span class="brand-ver" id="siderVersion">v1.6.6</span>
+            <span class="brand-ver" id="siderVersion">v1.6.7</span>
           </div>
           <div style="font-size:11.5px;color:var(--muted);">仅接管出站 (0x800) · 入站 100% 原路返回</div>
         </div>
@@ -1977,9 +1977,9 @@ async function quickRekeyWarp() {
 }
 
 async function testActiveChain() {
-  const isRun = lastChainStatus && lastChainStatus.state === 'Running';
+  const isRun = lastChainStatus && (lastChainStatus.state === 'Running' || lastChainStatus.socks5_running);
   if (!isRun) {
-    showAlert('当前未启用任何出站隧道，请先打开节点开关', 'info');
+    showAlert('当前未启用任何出站隧道或 SOCKS5 服务，请先打开节点开关', 'info');
     return;
   }
   const btn = document.getElementById('btnStatusTest');

@@ -7,7 +7,6 @@ use crate::warp_kernel::pkt::{
     inspect_dns_question, parse_dns_a_response, unwrap_ipv4_udp, wrap_ipv4_udp, L3NatTable,
     TcpMicroProbe,
 };
-use crate::warp_kernel::{TEST_VPN1_PORT, TEST_WARP_PORT};
 use crate::wireguard::model::WgConfig;
 use base64::prelude::*;
 use std::collections::HashMap;
@@ -34,15 +33,15 @@ pub struct KernelStats {
     pub active_warp_endpoint: Option<String>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ProbeTarget {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeTarget {
     Vpn1,
     Warp,
 }
 
-struct ProbeJob {
-    target: ProbeTarget,
-    reply_tx: mpsc::SyncSender<std::result::Result<String, String>>,
+pub struct ProbeJob {
+    pub target: ProbeTarget,
+    pub reply_tx: tokio::sync::oneshot::Sender<std::result::Result<String, String>>,
 }
 
 struct ActiveProbe {
@@ -51,7 +50,7 @@ struct ActiveProbe {
     started_at: Instant,
     last_tx: Instant,
     retries: u8,
-    reply_tx: mpsc::SyncSender<std::result::Result<String, String>>,
+    reply_tx: tokio::sync::oneshot::Sender<std::result::Result<String, String>>,
 }
 
 pub struct DnsJob {
@@ -245,8 +244,8 @@ impl Drop for Socks5Service {
 
 pub struct WarpKernel {
     running: Arc<AtomicBool>,
-    workers: Vec<JoinHandle<()>>,
-    probe_ports: Vec<u16>,
+    worker: Option<JoinHandle<()>>,
+    probe_tx: Arc<Mutex<Option<mpsc::SyncSender<ProbeJob>>>>,
     dns_tx: Arc<Mutex<Option<mpsc::SyncSender<DnsJob>>>>,
     vpn1_tx: Arc<AtomicU64>,
     vpn1_rx: Arc<AtomicU64>,
@@ -267,8 +266,8 @@ impl WarpKernel {
     pub fn new() -> Self {
         Self {
             running: Arc::new(AtomicBool::new(false)),
-            workers: Vec::new(),
-            probe_ports: Vec::new(),
+            worker: None,
+            probe_tx: Arc::new(Mutex::new(None)),
             dns_tx: Arc::new(Mutex::new(None)),
             vpn1_tx: Arc::new(AtomicU64::new(0)),
             vpn1_rx: Arc::new(AtomicU64::new(0)),
@@ -286,6 +285,10 @@ impl WarpKernel {
 
     pub fn running_flag(&self) -> Arc<AtomicBool> {
         self.running.clone()
+    }
+
+    pub fn probe_sender(&self) -> Arc<Mutex<Option<mpsc::SyncSender<ProbeJob>>>> {
+        self.probe_tx.clone()
     }
 
     pub fn dns_sender(&self) -> Arc<Mutex<Option<mpsc::SyncSender<DnsJob>>>> {
@@ -387,20 +390,9 @@ impl WarpKernel {
         let udp_sock = create_marked_udp_socket(uplink)?;
         let (probe_tx, probe_rx) = mpsc::sync_channel::<ProbeJob>(16);
         let (dns_tx, dns_rx) = mpsc::sync_channel::<DnsJob>(64);
+        *self.probe_tx.lock().unwrap() = Some(probe_tx);
         *self.dns_tx.lock().unwrap() = Some(dns_tx);
         self.running.store(true, Ordering::SeqCst);
-
-        if config.mode == ProxyMode::WgChainWarp {
-            if let Ok(h1) = spawn_probe_http_listener(TEST_VPN1_PORT, ProbeTarget::Vpn1, probe_tx.clone(), self.running.clone()) {
-                self.probe_ports.push(TEST_VPN1_PORT);
-                self.workers.push(h1);
-            }
-        }
-        let main_target = if config.mode == ProxyMode::StandaloneWg { ProbeTarget::Vpn1 } else { ProbeTarget::Warp };
-        if let Ok(h2) = spawn_probe_http_listener(TEST_WARP_PORT, main_target, probe_tx, self.running.clone()) {
-            self.probe_ports.push(TEST_WARP_PORT);
-            self.workers.push(h2);
-        }
 
         let (running, v1_tx, v1_rx, w_tx, w_rx, v1_hs, w_hs, w_ep) = (
             self.running.clone(),
@@ -423,18 +415,16 @@ impl WarpKernel {
                 );
             })
             .map_err(|e| ChainError::SystemError(e.to_string()))?;
-        self.workers.push(worker);
+        self.worker = Some(worker);
         info!("Sooya native Rust WarpKernel started for mode {:?}", config.mode);
         Ok(())
     }
 
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
+        *self.probe_tx.lock().unwrap() = None;
         *self.dns_tx.lock().unwrap() = None;
-        for port in self.probe_ports.drain(..) {
-            let _ = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(5));
-        }
-        for handle in self.workers.drain(..) {
+        if let Some(handle) = self.worker.take() {
             let _ = handle.join();
         }
     }
@@ -444,45 +434,6 @@ impl Drop for WarpKernel {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-fn spawn_probe_http_listener(
-    port: u16,
-    target: ProbeTarget,
-    probe_tx: mpsc::SyncSender<ProbeJob>,
-    running: Arc<AtomicBool>,
-) -> Result<JoinHandle<()>> {
-    let listener = bind_reusable_tcp_listener(SocketAddr::from(([127, 0, 0, 1], port)))?;
-    std::thread::Builder::new()
-        .name(format!("sooya-probe-{}", port))
-        .stack_size(256 * 1024)
-        .spawn(move || {
-            for stream_res in listener.incoming() {
-                if !running.load(Ordering::Relaxed) { break; }
-                let Ok(mut stream) = stream_res else { continue };
-                if !running.load(Ordering::Relaxed) { break; }
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(1200)));
-                let _ = stream.set_write_timeout(Some(Duration::from_millis(1200)));
-                let mut req = [0u8; 512];
-                if stream.read(&mut req).unwrap_or(0) == 0 || !running.load(Ordering::Relaxed) {
-                    if !running.load(Ordering::Relaxed) { break; }
-                    continue;
-                }
-                let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-                if probe_tx.send(ProbeJob { target, reply_tx }).is_err() { break; }
-                let (status, body) = match reply_rx.recv_timeout(Duration::from_millis(4000)) {
-                    Ok(Ok(b)) => ("200 OK", b),
-                    Ok(Err(e)) => ("502 Bad Gateway", e),
-                    Err(_) => ("504 Gateway Timeout", "Probe timeout".to_string()),
-                };
-                let resp = format!(
-                    "HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    status, body.len(), body
-                );
-                let _ = stream.write_all(resp.as_bytes());
-            }
-        })
-        .map_err(|e| ChainError::SystemError(e.to_string()))
 }
 
 fn socks5_udp_associate(s5: &Socks5Config, _uplink: &str) -> Option<(TcpStream, SocketAddr)> {
