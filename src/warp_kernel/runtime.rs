@@ -3,7 +3,8 @@ use crate::model::config::{ChainProxyConfig, ParsedNodes, ProxyMode, Socks5Confi
 use crate::warp_kernel::endpoint::{build_warp_candidates, resolve_endpoint_addr};
 use crate::warp_kernel::noise::{DecapOutcome, WgTunnel};
 use crate::warp_kernel::pkt::{
-    encode_dns_a_query, parse_dns_a_response, unwrap_ipv4_udp, wrap_ipv4_udp, L3NatTable,
+    build_cached_a_dns_response, build_empty_noerror_dns_response, encode_dns_a_query,
+    inspect_dns_question, parse_dns_a_response, unwrap_ipv4_udp, wrap_ipv4_udp, L3NatTable,
     TcpMicroProbe,
 };
 use crate::warp_kernel::{TEST_VPN1_PORT, TEST_WARP_PORT};
@@ -1063,6 +1064,18 @@ fn dns_cache() -> &'static Mutex<HashMap<String, (Vec<Ipv4Addr>, Instant)>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::with_capacity(256)))
 }
 
+fn cache_dns_a_entry(domain: String, ips: Vec<Ipv4Addr>) {
+    if let Ok(mut guard) = dns_cache().lock() {
+        if guard.len() >= 512 {
+            guard.retain(|_, (_, ts)| ts.elapsed() < Duration::from_secs(180));
+            if guard.capacity() > 1024 && guard.len() <= 512 {
+                guard.shrink_to(512);
+            }
+        }
+        guard.insert(domain, (ips, Instant::now()));
+    }
+}
+
 async fn query_raw_dns_via_tunnel(
     query_pkt: &[u8],
     tunnel_active: bool,
@@ -1071,6 +1084,25 @@ async fn query_raw_dns_via_tunnel(
     if query_pkt.len() < 12 || query_pkt.len() > 512 {
         return None;
     }
+    let q_info = inspect_dns_question(query_pkt);
+    if let Some((ref domain, qtype)) = q_info {
+        if tunnel_active && (qtype == 28 || qtype == 65) {
+            return build_empty_noerror_dns_response(query_pkt);
+        }
+        if qtype == 1 {
+            if let Ok(guard) = dns_cache().lock() {
+                if let Some((ips, ts)) = guard.get(domain) {
+                    if !ips.is_empty() && ts.elapsed() < Duration::from_secs(180) {
+                        if let Some(cached) = build_cached_a_dns_response(query_pkt, ips) {
+                            return Some(cached);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut raw_resp = None;
     if tunnel_active {
         let tx_opt = dns_sender.lock().ok().and_then(|g| g.clone());
         if let Some(tx) = tx_opt {
@@ -1085,37 +1117,48 @@ async fn query_raw_dns_via_tunnel(
                 if let Ok(Ok(resp)) =
                     tokio::time::timeout(Duration::from_millis(2500), reply_rx).await
                 {
-                    return Some(resp);
+                    raw_resp = Some(resp);
                 }
             }
         }
     }
 
-    let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
-    #[cfg(target_os = "linux")]
-    if tunnel_active {
-        use std::os::unix::io::AsRawFd;
-        set_outbound_tunnel_mark(sock.as_raw_fd());
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = tunnel_active;
+    if raw_resp.is_none() {
+        let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
+        #[cfg(target_os = "linux")]
+        if tunnel_active {
+            use std::os::unix::io::AsRawFd;
+            set_outbound_tunnel_mark(sock.as_raw_fd());
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = tunnel_active;
 
-    for dns_ip in [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)] {
-        let _ = sock
-            .send_to(query_pkt, SocketAddr::V4(SocketAddrV4::new(dns_ip, 53)))
-            .await;
-    }
-    let mut rbuf = [0u8; 512];
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(1200);
-    while let Ok(Ok((n, _))) = tokio::time::timeout_at(deadline, sock.recv_from(&mut rbuf)).await {
-        if n >= 12 && rbuf[0..2] == query_pkt[0..2] && (rbuf[2] & 0x80) != 0 {
-            let rcode = rbuf[3] & 0x0f;
-            if rcode == 0 || rcode == 3 {
-                return Some(rbuf[..n].to_vec());
+        for dns_ip in [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)] {
+            let _ = sock
+                .send_to(query_pkt, SocketAddr::V4(SocketAddrV4::new(dns_ip, 53)))
+                .await;
+        }
+        let mut rbuf = [0u8; 512];
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(1200);
+        while let Ok(Ok((n, _))) = tokio::time::timeout_at(deadline, sock.recv_from(&mut rbuf)).await {
+            if n >= 12 && rbuf[0..2] == query_pkt[0..2] && (rbuf[2] & 0x80) != 0 {
+                let rcode = rbuf[3] & 0x0f;
+                if rcode == 0 || rcode == 3 {
+                    raw_resp = Some(rbuf[..n].to_vec());
+                    break;
+                }
             }
         }
     }
-    None
+
+    if let (Some(ref resp), Some((domain, 1))) = (&raw_resp, q_info) {
+        let txid = u16::from_be_bytes([query_pkt[0], query_pkt[1]]);
+        let ips = parse_dns_a_response(resp, txid);
+        if !ips.is_empty() {
+            cache_dns_a_entry(domain, ips);
+        }
+    }
+    raw_resp
 }
 
 async fn resolve_ipv4_via_tunnel_dns(
@@ -1147,15 +1190,7 @@ async fn resolve_ipv4_via_tunnel_dns(
 
     let resp = query_raw_dns_via_tunnel(&qbuf[..qlen], tunnel_active, dns_sender).await?;
     let ips = parse_dns_a_response(&resp, txid);
-    if let Ok(mut guard) = dns_cache().lock() {
-        if guard.len() >= 512 {
-            guard.retain(|_, (_, ts)| ts.elapsed() < Duration::from_secs(180));
-            if guard.capacity() > 1024 && guard.len() <= 512 {
-                guard.shrink_to(512);
-            }
-        }
-        guard.insert(key, (ips.clone(), Instant::now()));
-    }
+    cache_dns_a_entry(key, ips.clone());
     (!ips.is_empty()).then_some(ips)
 }
 
@@ -1226,6 +1261,13 @@ async fn connect_upstream_tcp(
 ) -> std::io::Result<tokio::net::TcpStream> {
     let mut last_err = std::io::Error::new(std::io::ErrorKind::NotFound, "no addresses");
     for &addr in addrs {
+        if tunnel_active && addr.is_ipv6() {
+            last_err = std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "ipv6 disabled on tunnel",
+            );
+            continue;
+        }
         let sock_res = if addr.is_ipv4() {
             tokio::net::TcpSocket::new_v4()
         } else {

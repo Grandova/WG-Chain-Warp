@@ -204,7 +204,7 @@ impl CliHandler {
                 let _ = Command::new("bash")
                     .args([
                         "-c",
-                        "curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/scripts/install.sh | bash",
+                        "curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/install.sh | bash",
                     ])
                     .status();
             }
@@ -251,6 +251,7 @@ impl CliHandler {
         let panel_bind = panel.bind_addr();
 
         let engine = Arc::new(Mutex::new(ChainEngine::new(&data_dir)));
+        ChainEngine::spawn_startup_restore(engine.clone());
         let app = crate::api::create_router(engine);
 
         if api_addr != panel_bind {

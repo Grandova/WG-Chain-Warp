@@ -426,6 +426,81 @@ pub fn parse_dns_a_response(pkt: &[u8], expected_tx_id: u16) -> Vec<Ipv4Addr> {
     addrs
 }
 
+pub fn inspect_dns_question(pkt: &[u8]) -> Option<(String, u16)> {
+    if pkt.len() < 17 || u16::from_be_bytes([pkt[4], pkt[5]]) == 0 {
+        return None;
+    }
+    let mut pos = 12;
+    let mut domain = String::with_capacity(64);
+    loop {
+        if pos >= pkt.len() {
+            return None;
+        }
+        let len = pkt[pos] as usize;
+        if len == 0 {
+            pos += 1;
+            break;
+        }
+        if (len & 0xC0) != 0 || pos + 1 + len > pkt.len() || domain.len() + len > 253 {
+            return None;
+        }
+        if !domain.is_empty() {
+            domain.push('.');
+        }
+        let label = std::str::from_utf8(&pkt[pos + 1..pos + 1 + len]).ok()?;
+        domain.push_str(&label.to_ascii_lowercase());
+        pos += 1 + len;
+    }
+    if pos + 4 > pkt.len() {
+        return None;
+    }
+    let qtype = u16::from_be_bytes([pkt[pos], pkt[pos + 1]]);
+    Some((domain, qtype))
+}
+
+pub fn build_empty_noerror_dns_response(query: &[u8]) -> Option<Vec<u8>> {
+    if query.len() < 17 {
+        return None;
+    }
+    let next = skip_dns_name(query, 12)?;
+    if next + 4 > query.len() {
+        return None;
+    }
+    let mut resp = query[..next + 4].to_vec();
+    resp[2] = 0x81; // QR=1, RD=1
+    resp[3] = 0x80; // RA=1, RCODE=0 (NOERROR)
+    resp[4..6].copy_from_slice(&1u16.to_be_bytes()); // QDCOUNT=1
+    resp[6..12].fill(0); // ANCOUNT=0, NSCOUNT=0, ARCOUNT=0
+    Some(resp)
+}
+
+pub fn build_cached_a_dns_response(query: &[u8], ips: &[Ipv4Addr]) -> Option<Vec<u8>> {
+    if query.len() < 17 || ips.is_empty() {
+        return None;
+    }
+    let next = skip_dns_name(query, 12)?;
+    if next + 4 > query.len() {
+        return None;
+    }
+    let count = ips.len().min(8);
+    let mut resp = Vec::with_capacity(next + 4 + count * 16);
+    resp.extend_from_slice(&query[..next + 4]);
+    resp[2] = 0x81; // QR=1, RD=1
+    resp[3] = 0x80; // RA=1, RCODE=0 (NOERROR)
+    resp[4..6].copy_from_slice(&1u16.to_be_bytes()); // QDCOUNT=1
+    resp[6..8].copy_from_slice(&(count as u16).to_be_bytes()); // ANCOUNT=count
+    resp[8..12].fill(0); // NSCOUNT=0, ARCOUNT=0
+    for ip in ips.iter().take(count) {
+        resp.extend_from_slice(&[0xc0, 0x0c]); // Name pointer to offset 12
+        resp.extend_from_slice(&[0x00, 0x01]); // TYPE = A (1)
+        resp.extend_from_slice(&[0x00, 0x01]); // CLASS = IN (1)
+        resp.extend_from_slice(&60u32.to_be_bytes()); // TTL = 60s
+        resp.extend_from_slice(&4u16.to_be_bytes()); // RDLENGTH = 4
+        resp.extend_from_slice(&ip.octets());
+    }
+    Some(resp)
+}
+
 pub struct TcpMicroProbe {
     pub local_ip: Ipv4Addr,
     pub local_port: u16,
@@ -548,16 +623,19 @@ mod tests {
     #[test]
     fn test_dns_a_codec_and_l3_nat_port_owner_preservation() {
         let mut qbuf = [0u8; 512];
-        let qlen = encode_dns_a_query("www.google.com", 0x1234, &mut qbuf).unwrap();
+        let qlen = encode_dns_a_query("www.Google.com", 0x1234, &mut qbuf).unwrap();
         assert!(qlen > 16);
+        assert_eq!(
+            inspect_dns_question(&qbuf[..qlen]),
+            Some(("www.google.com".to_string(), 1))
+        );
 
-        // Build synthetic DNS response with pointer compression
-        let mut resp = Vec::from(&qbuf[..qlen]);
-        resp[2] = 0x81;
-        resp[3] = 0x80;
-        resp[7] = 0x01; // ANCOUNT = 1
-        resp.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04, 142, 250, 190, 36]);
-        let ips = parse_dns_a_response(&resp, 0x1234);
+        let empty_resp = build_empty_noerror_dns_response(&qbuf[..qlen]).unwrap();
+        assert_eq!(parse_dns_a_response(&empty_resp, 0x1234), Vec::<Ipv4Addr>::new());
+
+        let cached_resp =
+            build_cached_a_dns_response(&qbuf[..qlen], &[Ipv4Addr::new(142, 250, 190, 36)]).unwrap();
+        let ips = parse_dns_a_response(&cached_resp, 0x1234);
         assert_eq!(ips, vec![Ipv4Addr::new(142, 250, 190, 36)]);
 
         // Test L3NatTable preserves TUN_IPV4 (172.31.255.1) and host_ipv4 (10.12.144.106) per-port

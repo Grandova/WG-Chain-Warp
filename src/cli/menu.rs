@@ -144,7 +144,7 @@ impl ConsoleMenu {
             let _ = Command::new("bash")
                 .args([
                     "-c",
-                    "curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/scripts/install.sh | bash",
+                    "curl -fsSL https://raw.githubusercontent.com/Grandova/WG-Chain-Warp/main/install.sh | bash",
                 ])
                 .status();
             std::process::exit(0);

@@ -189,6 +189,66 @@ impl ChainEngine {
         self.watchdog_timeout_secs.store(secs, Ordering::SeqCst);
     }
 
+    pub fn spawn_startup_restore(engine: Arc<tokio::sync::Mutex<Self>>) {
+        tokio::spawn(async move {
+            let mut eng = engine.lock().await;
+            let _ = eng.stop_tunnel();
+            let outbounds = eng.get_outbounds();
+            let mut restore_tunnel_cfg: Option<ChainProxyConfig> = None;
+            let mut restore_s5_cfg: Option<Socks5ServerConfig> = None;
+
+            if let Some(arr) = outbounds.as_array() {
+                for item in arr {
+                    if item.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
+                        continue;
+                    }
+                    let Some(cfg_val) = item.get("config") else {
+                        continue;
+                    };
+                    if let Ok(mut cfg) = serde_json::from_value::<ChainProxyConfig>(cfg_val.clone()) {
+                        if cfg.mode == ProxyMode::Socks5Server {
+                            if let Some(s5) = cfg
+                                .socks5_server
+                                .or_else(|| eng.get_active_config().and_then(|c| c.socks5_server))
+                            {
+                                if s5.port > 0 {
+                                    restore_s5_cfg = Some(s5);
+                                }
+                            }
+                        } else if restore_tunnel_cfg.is_none() {
+                            if let Some(prev) = eng.get_active_config() {
+                                if cfg.vpn2.wireguard_config.trim().is_empty()
+                                    && !prev.vpn2.wireguard_config.trim().is_empty()
+                                {
+                                    cfg.vpn2 = prev.vpn2;
+                                }
+                                if cfg.socks5_server.is_none() && prev.socks5_server.is_some() {
+                                    cfg.socks5_server = prev.socks5_server;
+                                }
+                            }
+                            restore_tunnel_cfg = Some(cfg);
+                        }
+                    }
+                }
+            }
+
+            if let Some(s5) = restore_s5_cfg {
+                info!(
+                    "Auto-restoring previously enabled SOCKS5 server on {}:{}",
+                    s5.listen, s5.port
+                );
+                let _ = eng.start_socks5(s5);
+            }
+            if let Some(cfg) = restore_tunnel_cfg {
+                info!(
+                    "Auto-restoring previously enabled outbound tunnel ({:?})",
+                    cfg.mode
+                );
+                let _ = eng.apply(cfg).await;
+            }
+        });
+    }
+
     pub fn update_last_report(&self, report: TestReport) {
         *self.last_report.lock().unwrap() = Some(report);
     }

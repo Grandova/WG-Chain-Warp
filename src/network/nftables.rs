@@ -32,6 +32,9 @@ impl NftablesManager {
         script.push_str("    }\n    chain output {\n        type route hook output priority mangle; policy accept;\n");
         script.push_str(&format!("        meta mark & {MARK_PHYSICAL_DIRECT:#x} != 0 return\n"));
         script.push_str(&format!(
+            "        meta mark & {MARK_HOST_PROXY:#x} != 0 ct mark set (ct mark & {keep:#x}) | {MARK_HOST_PROXY:#x} return comment \"explicit-proxy-mark\"\n"
+        ));
+        script.push_str(&format!(
             "        ct mark & {MARK_HOST_PROXY:#x} != 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} return comment \"chain-reply-proxy\"\n"
         ));
         script.push_str(&format!(
@@ -48,10 +51,10 @@ impl NftablesManager {
             }
             let family = if config.routing.ipv6 { "" } else { "meta nfproto ipv4 " };
             script.push_str(&format!(
-                "        {family}udp dport 53 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} accept comment \"dns-udp-outbound\"\n"
+                "        {family}udp dport 53 ct mark set (ct mark & {keep:#x}) | {MARK_HOST_PROXY:#x} meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} accept comment \"dns-udp-outbound\"\n"
             ));
             script.push_str(&format!(
-                "        {family}tcp dport 53 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} accept comment \"dns-tcp-outbound\"\n"
+                "        {family}tcp dport 53 ct mark set (ct mark & {keep:#x}) | {MARK_HOST_PROXY:#x} meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} accept comment \"dns-tcp-outbound\"\n"
             ));
             script.push_str(
                 "        ip daddr { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 255.255.255.255/32 } return comment \"lan-bypass-v4\"\n",
@@ -62,7 +65,7 @@ impl NftablesManager {
                 );
             }
             script.push_str(&format!(
-                "        {family}ct direction original meta mark & {mask:#x} == 0 meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"host-proxy\"\n"
+                "        {family}ct direction original meta mark & {mask:#x} == 0 ct mark set (ct mark & {keep:#x}) | {MARK_HOST_PROXY:#x} meta mark set (meta mark & {keep:#x}) | {MARK_HOST_PROXY:#x} comment \"host-proxy\"\n"
             ));
         }
         script.push_str("    }\n    chain postrouting {\n        type filter hook postrouting priority mangle; policy accept;\n        oifname \"chain0\" tcp flags syn / syn,rst tcp option maxseg size set 1120 comment \"mss-clamp-out\"\n        iifname \"chain0\" tcp flags syn / syn,rst tcp option maxseg size set 1120 comment \"mss-clamp-in\"\n    }\n}\n");
@@ -167,10 +170,11 @@ mod tests {
         cfg.routing.preserve_inbound_connections = false;
         let ruleset = NftablesManager::generate_ruleset(&cfg).unwrap();
         assert!(ruleset.contains("comment \"chain-conntrack\""));
+        assert!(ruleset.contains("comment \"explicit-proxy-mark\""));
         assert!(ruleset.contains("comment \"chain-reply-proxy\""));
         assert!(ruleset.contains("ct direction reply meta mark set"));
         assert!(ruleset.contains("ct mark & 0x88 == 0x88 meta mark set"));
-        assert!(ruleset.contains("ct direction original meta mark & 0xc88 == 0 meta mark set"));
+        assert!(ruleset.contains("ct direction original meta mark & 0xc88 == 0 ct mark set"));
         assert!(ruleset.contains("maxseg size set 1120 comment \"mss-clamp-out\""));
         assert!(ruleset.contains("maxseg size set 1120 comment \"mss-clamp-in\""));
     }

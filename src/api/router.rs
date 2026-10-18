@@ -438,14 +438,17 @@ async fn test_config_handler(
         return (StatusCode::UNAUTHORIZED, Json(ApiResponse::err("Unauthorized")));
     }
     let status = state.reader.get_status();
-    let config = state.reader.get_active_config().unwrap_or_default();
+    let mut config = state.reader.get_active_config().unwrap_or_default();
+    if status.state != crate::model::state::ServiceState::Running && status.socks5_running {
+        config.mode = crate::model::config::ProxyMode::Socks5Server;
+    }
     let uplink = status.physical.interface;
     let v1_name = status.vpn1.name;
     let v1_ep = status.vpn1.endpoint;
     let v2_name = status.vpn2.name;
     let v2_ep = status.vpn2.endpoint;
 
-    if status.state != crate::model::state::ServiceState::Running {
+    if status.state != crate::model::state::ServiceState::Running && !status.socks5_running {
         let phys = HealthChecker::probe_physical(Some(&uplink));
         return (
             StatusCode::OK,

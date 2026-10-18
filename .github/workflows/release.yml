@@ -57,7 +57,7 @@ jobs:
             dist/sooya-linux-amd64
             dist/sooya-linux-amd64.tar.gz.sha256
             dist/sooya-linux-amd64.sha256
-            scripts/install.sh
+            install.sh
           draft: false
           prerelease: false
           generate_release_notes: true

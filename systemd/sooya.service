@@ -14,7 +14,8 @@ Restart=always
 RestartSec=3s
 KillMode=mixed
 TimeoutStopSec=15s
-LimitNOFILE=1048576
+Environment="MALLOC_ARENA_MAX=2"
+LimitNOFILE=65535
 LimitMEMLOCK=infinity
 
 [Install]
