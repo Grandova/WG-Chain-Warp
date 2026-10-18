@@ -83,7 +83,10 @@ impl SysctlManager {
     }
 
     pub fn configure_for_proxy(interfaces: &[String], _forward: bool, _ipv6: bool) -> Result<()> {
-        for iface in std::iter::once("all").chain(interfaces.iter().map(String::as_str)) {
+        for iface in ["all", "default"]
+            .into_iter()
+            .chain(interfaces.iter().map(String::as_str))
+        {
             Self::set(&format!("net/ipv4/conf/{}/rp_filter", iface), "0")?;
             Self::set(&format!("net/ipv4/conf/{}/send_redirects", iface), "0")?;
         }

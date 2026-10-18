@@ -53,6 +53,21 @@ struct ActiveProbe {
     reply_tx: mpsc::SyncSender<std::result::Result<String, String>>,
 }
 
+pub struct DnsJob {
+    pub query: Vec<u8>,
+    pub reply_tx: tokio::sync::oneshot::Sender<Vec<u8>>,
+}
+
+struct ActiveDns {
+    local_port: u16,
+    orig_txid: [u8; 2],
+    query_pkt: Vec<u8>,
+    started_at: Instant,
+    last_tx: Instant,
+    retries: u8,
+    reply_tx: tokio::sync::oneshot::Sender<Vec<u8>>,
+}
+
 #[derive(Clone)]
 struct TunnelSpec {
     private_key: [u8; 32],
@@ -161,7 +176,12 @@ impl Socks5Service {
         (self.tx_bytes.load(Ordering::Relaxed), self.rx_bytes.load(Ordering::Relaxed))
     }
 
-    pub fn start(&mut self, srv: &Socks5ServerConfig, tunnel_running: Arc<AtomicBool>) -> Result<()> {
+    pub fn start(
+        &mut self,
+        srv: &Socks5ServerConfig,
+        tunnel_running: Arc<AtomicBool>,
+        dns_sender: Arc<Mutex<Option<mpsc::SyncSender<DnsJob>>>>,
+    ) -> Result<()> {
         srv.validate()?;
         if self.is_running() && self.current_cfg.as_ref() == Some(srv) {
             return Ok(());
@@ -188,6 +208,7 @@ impl Socks5Service {
                 users,
                 running,
                 tunnel_running,
+                dns_sender,
                 shutdown_rx,
                 tx,
                 rx,
@@ -225,6 +246,7 @@ pub struct WarpKernel {
     running: Arc<AtomicBool>,
     workers: Vec<JoinHandle<()>>,
     probe_ports: Vec<u16>,
+    dns_tx: Arc<Mutex<Option<mpsc::SyncSender<DnsJob>>>>,
     vpn1_tx: Arc<AtomicU64>,
     vpn1_rx: Arc<AtomicU64>,
     warp_tx: Arc<AtomicU64>,
@@ -246,6 +268,7 @@ impl WarpKernel {
             running: Arc::new(AtomicBool::new(false)),
             workers: Vec::new(),
             probe_ports: Vec::new(),
+            dns_tx: Arc::new(Mutex::new(None)),
             vpn1_tx: Arc::new(AtomicU64::new(0)),
             vpn1_rx: Arc::new(AtomicU64::new(0)),
             warp_tx: Arc::new(AtomicU64::new(0)),
@@ -262,6 +285,10 @@ impl WarpKernel {
 
     pub fn running_flag(&self) -> Arc<AtomicBool> {
         self.running.clone()
+    }
+
+    pub fn dns_sender(&self) -> Arc<Mutex<Option<mpsc::SyncSender<DnsJob>>>> {
+        self.dns_tx.clone()
     }
 
     pub fn stats(&self) -> KernelStats {
@@ -281,12 +308,14 @@ impl WarpKernel {
         {
             static ONCE: std::sync::Once = std::sync::Once::new();
             ONCE.call_once(|| {
-                let _ = std::thread::spawn(|| {
-                    let _ = std::process::Command::new("pkill").args(["-9", "-f", "warp-svc"]).output();
-                    for cmd in [["stop", "warp-svc"], ["disable", "warp-svc"]] {
-                        let _ = std::process::Command::new("systemctl").args(cmd).output();
-                    }
-                });
+                let _ = std::thread::Builder::new()
+                    .stack_size(256 * 1024)
+                    .spawn(|| {
+                        let _ = std::process::Command::new("pkill").args(["-9", "-f", "warp-svc"]).output();
+                        for cmd in [["stop", "warp-svc"], ["disable", "warp-svc"]] {
+                            let _ = std::process::Command::new("systemctl").args(cmd).output();
+                        }
+                    });
             });
         }
     }
@@ -356,6 +385,8 @@ impl WarpKernel {
         let tun_fd = create_and_configure_tun("chain0", config.routing.ipv6, tun_mtu)?;
         let udp_sock = create_marked_udp_socket(uplink)?;
         let (probe_tx, probe_rx) = mpsc::sync_channel::<ProbeJob>(16);
+        let (dns_tx, dns_rx) = mpsc::sync_channel::<DnsJob>(64);
+        *self.dns_tx.lock().unwrap() = Some(dns_tx);
         self.running.store(true, Ordering::SeqCst);
 
         if config.mode == ProxyMode::WgChainWarp {
@@ -383,10 +414,11 @@ impl WarpKernel {
         let uplink_str = uplink.to_string();
         let worker = std::thread::Builder::new()
             .name("sooya-warp-kernel".into())
+            .stack_size(512 * 1024)
             .spawn(move || {
                 run_kernel_packet_loop(
                     tun_fd, udp_sock, &uplink_str, host_ipv4, vpn1_spec, warp_spec, socks_cfg,
-                    probe_rx, running, v1_tx, v1_rx, w_tx, w_rx, v1_hs, w_hs, w_ep,
+                    probe_rx, dns_rx, running, v1_tx, v1_rx, w_tx, w_rx, v1_hs, w_hs, w_ep,
                 );
             })
             .map_err(|e| ChainError::SystemError(e.to_string()))?;
@@ -397,6 +429,7 @@ impl WarpKernel {
 
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
+        *self.dns_tx.lock().unwrap() = None;
         for port in self.probe_ports.drain(..) {
             let _ = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(5));
         }
@@ -421,6 +454,7 @@ fn spawn_probe_http_listener(
     let listener = bind_reusable_tcp_listener(SocketAddr::from(([127, 0, 0, 1], port)))?;
     std::thread::Builder::new()
         .name(format!("sooya-probe-{}", port))
+        .stack_size(256 * 1024)
         .spawn(move || {
             for stream_res in listener.incoming() {
                 if !running.load(Ordering::Relaxed) { break; }
@@ -499,6 +533,38 @@ fn socks5_udp_associate(s5: &Socks5Config, _uplink: &str) -> Option<(TcpStream, 
     Some((ctrl, relay_addr))
 }
 
+fn try_match_active_dns(pkt: &[u8], active_dns: &mut Vec<ActiveDns>) -> bool {
+    if active_dns.is_empty() || pkt.len() < 40 || (pkt[0] >> 4) != 4 || pkt[9] != 17 {
+        return false;
+    }
+    let ihl = ((pkt[0] & 0x0f) as usize) * 4;
+    if pkt.len() < ihl + 20 {
+        return false;
+    }
+    let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+    let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+    let ulen = u16::from_be_bytes([pkt[ihl + 4], pkt[ihl + 5]]) as usize;
+    if sport != 53 || ulen < 20 || pkt.len() < ihl + ulen {
+        return false;
+    }
+    let dns_payload = &pkt[ihl + 8..ihl + ulen];
+    if (dns_payload[2] & 0x80) == 0 {
+        return false;
+    }
+    if let Some(pos) = active_dns
+        .iter()
+        .position(|q| q.local_port == dport && dns_payload[0..2] == q.orig_txid)
+    {
+        let rcode = dns_payload[3] & 0x0f;
+        if rcode == 0 || rcode == 3 {
+            let q = active_dns.swap_remove(pos);
+            let _ = q.reply_tx.send(dns_payload.to_vec());
+        }
+        return true;
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_kernel_packet_loop(
     tun_fd: i32,
@@ -509,6 +575,7 @@ fn run_kernel_packet_loop(
     warp_spec: Option<TunnelSpec>,
     socks_cfg: Option<Socks5Config>,
     probe_rx: mpsc::Receiver<ProbeJob>,
+    dns_rx: mpsc::Receiver<DnsJob>,
     running: Arc<AtomicBool>,
     vpn1_tx: Arc<AtomicU64>,
     vpn1_rx: Arc<AtomicU64>,
@@ -547,7 +614,9 @@ fn run_kernel_packet_loop(
 
     let mut nat_table = L3NatTable::new(host_ipv4, Some(primary_dns));
     let mut active_probes: Vec<ActiveProbe> = Vec::with_capacity(4);
+    let mut active_dns: Vec<ActiveDns> = Vec::with_capacity(16);
     let mut next_probe_port: u16 = 42100;
+    let mut next_dns_port: u16 = 53000;
     let mut ip_id: u16 = 100;
 
     let mut tun_buf = [0u8; 4096];
@@ -555,7 +624,7 @@ fn run_kernel_packet_loop(
     let mut wg1_buf = [0u8; 4096];
     let mut wg2_buf = [0u8; 4096];
     let mut wrap_buf = [0u8; 4096];
-    let mut probe_buf = [0u8; 512];
+    let mut probe_buf = [0u8; 768];
 
     let mut last_vpn1_hs = Instant::now() - Duration::from_secs(10);
     let mut last_warp_hs = Instant::now() - Duration::from_secs(10);
@@ -652,11 +721,31 @@ fn run_kernel_packet_loop(
         }
 
         while let Ok(job) = probe_rx.try_recv() {
-            next_probe_port = if next_probe_port >= 60000 { 42100 } else { next_probe_port + 1 };
+            next_probe_port = if next_probe_port >= 52000 { 42100 } else { next_probe_port + 1 };
             let lip = if job.target == ProbeTarget::Vpn1 { vpn1_v4 } else { warp_v4 };
             active_probes.push(ActiveProbe {
                 target: job.target,
                 fsm: TcpMicroProbe::new(lip, next_probe_port, Ipv4Addr::new(1, 1, 1, 1)),
+                started_at: Instant::now(),
+                last_tx: Instant::now() - Duration::from_secs(1),
+                retries: 0,
+                reply_tx: job.reply_tx,
+            });
+        }
+
+        while let Ok(job) = dns_rx.try_recv() {
+            if job.query.len() < 12 || job.query.len() > 512 {
+                continue;
+            }
+            if active_dns.len() >= 64 {
+                active_dns.remove(0);
+            }
+            next_dns_port = if next_dns_port >= 61000 { 53000 } else { next_dns_port + 1 };
+            let orig_txid = [job.query[0], job.query[1]];
+            active_dns.push(ActiveDns {
+                local_port: next_dns_port,
+                orig_txid,
+                query_pkt: job.query,
                 started_at: Instant::now(),
                 last_tx: Instant::now() - Duration::from_secs(1),
                 retries: 0,
@@ -702,8 +791,74 @@ fn run_kernel_packet_loop(
 
         let all_ready = vpn1_tunnel.as_ref().map(|(v, _)| v.has_session()).unwrap_or(true)
             && warp_tunnel.as_ref().map(|w| w.has_session()).unwrap_or(true);
+
+        let mut di = 0;
+        while di < active_dns.len() {
+            if active_dns[di].started_at.elapsed() > Duration::from_millis(2400) {
+                active_dns.swap_remove(di);
+                continue;
+            }
+            if all_ready
+                && active_dns[di].retries < 4
+                && active_dns[di].last_tx.elapsed() >= Duration::from_millis(450)
+            {
+                active_dns[di].last_tx = Instant::now();
+                active_dns[di].retries += 1;
+                let sport = active_dns[di].local_port;
+                let dns_servers = if primary_dns != Ipv4Addr::new(1, 1, 1, 1)
+                    && primary_dns != Ipv4Addr::new(8, 8, 8, 8)
+                {
+                    [primary_dns, Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)]
+                } else {
+                    [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(1, 0, 0, 1)]
+                };
+                for dns_ip in dns_servers {
+                    ip_id = ip_id.wrapping_add(1);
+                    if let Some(ref mut w) = warp_tunnel {
+                        let plen = wrap_ipv4_udp(
+                            &active_dns[di].query_pkt,
+                            warp_v4,
+                            sport,
+                            dns_ip,
+                            53,
+                            ip_id,
+                            &mut probe_buf,
+                        );
+                        if let Some(wn) = w.encapsulate(&probe_buf[..plen], &mut wg2_buf) {
+                            send_warp_frame(
+                                &wg2_buf[..wn],
+                                active_warp_ep,
+                                &mut vpn1_tunnel,
+                                socks_relay,
+                                &udp_sock,
+                                &mut ip_id,
+                                &mut wrap_buf,
+                                &mut wg1_buf,
+                                &vpn1_tx,
+                                &warp_tx,
+                            );
+                        }
+                    } else if let Some((ref mut v1, vep)) = vpn1_tunnel {
+                        let plen = wrap_ipv4_udp(
+                            &active_dns[di].query_pkt,
+                            vpn1_v4,
+                            sport,
+                            dns_ip,
+                            53,
+                            ip_id,
+                            &mut probe_buf,
+                        );
+                        send_via_vpn1(&probe_buf[..plen], v1, vep, &udp_sock, &mut wg1_buf, &vpn1_tx);
+                    }
+                }
+            }
+            di += 1;
+        }
+
         let timeout_ms = if had_work {
             0
+        } else if !active_dns.is_empty() {
+            4
         } else if !all_ready || !active_probes.is_empty() {
             10
         } else {
@@ -772,7 +927,9 @@ fn run_kernel_packet_loop(
                                     warp_in_slice = Some((inner_udp, SocketAddr::V4(SocketAddrV4::new(sip, sport))));
                                 }
                             }
-                        } else if nat_table.translate_inbound(&mut wg1_buf[..plen], TCP_MSS_CLAMP) {
+                        } else if !try_match_active_dns(&wg1_buf[..plen], &mut active_dns)
+                            && nat_table.translate_inbound(&mut wg1_buf[..plen], TCP_MSS_CLAMP)
+                        {
                             write_tun(tun_fd, &wg1_buf[..plen]);
                         }
                     }
@@ -824,7 +981,10 @@ fn run_kernel_packet_loop(
                             }
                             pi += 1;
                         }
-                        if !hit && nat_table.translate_inbound(&mut wg2_buf[..alen], TCP_MSS_CLAMP) {
+                        if !hit
+                            && !try_match_active_dns(&wg2_buf[..alen], &mut active_dns)
+                            && nat_table.translate_inbound(&mut wg2_buf[..alen], TCP_MSS_CLAMP)
+                        {
                             write_tun(tun_fd, &wg2_buf[..alen]);
                         }
                     }
@@ -900,23 +1060,36 @@ fn is_private_or_local_ip(ip: IpAddr) -> bool {
 
 fn dns_cache() -> &'static Mutex<HashMap<String, (Vec<Ipv4Addr>, Instant)>> {
     static CACHE: OnceLock<Mutex<HashMap<String, (Vec<Ipv4Addr>, Instant)>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    CACHE.get_or_init(|| Mutex::new(HashMap::with_capacity(256)))
 }
 
-async fn resolve_ipv4_via_tunnel_dns(host: &str, tunnel_active: bool) -> Option<Vec<Ipv4Addr>> {
-    let key = host.to_ascii_lowercase();
-    if let Ok(guard) = dns_cache().lock() {
-        if let Some((ips, ts)) = guard.get(&key) {
-            if ts.elapsed() < Duration::from_secs(120) && !ips.is_empty() {
-                return Some(ips.clone());
+async fn query_raw_dns_via_tunnel(
+    query_pkt: &[u8],
+    tunnel_active: bool,
+    dns_sender: &Arc<Mutex<Option<mpsc::SyncSender<DnsJob>>>>,
+) -> Option<Vec<u8>> {
+    if query_pkt.len() < 12 || query_pkt.len() > 512 {
+        return None;
+    }
+    if tunnel_active {
+        let tx_opt = dns_sender.lock().ok().and_then(|g| g.clone());
+        if let Some(tx) = tx_opt {
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            if tx
+                .try_send(DnsJob {
+                    query: query_pkt.to_vec(),
+                    reply_tx,
+                })
+                .is_ok()
+            {
+                if let Ok(Ok(resp)) =
+                    tokio::time::timeout(Duration::from_millis(2500), reply_rx).await
+                {
+                    return Some(resp);
+                }
             }
         }
     }
-
-    static TXID_SEQ: AtomicU64 = AtomicU64::new(0x3a71);
-    let txid = (TXID_SEQ.fetch_add(1, Ordering::Relaxed) as u16) | 1;
-    let mut qbuf = [0u8; 512];
-    let qlen = encode_dns_a_query(&key, txid, &mut qbuf)?;
 
     let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
     #[cfg(target_os = "linux")]
@@ -927,29 +1100,70 @@ async fn resolve_ipv4_via_tunnel_dns(host: &str, tunnel_active: bool) -> Option<
     #[cfg(not(target_os = "linux"))]
     let _ = tunnel_active;
 
+    for dns_ip in [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)] {
+        let _ = sock
+            .send_to(query_pkt, SocketAddr::V4(SocketAddrV4::new(dns_ip, 53)))
+            .await;
+    }
     let mut rbuf = [0u8; 512];
-    for dns_ip in [Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(1, 1, 1, 1)] {
-        let dns_sa = SocketAddr::V4(SocketAddrV4::new(dns_ip, 53));
-        if sock.send_to(&qbuf[..qlen], dns_sa).await.is_err() {
-            continue;
-        }
-        if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(900), sock.recv_from(&mut rbuf)).await {
-            let ips = parse_dns_a_response(&rbuf[..n], txid);
-            if !ips.is_empty() {
-                if let Ok(mut guard) = dns_cache().lock() {
-                    if guard.len() >= 1024 {
-                        guard.retain(|_, (_, ts)| ts.elapsed() < Duration::from_secs(120));
-                    }
-                    guard.insert(key, (ips.clone(), Instant::now()));
-                }
-                return Some(ips);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1200);
+    while let Ok(Ok((n, _))) = tokio::time::timeout_at(deadline, sock.recv_from(&mut rbuf)).await {
+        if n >= 12 && rbuf[0..2] == query_pkt[0..2] && (rbuf[2] & 0x80) != 0 {
+            let rcode = rbuf[3] & 0x0f;
+            if rcode == 0 || rcode == 3 {
+                return Some(rbuf[..n].to_vec());
             }
         }
     }
     None
 }
 
-async fn resolve_socks5_target(target: &str, tunnel_active: bool) -> Option<Vec<SocketAddr>> {
+async fn resolve_ipv4_via_tunnel_dns(
+    host: &str,
+    tunnel_active: bool,
+    dns_sender: &Arc<Mutex<Option<mpsc::SyncSender<DnsJob>>>>,
+) -> Option<Vec<Ipv4Addr>> {
+    let key = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if key.is_empty() {
+        return None;
+    }
+    if let Ok(guard) = dns_cache().lock() {
+        if let Some((ips, ts)) = guard.get(&key) {
+            let ttl = if ips.is_empty() {
+                Duration::from_secs(15)
+            } else {
+                Duration::from_secs(180)
+            };
+            if ts.elapsed() < ttl {
+                return (!ips.is_empty()).then(|| ips.clone());
+            }
+        }
+    }
+
+    static TXID_SEQ: AtomicU64 = AtomicU64::new(0x3a71);
+    let txid = (TXID_SEQ.fetch_add(1, Ordering::Relaxed) as u16) | 1;
+    let mut qbuf = [0u8; 512];
+    let qlen = encode_dns_a_query(&key, txid, &mut qbuf)?;
+
+    let resp = query_raw_dns_via_tunnel(&qbuf[..qlen], tunnel_active, dns_sender).await?;
+    let ips = parse_dns_a_response(&resp, txid);
+    if let Ok(mut guard) = dns_cache().lock() {
+        if guard.len() >= 512 {
+            guard.retain(|_, (_, ts)| ts.elapsed() < Duration::from_secs(180));
+            if guard.capacity() > 1024 && guard.len() <= 512 {
+                guard.shrink_to(512);
+            }
+        }
+        guard.insert(key, (ips.clone(), Instant::now()));
+    }
+    (!ips.is_empty()).then_some(ips)
+}
+
+async fn resolve_socks5_target(
+    target: &str,
+    tunnel_active: bool,
+    dns_sender: &Arc<Mutex<Option<mpsc::SyncSender<DnsJob>>>>,
+) -> Option<Vec<SocketAddr>> {
     if let Ok(sa) = target.parse::<SocketAddr>() {
         return Some(vec![sa]);
     }
@@ -963,28 +1177,12 @@ async fn resolve_socks5_target(target: &str, tunnel_active: bool) -> Option<Vec<
         return Some(vec![SocketAddr::new(IpAddr::V6(v6), port)]);
     }
 
-    // Fast path: resolve IPv4 directly through the tunnel (or direct UDP) with in-memory TTL cache
-    if let Some(ips) = resolve_ipv4_via_tunnel_dns(clean_host, tunnel_active).await {
-        return Some(
-            ips.into_iter()
-                .map(|ip| SocketAddr::new(IpAddr::V4(ip), port))
-                .collect(),
-        );
-    }
-
-    // Fallback to OS resolver with bounded timeout
-    let resolved = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host(target))
-        .await
-        .ok()?
-        .ok()?;
-    let addrs: Vec<SocketAddr> = resolved.collect();
-    if addrs.is_empty() {
-        return None;
-    }
-    let mut v4: Vec<SocketAddr> = addrs.iter().copied().filter(|a| a.is_ipv4()).collect();
-    let v6: Vec<SocketAddr> = addrs.into_iter().filter(|a| a.is_ipv6()).collect();
-    v4.extend(v6);
-    Some(v4)
+    let ips = resolve_ipv4_via_tunnel_dns(clean_host, tunnel_active, dns_sender).await?;
+    Some(
+        ips.into_iter()
+            .map(|ip| SocketAddr::new(IpAddr::V4(ip), port))
+            .collect(),
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -1066,17 +1264,20 @@ async fn run_native_socks5_server(
     users: Vec<Socks5User>,
     running: Arc<AtomicBool>,
     tunnel_running: Arc<AtomicBool>,
+    dns_sender: Arc<Mutex<Option<mpsc::SyncSender<DnsJob>>>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     tx_counter: Arc<AtomicU64>,
     rx_counter: Arc<AtomicU64>,
 ) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    let listener_port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let active_users: Vec<Socks5User> = users
         .into_iter()
         .filter(|u| !u.username.trim().is_empty())
         .collect();
     let users = Arc::new(active_users);
+    let conn_sem = Arc::new(tokio::sync::Semaphore::new(256));
 
     loop {
         if !running.load(Ordering::Relaxed) {
@@ -1088,13 +1289,18 @@ async fn run_native_socks5_server(
             res = listener.accept() => res,
         };
         let Ok((mut client, _)) = accept_res else { break };
-        let (users, tunnel_flag, tx_c, rx_c) = (
+        let Ok(permit) = conn_sem.clone().try_acquire_owned() else {
+            continue;
+        };
+        let (users, tunnel_flag, dns_s, tx_c, rx_c) = (
             users.clone(),
             tunnel_running.clone(),
+            dns_sender.clone(),
             tx_counter.clone(),
             rx_counter.clone(),
         );
         tokio::spawn(async move {
+            let _permit = permit;
             let _ = client.set_nodelay(true);
             #[cfg(target_os = "linux")]
             {
@@ -1232,13 +1438,27 @@ async fn run_native_socks5_server(
                         IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
                     })
                     .unwrap_or(Ipv4Addr::UNSPECIFIED);
-                let Ok(client_udp) =
-                    tokio::net::UdpSocket::bind(SocketAddr::new(IpAddr::V4(local_ip), 0)).await
-                else {
-                    let _ = client
-                        .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-                        .await;
-                    return;
+                let client_udp = match tokio::net::UdpSocket::bind(SocketAddr::new(
+                    IpAddr::V4(local_ip),
+                    listener_port,
+                ))
+                .await
+                {
+                    Ok(s) => s,
+                    Err(_) => match tokio::net::UdpSocket::bind(SocketAddr::new(
+                        IpAddr::V4(local_ip),
+                        0,
+                    ))
+                    .await
+                    {
+                        Ok(s) => s,
+                        Err(_) => {
+                            let _ = client
+                                .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                                .await;
+                            return;
+                        }
+                    },
                 };
                 #[cfg(target_os = "linux")]
                 {
@@ -1270,6 +1490,7 @@ async fn run_native_socks5_server(
                 let mut last_c_addr: Option<SocketAddr> = None;
                 loop {
                     tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(60)) => break,
                         res = client.read(&mut tcp_eof) => {
                             if res.unwrap_or(0) == 0 { break; }
                         }
@@ -1290,7 +1511,7 @@ async fn run_native_socks5_server(
                                         String::from_utf8_lossy(&c_buf[5..5 + dl]),
                                         u16::from_be_bytes([c_buf[5 + dl], c_buf[6 + dl]])
                                     );
-                                    let sa = resolve_socks5_target(&dst_str, tunnel_active)
+                                    let sa = resolve_socks5_target(&dst_str, tunnel_active, &dns_s)
                                         .await
                                         .and_then(|v| v.into_iter().next());
                                     (sa, 7 + dl)
@@ -1299,6 +1520,24 @@ async fn run_native_socks5_server(
                             };
                             if let Some(sa) = dst_sa {
                                 let payload = &c_buf[hdr_len..n];
+                                if sa.port() == 53 && payload.len() >= 12 && payload.len() <= 512 {
+                                    if let Some(resp) = query_raw_dns_via_tunnel(payload, tunnel_active, &dns_s).await {
+                                        tx_c.fetch_add(payload.len() as u64, Ordering::Relaxed);
+                                        let rv4 = match sa.ip() {
+                                            IpAddr::V4(v4) => v4,
+                                            IpAddr::V6(_) => Ipv4Addr::new(1, 1, 1, 1),
+                                        };
+                                        u_buf[0..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                                        u_buf[4..8].copy_from_slice(&rv4.octets());
+                                        u_buf[8..10].copy_from_slice(&53u16.to_be_bytes());
+                                        let rlen = resp.len().min(u_buf.len() - 10);
+                                        u_buf[10..10 + rlen].copy_from_slice(&resp[..rlen]);
+                                        if client_udp.send_to(&u_buf[..10 + rlen], c_addr).await.is_ok() {
+                                            rx_c.fetch_add(rlen as u64, Ordering::Relaxed);
+                                        }
+                                        continue;
+                                    }
+                                }
                                 if up_udp.send_to(payload, sa).await.is_ok() {
                                     tx_c.fetch_add(payload.len() as u64, Ordering::Relaxed);
                                 }
@@ -1324,16 +1563,44 @@ async fn run_native_socks5_server(
                 return;
             }
 
-            let Some(addrs) = resolve_socks5_target(&target, tunnel_active).await else {
+            let Some(addrs) = resolve_socks5_target(&target, tunnel_active, &dns_s).await else {
                 let _ = client.write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
                 return;
             };
+
+            // Intercept RFC 1035 TCP DNS queries (CONNECT *:53) and resolve directly through the tunnel
+            if addrs.first().map(|a| a.port()) == Some(53) {
+                if client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.is_err() {
+                    return;
+                }
+                let mut len_buf = [0u8; 2];
+                let mut q_buf = [0u8; 512];
+                while let Ok(Ok(_)) = tokio::time::timeout(Duration::from_secs(10), client.read_exact(&mut len_buf)).await {
+                    let qlen = u16::from_be_bytes(len_buf) as usize;
+                    if !(12..=512).contains(&qlen) {
+                        break;
+                    }
+                    if tokio::time::timeout(Duration::from_secs(5), client.read_exact(&mut q_buf[..qlen])).await.is_err() {
+                        break;
+                    }
+                    tx_c.fetch_add((2 + qlen) as u64, Ordering::Relaxed);
+                    let Some(resp) = query_raw_dns_via_tunnel(&q_buf[..qlen], tunnel_active, &dns_s).await else {
+                        break;
+                    };
+                    let rlen = (resp.len() as u16).to_be_bytes();
+                    if client.write_all(&rlen).await.is_err() || client.write_all(&resp).await.is_err() {
+                        break;
+                    }
+                    rx_c.fetch_add((2 + resp.len()) as u64, Ordering::Relaxed);
+                }
+                return;
+            }
 
             match connect_upstream_tcp(&addrs, tunnel_active).await {
                 Ok(mut up) => {
                     if client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.is_ok() {
                         if let Ok((tx, rx)) =
-                            tokio::io::copy_bidirectional_with_sizes(&mut client, &mut up, 32768, 32768)
+                            tokio::io::copy_bidirectional_with_sizes(&mut client, &mut up, 8192, 8192)
                                 .await
                         {
                             tx_c.fetch_add(tx, Ordering::Relaxed);
@@ -1353,6 +1620,7 @@ async fn run_native_socks5_server(
 #[cfg(target_os = "linux")]
 fn create_and_configure_tun(name: &str, enable_ipv6: bool, mtu: u16) -> Result<i32> {
     use crate::network::iproute::IpRouteManager;
+    use crate::network::sysctl::SysctlManager;
     use std::ffi::CString;
 
     IpRouteManager::ensure_tun_device()?;
@@ -1375,6 +1643,7 @@ fn create_and_configure_tun(name: &str, enable_ipv6: bool, mtu: u16) -> Result<i
         unsafe { libc::close(fd); }
         return Err(ChainError::NetworkError(format!("TUNSETIFF {} failed: {}", name, err)));
     }
+    let _ = SysctlManager::configure_tun_sysctl(name);
     let mtu_str = mtu.to_string();
     let mut cmds = vec![
         vec!["addr".into(), "add".into(), format!("{}/30", TUN_IPV4), "dev".into(), name.into()],
@@ -1407,7 +1676,7 @@ fn set_socket_mark_and_device(fd: i32, uplink: &str) {
                 libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BINDTODEVICE, c_if.as_ptr() as *const _, (uplink.len() + 1) as _);
             }
         }
-        let sz: libc::c_int = 2 * 1024 * 1024;
+        let sz: libc::c_int = 256 * 1024;
         libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &sz as *const _ as *const _, 4);
         libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF, &sz as *const _ as *const _, 4);
     }

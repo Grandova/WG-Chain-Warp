@@ -183,21 +183,25 @@ impl L3NatTable {
     }
 
     fn maybe_prune(&mut self, now: Instant) {
-        if self.entries.len() < 4096 || now.duration_since(self.last_prune) < Duration::from_secs(10) {
+        if self.entries.len() < 1024 || now.duration_since(self.last_prune) < Duration::from_secs(10) {
             return;
         }
         self.last_prune = now;
-        let tcp_cut = now.checked_sub(Duration::from_secs(300)).unwrap_or(now);
-        let udp_cut = now.checked_sub(Duration::from_secs(90)).unwrap_or(now);
+        let tcp_cut = now.checked_sub(Duration::from_secs(240)).unwrap_or(now);
+        let udp_cut = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
         self.entries.retain(|&(proto, _, _, _), v| {
             v.last_seen > if proto == 6 { tcp_cut } else { udp_cut }
         });
-        if self.entries.len() >= 8192 {
-            let aggressive_cut = now.checked_sub(Duration::from_secs(30)).unwrap_or(now);
+        if self.entries.len() >= 2048 {
+            let aggressive_cut = now.checked_sub(Duration::from_secs(20)).unwrap_or(now);
             self.entries.retain(|_, v| v.last_seen > aggressive_cut);
         }
-        if self.port_owner.len() >= 8192 {
+        if self.entries.capacity() > 2048 && self.entries.len() <= 1024 {
+            self.entries.shrink_to(1024);
+        }
+        if self.port_owner.len() >= 2048 {
             self.port_owner.clear();
+            self.port_owner.shrink_to(1024);
         }
     }
 
@@ -219,7 +223,11 @@ impl L3NatTable {
                 {
                     return false;
                 }
-                if !orig_src.is_loopback() && !orig_src.is_unspecified() && orig_src != tun_v4 {
+                if !orig_src.is_loopback()
+                    && !orig_src.is_unspecified()
+                    && orig_src != tun_v4
+                    && orig_src != Ipv4Addr::new(172, 31, 255, 1)
+                {
                     self.default_local_v4 = orig_src;
                 }
                 let now = Instant::now();
@@ -583,5 +591,7 @@ mod tests {
         );
         assert!(nat.translate_inbound(&mut reply[..rlen], 1120));
         assert_eq!(&reply[16..20], &[172, 31, 255, 1]);
+        // Verify default_local_v4 was NOT overwritten by 172.31.255.1
+        assert_eq!(nat.default_local_v4, Ipv4Addr::new(10, 12, 144, 106));
     }
 }

@@ -194,8 +194,14 @@ impl ChainEngine {
     }
 
     pub fn start_socks5(&self, srv: Socks5ServerConfig) -> Result<()> {
-        let tunnel_flag = self.warp_kernel.lock().unwrap().running_flag();
-        self.socks5_service.lock().unwrap().start(&srv, tunnel_flag)?;
+        let (tunnel_flag, dns_sender) = {
+            let wk = self.warp_kernel.lock().unwrap();
+            (wk.running_flag(), wk.dns_sender())
+        };
+        self.socks5_service
+            .lock()
+            .unwrap()
+            .start(&srv, tunnel_flag, dns_sender)?;
         let mut cfg = self.get_active_config().unwrap_or_default();
         cfg.socks5_server = Some(srv);
         let _ = self.save_config(cfg);
@@ -213,17 +219,12 @@ impl ChainEngine {
     fn get_cached_physical(&self, uplink: Option<&str>) -> PhysicalHopStatus {
         let mut guard = self.cached_physical.lock().unwrap();
         if let Some((ts, ref status)) = *guard {
-            let cur = status.clone();
-            if ts.elapsed() >= Duration::from_secs(60) {
-                *guard = Some((Instant::now(), cur.clone()));
-                let bg_cache = self.cached_physical.clone();
-                let bg_up = uplink.map(|s| s.to_string());
-                let _ = std::thread::spawn(move || {
-                    let fresh = HealthChecker::probe_physical(bg_up.as_deref());
-                    *bg_cache.lock().unwrap() = Some((Instant::now(), fresh));
-                });
+            if status.status == "UP" && ts.elapsed() < Duration::from_secs(3600) {
+                return status.clone();
             }
-            return cur;
+            if ts.elapsed() < Duration::from_secs(120) {
+                return status.clone();
+            }
         }
         let fresh = HealthChecker::probe_physical(uplink);
         *guard = Some((Instant::now(), fresh.clone()));
@@ -299,8 +300,14 @@ impl ChainEngine {
 
         if let Some(ref srv) = config.socks5_server {
             if srv.port > 0 {
-                let tunnel_flag = self.warp_kernel.lock().unwrap().running_flag();
-                self.socks5_service.lock().unwrap().start(srv, tunnel_flag)?;
+                let (tunnel_flag, dns_sender) = {
+                    let wk = self.warp_kernel.lock().unwrap();
+                    (wk.running_flag(), wk.dns_sender())
+                };
+                self.socks5_service
+                    .lock()
+                    .unwrap()
+                    .start(srv, tunnel_flag, dns_sender)?;
             }
         } else if self.socks5_service.lock().unwrap().is_running() {
             // Preserve active socks5_server config if already running independently

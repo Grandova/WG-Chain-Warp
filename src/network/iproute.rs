@@ -108,6 +108,23 @@ impl IpRouteManager {
     }
 
     pub fn detect_default_uplink() -> Result<UplinkInfo> {
+        if let Ok(proc_routes) = std::fs::read_to_string("/proc/net/route") {
+            for line in proc_routes.lines().skip(1) {
+                let cols: Vec<&str> = line.split_whitespace().collect();
+                if cols.len() >= 3 && cols[1] == "00000000" && cols[0] != "chain0" {
+                    let interface = cols[0].to_string();
+                    let gateway = u32::from_str_radix(cols[2], 16)
+                        .ok()
+                        .map(|g| std::net::Ipv4Addr::from(g.to_be()).to_string())
+                        .unwrap_or_default();
+                    return Ok(UplinkInfo {
+                        local_ip: Self::get_interface_ipv4(&interface).ok(),
+                        interface,
+                        gateway,
+                    });
+                }
+            }
+        }
         let routes: serde_json::Value = serde_json::from_str(&Self::run(&[
             "-j", "route", "show", "table", "main", "default",
         ])?)?;
